@@ -135,6 +135,50 @@ def test_create_employee_and_bind_ticket(client: TestClient) -> None:
     assert detail.json()["employee"]["workflow_key"] == "customer_service_ticket_v1"
 
 
+def test_employee_instruction_is_versioned_with_configuration(
+    client: TestClient,
+) -> None:
+    payload = _employee_payload("instruction_employee")
+    payload["instruction"] = "你是一名耐心、简洁的售后客服。"
+    created = client.post(
+        "/api/v1/digital-employees",
+        headers=ADMIN,
+        json=payload,
+    )
+    assert created.status_code == 201, created.text
+    employee = created.json()
+    assert employee["instruction"] == "你是一名耐心、简洁的售后客服。"
+
+    revisions = client.get(
+        f"/api/v1/digital-employees/{employee['id']}/revisions",
+        headers=AGENT,
+    )
+    assert revisions.status_code == 200
+    assert revisions.json()[0]["instruction"] == "你是一名耐心、简洁的售后客服。"
+
+    configured = client.put(
+        f"/api/v1/digital-employees/{employee['id']}/configuration",
+        headers=ADMIN,
+        json={"instruction": "先确认订单号，再给结论。"},
+    )
+    assert configured.status_code == 200, configured.text
+    assert configured.json()["instruction"] == "先确认订单号，再给结论。"
+    assert configured.json()["config_revision"] == employee["config_revision"] + 1
+
+    revisions = client.get(
+        f"/api/v1/digital-employees/{employee['id']}/revisions",
+        headers=AGENT,
+    )
+    assert revisions.json()[0]["instruction"] == "先确认订单号，再给结论。"
+
+    too_long = client.patch(
+        f"/api/v1/digital-employees/{employee['id']}",
+        headers=ADMIN,
+        json={"instruction": "长" * 4001},
+    )
+    assert too_long.status_code == 422
+
+
 def test_create_employee_from_template_with_manifest_and_revision(
     client: TestClient,
 ) -> None:

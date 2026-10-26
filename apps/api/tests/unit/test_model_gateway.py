@@ -485,6 +485,86 @@ def test_openai_compatible_generate_draft_uses_known_citation() -> None:
     assert "企业通知配置指南" in captured["payload"]["messages"][1]["content"]
 
 
+def test_employee_instructions_are_injected_as_lower_priority_block() -> None:
+    systems: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        systems.append(payload["messages"][0]["content"])
+        schema_name = payload["response_format"]["json_schema"]["name"]
+        if schema_name == "workforce_step_output":
+            content: dict[str, Any] = {
+                "summary": "已核实订单状态。",
+                "findings": [],
+                "recommended_actions": [],
+                "requires_human": False,
+                "cited_chunk_ids": ["chunk-1"],
+            }
+        elif schema_name == "optimized_reply":
+            content = {"text": "您好，订单 PDD-1001 已发货。"}
+        else:
+            content = {
+                "text": "您好，订单 PDD-1001 已发货。",
+                "claims": [
+                    {
+                        "text": "您好，订单 PDD-1001 已发货。",
+                        "claim_type": "instruction",
+                        "cited_chunk_ids": ["chunk-1"],
+                    }
+                ],
+                "cited_chunk_ids": ["chunk-1"],
+            }
+        return httpx.Response(200, json=_model_response(content))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    gateway = OpenAICompatibleGateway(
+        _settings(),
+        client=client,
+        employee_instructions="你是一名耐心、简洁的售后客服。",
+    )
+    snippets = [
+        DraftSnippet(
+            chunk_id="chunk-1",
+            title="发货规则",
+            version="1.0",
+            content="订单发货后可在订单页查看物流。",
+        )
+    ]
+    gateway.generate_draft(
+        subject="发货咨询",
+        body="我的订单发货了吗？",
+        category="ecommerce_aftersales",
+        queue_id="ECOMMERCE_AFTERSALES",
+        snippets=snippets,
+        skill_instructions="必须引用知识库",
+    )
+    gateway.generate_workforce_step(
+        task_title="物流核实",
+        objective="确认发货状态",
+        context={"order_id": "PDD-1001"},
+        step_title="查询事实",
+        instructions="引用实时结果",
+        snippets=snippets,
+    )
+    gateway.optimize_reply(
+        text="您好，订单 PDD-1001 已发货。",
+        style="concise",
+    )
+
+    assert len(systems) == 3
+    for system in systems:
+        assert "<employee_instructions>" in system
+        assert "耐心、简洁" in system
+    draft_system = systems[0]
+    # 员工提示词在安全约束之后、Skill 规程之前。
+    assert draft_system.index("Never invent") < draft_system.index(
+        "<employee_instructions>"
+    )
+    assert draft_system.index("<employee_instructions>") < draft_system.index(
+        "<skill_instructions>"
+    )
+
+
 def test_openai_compatible_rebuilds_text_from_validated_claims() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request

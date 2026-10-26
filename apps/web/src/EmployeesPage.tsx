@@ -3696,6 +3696,7 @@ function EmployeeConfigDrawer({
   const [name, setName] = useState("");
   const [status, setStatus] = useState("ACTIVE");
   const [queue, setQueue] = useState("");
+  const [instruction, setInstruction] = useState("");
   const [tools, setTools] = useState<string[]>([]);
   const [knowledgeSpaceIds, setKnowledgeSpaceIds] = useState<string[]>([]);
   const [skillIds, setSkillIds] = useState<string[]>([]);
@@ -3757,6 +3758,7 @@ function EmployeeConfigDrawer({
     setName(employee.name);
     setStatus(employee.status);
     setQueue(employee.handoff_queue);
+    setInstruction(employee.instruction ?? "");
     setTools(employee.tool_allowlist);
     setTopK(numberValue(knowledge.top_k, 5));
     setMinScore(numberValue(knowledge.min_score, 0.15));
@@ -3842,6 +3844,7 @@ function EmployeeConfigDrawer({
           ? { status }
           : {}),
         handoff_queue: queue,
+        instruction,
         tool_allowlist: tools,
         model_profile: profile,
         knowledge_bindings: knowledgeSpaceIds.map((knowledgeSpaceId) => {
@@ -3933,7 +3936,7 @@ function EmployeeConfigDrawer({
               type="info"
               showIcon
               message="业务配置"
-              description="这里只修改员工名称、知识库和 Skill。模型、MCP、工具白名单与预算请切换到“管理员高级配置”。"
+              description="这里只修改员工名称、角色提示词、知识库和 Skill。模型、MCP、工具白名单与预算请切换到“管理员高级配置”。"
             />
           )}
           <Descriptions column={2} size="small" bordered>
@@ -4001,6 +4004,19 @@ function EmployeeConfigDrawer({
                 </Form.Item>
               )}
             </Space>
+            <Form.Item
+              label="角色提示词"
+              extra="补充该员工的角色、语气和服务边界。不会覆盖平台安全约束、知识事实和人工审批规则；留空表示使用系统默认。"
+            >
+              <TextArea
+                rows={5}
+                maxLength={4000}
+                showCount
+                value={instruction}
+                onChange={(event) => setInstruction(event.target.value)}
+                placeholder="例如：你是一名耐心、简洁的售后客服，先确认订单号；涉及退款只能说明流程并转人工。"
+              />
+            </Form.Item>
             {advanced && (
               <Form.Item label="工具权限">
                 <Checkbox.Group

@@ -434,6 +434,7 @@ export interface DigitalEmployee {
   knowledge_policy: Record<string, unknown>;
   model_profile: Record<string, unknown>;
   tool_allowlist: string[];
+  instruction: string;
   manifest: Record<string, unknown>;
   activation_evaluation: {
     passed?: boolean;

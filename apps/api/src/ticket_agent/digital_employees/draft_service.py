@@ -663,6 +663,7 @@ class DigitalEmployeeDraftService:
                 revision=employee.config_revision,
                 status=status,
                 manifest_json=employee.manifest_json,
+                instruction_text=employee.instruction_text,
                 change_note=note[:500],
                 created_by=actor_id,
                 published_at=(

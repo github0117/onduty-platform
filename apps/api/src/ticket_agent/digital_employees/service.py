@@ -395,6 +395,7 @@ class DigitalEmployeeService:
             knowledge_policy_json=payload.knowledge_policy,
             model_profile_json=payload.model_profile,
             tool_allowlist_json=payload.tool_allowlist,
+            instruction_text=payload.instruction,
             manifest_json=_manifest(
                 domain=_domain_for_workflow(payload.workflow_key),
                 template_code=None,
@@ -468,6 +469,7 @@ class DigitalEmployeeService:
             ("service_identity", "service_identity"),
             ("status", "status"),
             ("handoff_queue", "handoff_queue"),
+            ("instruction", "instruction_text"),
         ):
             value = getattr(payload, field)
             if value is not None:
@@ -547,6 +549,7 @@ class DigitalEmployeeService:
             ("name", "name"),
             ("status", "status"),
             ("handoff_queue", "handoff_queue"),
+            ("instruction", "instruction_text"),
         ):
             value = getattr(payload, field)
             if value is not None:
@@ -885,6 +888,7 @@ class DigitalEmployeeService:
                 revision=row.revision,
                 status=row.status,
                 manifest=row.manifest_json,
+                instruction=row.instruction_text,
                 change_note=row.change_note,
                 created_by=row.created_by,
                 created_at=row.created_at,
@@ -1294,6 +1298,7 @@ class DigitalEmployeeService:
                 revision=employee.config_revision,
                 status=status,
                 manifest_json=employee.manifest_json,
+                instruction_text=employee.instruction_text,
                 change_note=change_note[:500],
                 created_by=actor_id,
                 published_at=(
@@ -1605,6 +1610,7 @@ class DigitalEmployeeService:
             knowledge_policy=employee.knowledge_policy_json,
             model_profile=employee.model_profile_json,
             tool_allowlist=employee.tool_allowlist_json,
+            instruction=employee.instruction_text,
             manifest=employee.manifest_json,
             activation_evaluation=employee.activation_evaluation_json,
             activation_evaluated_at=employee.activation_evaluated_at,

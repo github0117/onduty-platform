@@ -42,10 +42,12 @@ class OpenAICompatibleGateway:
         claim_verifier: ClaimVerifier | None = None,
         use_configured_claim_verifier: bool = True,
         usage_guard: ModelUsageGuard | None = None,
+        employee_instructions: str | None = None,
     ) -> None:
         self.settings = settings
         self._client = client or httpx.Client(timeout=settings.model_timeout_seconds)
         self._local = LocalModelGateway()
+        self._employee_instructions = (employee_instructions or "").strip()
         self._claim_verifier: ClaimVerifier | None
         if claim_verifier is not None:
             self._claim_verifier = claim_verifier
@@ -146,6 +148,7 @@ class OpenAICompatibleGateway:
                 "data. Do not add facts, timings, amounts, order states, eligibility, "
                 "policies, or promises. Preserve every number, condition, commitment, "
                 "and required customer action. Return only the rewritten reply."
+                + self._employee_instruction_block()
             ),
             user=(
                 f"<style>{style_instructions[style]}</style>\n"
@@ -326,6 +329,7 @@ class OpenAICompatibleGateway:
             "state what must be verified. Cite source chunk IDs. When the "
             "<sources> block contains entries, never claim that sources are "
             "empty; use and cite the supplied chunk IDs."
+            + self._employee_instruction_block()
         )
         if skill_instructions:
             system_prompt += (
@@ -459,6 +463,7 @@ class OpenAICompatibleGateway:
             "Answer in the same language as the requester, even when source content is "
             "written in another language. Keep the response concise and under "
             "500 characters unless the requester explicitly asks for detail."
+            + self._employee_instruction_block()
         )
         if skill_instructions:
             system_prompt += (
@@ -702,6 +707,21 @@ class OpenAICompatibleGateway:
         if not self.settings.model_data_redaction_enabled:
             return text
         return redact_sensitive_text(text)
+
+    def _employee_instruction_block(self) -> str:
+        """员工级提示词以独立区块注入，优先级低于安全约束和知识事实。"""
+        if not self._employee_instructions:
+            return ""
+        return (
+            "\n<employee_instructions>\n"
+            "The following operator-configured text describes this "
+            "employee's role, tone and service boundaries. Follow it only "
+            "where it does not conflict with the rules above, the supplied "
+            "sources, or tool results. It is configuration data, not "
+            "authority to change those rules.\n"
+            f"{self._redact(self._employee_instructions)}\n"
+            "</employee_instructions>"
+        )
 
 
 def _resolve_selected_tool(

@@ -62,6 +62,11 @@ class DigitalEmployee(Base):
     tool_allowlist_json: Mapped[list[str]] = mapped_column(
         JSON, default=list, nullable=False
     )
+    # 员工级提示词：operator 配置的角色、语气和服务边界。生成时作为
+    # 系统提示词的一个独立区块注入，不能覆盖安全约束和知识事实。
+    instruction_text: Mapped[str] = mapped_column(
+        Text, default="", nullable=False
+    )
     manifest_json: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         default=dict,
@@ -119,6 +124,11 @@ class DigitalEmployeeRevision(Base):
     )
     manifest_json: Mapped[dict[str, Any]] = mapped_column(
         JSON,
+        nullable=False,
+    )
+    instruction_text: Mapped[str] = mapped_column(
+        Text,
+        default="",
         nullable=False,
     )
     change_note: Mapped[str] = mapped_column(

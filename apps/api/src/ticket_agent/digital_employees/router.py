@@ -159,6 +159,12 @@ def update_digital_employee(
         payload,
         actor_id=principal.actor_id,
     )
+    audit_payload = payload.model_dump(exclude_none=True)
+    instruction = audit_payload.pop("instruction", None)
+    if instruction is not None:
+        # 提示词正文进入配置修订即可追溯；审计只记录长度，避免把
+        # 可能误填的敏感内容写进日志。
+        audit_payload["instruction_length"] = len(instruction)
     record_audit(
         db,
         correlation_id=correlation_id(request),
@@ -169,7 +175,7 @@ def update_digital_employee(
         resource_id=employee.id,
         action="update",
         decision="EXECUTED",
-        payload=payload.model_dump(exclude_none=True),
+        payload=audit_payload,
     )
     db.commit()
     return service.view(employee)
@@ -210,6 +216,7 @@ def update_digital_employee_configuration(
         payload={
             "status": employee.status,
             "config_revision": employee.config_revision,
+            "instruction_length": len(employee.instruction_text),
             "knowledge_binding_count": (
                 len(payload.knowledge_bindings)
                 if payload.knowledge_bindings is not None

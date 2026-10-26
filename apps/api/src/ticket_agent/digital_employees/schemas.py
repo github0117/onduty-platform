@@ -21,6 +21,7 @@ class DigitalEmployeeCreate(BaseModel):
     knowledge_policy: dict[str, Any] = Field(default_factory=dict)
     model_profile: dict[str, Any] = Field(default_factory=dict)
     tool_allowlist: list[str] = Field(default_factory=list)
+    instruction: str = Field(default="", max_length=4000)
 
 
 class DigitalEmployeeUpdate(BaseModel):
@@ -34,6 +35,7 @@ class DigitalEmployeeUpdate(BaseModel):
     knowledge_policy: dict[str, Any] | None = None
     model_profile: dict[str, Any] | None = None
     tool_allowlist: list[str] | None = None
+    instruction: str | None = Field(default=None, max_length=4000)
 
     @model_validator(mode="after")
     def require_change(self) -> "DigitalEmployeeUpdate":
@@ -69,6 +71,7 @@ class DigitalEmployeeConfigurationUpdate(BaseModel):
     knowledge_policy: dict[str, Any] | None = None
     model_profile: dict[str, Any] | None = None
     tool_allowlist: list[str] | None = Field(default=None, max_length=50)
+    instruction: str | None = Field(default=None, max_length=4000)
     knowledge_bindings: (
         list[DigitalEmployeeConfigurationKnowledgeBinding] | None
     ) = Field(default=None, max_length=100)
@@ -102,6 +105,7 @@ class DigitalEmployeeView(BaseModel):
     knowledge_policy: dict[str, Any]
     model_profile: dict[str, Any]
     tool_allowlist: list[str]
+    instruction: str = ""
     manifest: dict[str, Any]
     activation_evaluation: dict[str, Any]
     activation_evaluated_at: datetime | None
@@ -186,6 +190,7 @@ class DigitalEmployeeRevisionView(BaseModel):
     revision: int
     status: str
     manifest: dict[str, Any]
+    instruction: str = ""
     change_note: str
     created_by: str
     created_at: datetime

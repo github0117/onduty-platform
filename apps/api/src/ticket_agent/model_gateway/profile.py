@@ -115,6 +115,7 @@ def build_draft_service_for_employee(
             claim_verifier=verifier,
             use_configured_claim_verifier=False,
             usage_guard=usage_guard,
+            employee_instructions=_employee_instruction(employee),
         )
     else:
         gateway = LocalModelGateway()
@@ -140,6 +141,7 @@ def build_reply_optimizer_for_employee(
         settings,
         use_configured_claim_verifier=False,
         usage_guard=usage_guard,
+        employee_instructions=_employee_instruction(employee),
     )
 
 
@@ -172,7 +174,12 @@ def build_workforce_gateway_for_employee(
         profile,
         allow_ecommerce_content_credentials=True,
     )
-    return _build_gateway(settings, profile.provider, usage_guard)
+    return _build_gateway(
+        settings,
+        profile.provider,
+        usage_guard,
+        employee_instructions=_employee_instruction(employee),
+    )
 
 
 def build_reranker_for_employee(
@@ -258,6 +265,8 @@ def _build_gateway(
     settings: Settings,
     provider: Provider | None,
     usage_guard: ModelUsageGuard | None,
+    *,
+    employee_instructions: str | None = None,
 ) -> TicketModelGateway:
     resolved_provider = provider or settings.model_provider
     if resolved_provider == "openai_compatible":
@@ -265,8 +274,14 @@ def _build_gateway(
             settings,
             use_configured_claim_verifier=False,
             usage_guard=usage_guard,
+            employee_instructions=employee_instructions,
         )
     return LocalModelGateway()
+
+
+def _employee_instruction(employee: DigitalEmployee) -> str | None:
+    text = (employee.instruction_text or "").strip()
+    return text or None
 
 
 def _build_claim_verifier(
