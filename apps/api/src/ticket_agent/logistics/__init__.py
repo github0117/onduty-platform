@@ -1,0 +1,1 @@
+"""Logistics status query integration."""

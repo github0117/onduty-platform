@@ -1,0 +1,271 @@
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from ticket_agent.shared.db import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class CustomerConversation(Base):
+    __tablename__ = "customer_conversations"
+    __table_args__ = (
+        Index("ix_customer_conversations_unit_status", "business_unit_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    service_entry_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("business_service_entries.id", ondelete="SET NULL"),
+    )
+    employee_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("digital_employees.id", ondelete="SET NULL")
+    )
+    requester_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    category_name: Mapped[str | None] = mapped_column(String(120))
+    category_profile_id: Mapped[UUID | None] = mapped_column(Uuid)
+    channel: Mapped[str] = mapped_column(String(64), default="web_form", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="ACTIVE", nullable=False)
+    current_ticket_id: Mapped[UUID | None] = mapped_column(Uuid)
+    assigned_agent_id: Mapped[str | None] = mapped_column(String(128))
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class CustomerMessage(Base):
+    __tablename__ = "customer_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence", name="uq_customer_message_sequence"),
+        Index("ix_customer_messages_conversation", "conversation_id", "sequence"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("customer_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(24), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    ticket_id: Mapped[UUID | None] = mapped_column(Uuid)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class ConversationTurn(Base):
+    __tablename__ = "conversation_turns"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "sequence",
+            name="uq_conversation_turn_sequence",
+        ),
+        Index(
+            "ix_conversation_turns_conversation_status",
+            "conversation_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("customer_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("tickets.id", ondelete="SET NULL"),
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="RECEIVED",
+        nullable=False,
+    )
+    stage_label: Mapped[str] = mapped_column(
+        String(200),
+        default="已收到问题",
+        nullable=False,
+    )
+    user_message_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("customer_messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    assistant_message_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("customer_messages.id", ondelete="SET NULL"),
+    )
+    employee_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("digital_employees.id", ondelete="SET NULL"),
+    )
+    employee_config_revision: Mapped[int | None] = mapped_column(Integer)
+    intent: Mapped[str | None] = mapped_column(String(64))
+    analysis_json: Mapped[dict[str, object]] = mapped_column(
+        JSON,
+        default=dict,
+        nullable=False,
+    )
+    response_provider: Mapped[str | None] = mapped_column(String(64))
+    response_model: Mapped[str | None] = mapped_column(String(128))
+    grounding_status: Mapped[str | None] = mapped_column(String(32))
+    citations_json: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
+    trace_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
+    tool_calls_json: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
+    error_code: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class ConversationMemory(Base):
+    __tablename__ = "conversation_memories"
+
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("customer_conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    summary: Mapped[str] = mapped_column(
+        Text,
+        default="",
+        nullable=False,
+    )
+    slots_json: Mapped[dict[str, object]] = mapped_column(
+        JSON,
+        default=dict,
+        nullable=False,
+    )
+    last_turn_sequence: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class AgentPresence(Base):
+    __tablename__ = "agent_presence"
+    __table_args__ = (
+        UniqueConstraint("agent_id", name="uq_agent_presence_agent"),
+        Index("ix_agent_presence_last_seen", "last_seen_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    agent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    business_unit_id: Mapped[str] = mapped_column(
+        String(64),
+        default="bu_demo",
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(24), default="ONLINE", nullable=False)
+    actor_role: Mapped[str] = mapped_column(
+        String(24),
+        default="agent",
+        nullable=False,
+    )
+    skills_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
+    risk_clearance: Mapped[str] = mapped_column(
+        String(8),
+        default="R2",
+        nullable=False,
+    )
+    max_conversations: Mapped[int] = mapped_column(
+        Integer,
+        default=5,
+        nullable=False,
+    )
+    auto_assign_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+    current_conversation_id: Mapped[UUID | None] = mapped_column(Uuid)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class CustomerServiceNotification(Base):
+    __tablename__ = "customer_service_notifications"
+    __table_args__ = (
+        Index(
+            "ix_customer_service_notifications_status",
+            "business_unit_id",
+            "status",
+        ),
+        Index("ix_customer_service_notifications_conversation", "conversation_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("customer_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="OPEN", nullable=False)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(128))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )

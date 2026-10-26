@@ -1,0 +1,4 @@
+{"query":"如何配置团队消息通知","business_unit_id":"bu_demo","expected_titles":["企业通知配置指南"],"expect_no_grounding":false}
+{"query":"申请发票需要哪些信息","business_unit_id":"bu_demo","expected_titles":["账单与发票申请流程"],"expect_no_grounding":false}
+{"query":"请说明火星基地重力参数","business_unit_id":"bu_demo","expected_titles":[],"expect_no_grounding":true}
+

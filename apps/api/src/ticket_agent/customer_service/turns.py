@@ -1,0 +1,330 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ticket_agent.classification.classifier import AnalysisResult
+from ticket_agent.customer_service.models import (
+    ConversationTurn,
+    CustomerConversation,
+    CustomerMessage,
+)
+from ticket_agent.customer_service.service import CustomerConversationService
+from ticket_agent.customer_service.suggestions import (
+    CustomerReplySuggestionService,
+)
+from ticket_agent.digital_employees.models import DigitalEmployee
+from ticket_agent.ecommerce.models import EcommerceCategoryProfile
+from ticket_agent.model_gateway.profile import build_classifier_for_employee
+from ticket_agent.routing.policy import get_routing_policy
+from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.errors import ApiProblem
+from ticket_agent.tickets.domain import TicketStatus, WorkflowState
+from ticket_agent.tickets.models import Ticket
+from ticket_agent.tickets.transitions import transition_ticket
+
+
+class ConversationTurnOrchestrator:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def process(self, turn_id: UUID, *, correlation_id: str) -> None:
+        turn = self.session.scalar(
+            select(ConversationTurn)
+            .where(ConversationTurn.id == turn_id)
+            .with_for_update()
+        )
+        if turn is None or turn.status != "RUNNING":
+            return
+        conversation = self.session.get(
+            CustomerConversation,
+            turn.conversation_id,
+        )
+        user_message = self.session.get(
+            CustomerMessage,
+            turn.user_message_id,
+        )
+        if conversation is None or user_message is None:
+            return
+        ticket = (
+            self.session.get(Ticket, turn.ticket_id)
+            if turn.ticket_id is not None
+            else None
+        )
+        employee = (
+            self.session.get(DigitalEmployee, turn.employee_id)
+            if turn.employee_id is not None
+            else None
+        )
+        if ticket is None or employee is None:
+            self._fail(
+                turn,
+                conversation,
+                "TURN_CONTEXT_MISSING",
+                "本轮缺少工单或数字员工上下文。",
+            )
+            return
+
+        turn.stage_label = "正在识别问题"
+        turn.started_at = datetime.now(UTC)
+        self.session.commit()
+
+        analysis = build_classifier_for_employee(employee).classify(
+            subject=user_message.content[:120],
+            body=user_message.content,
+            customer_tier=ticket.customer_tier,
+        )
+        analysis = self._apply_category_profile(
+            ticket,
+            analysis,
+            text=user_message.content,
+        )
+        self._apply_analysis(ticket, analysis)
+        turn.analysis_json = self._analysis_payload(analysis)
+        turn.intent = analysis.category_primary
+        turn.stage_label = "正在检索知识并处理"
+        self.session.commit()
+
+        try:
+            suggestion = CustomerReplySuggestionService(
+                self.session
+            ).generate(
+                conversation.id,
+                agent_id="digital_employee.runtime",
+                correlation_id=correlation_id,
+                persist_reply=False,
+            )
+        except ApiProblem as exc:
+            self._fail(turn, conversation, exc.code, exc.detail)
+            return
+        except Exception as exc:
+            self._fail(
+                turn,
+                conversation,
+                "TURN_PROCESSING_FAILED",
+                f"处理失败：{type(exc).__name__}",
+            )
+            return
+
+        assistant = CustomerConversationService(
+            self.session
+        ).append_assistant_message(
+            conversation_id=conversation.id,
+            ticket_id=ticket.id,
+            content=suggestion.text,
+        )
+        CustomerConversationService(self.session).complete_turn(
+            turn_id=turn.id,
+            assistant_message=assistant,
+            response_provider=suggestion.provider,
+            response_model=suggestion.model,
+            grounding_status=suggestion.grounding_status,
+            citations=suggestion.citations,
+            trace=suggestion.trace,
+            tool_calls=suggestion.tool_calls,
+            intent=analysis.category_primary,
+            analysis=self._analysis_payload(analysis),
+        )
+        if _can_complete_grounded_turn(
+            ticket,
+            suggestion.grounding_status,
+        ):
+            ticket.status = TicketStatus.RESOLVED
+            transition_ticket(
+                self.session,
+                ticket,
+                WorkflowState.COMPLETED,
+                reason_code="GROUNDED_TURN_COMPLETED",
+                actor_id="digital_employee.runtime",
+            )
+        elif ticket.needs_human:
+            ticket.status = TicketStatus.WAITING_HUMAN
+            transition_ticket(
+                self.session,
+                ticket,
+                WorkflowState.NEEDS_HUMAN,
+                reason_code=ticket.human_reason or "TURN_NEEDS_HUMAN",
+                actor_id="digital_employee.runtime",
+            )
+        else:
+            ticket.status = TicketStatus.IN_PROGRESS
+            transition_ticket(
+                self.session,
+                ticket,
+                WorkflowState.PENDING_REVIEW,
+                reason_code="TURN_PENDING_REVIEW",
+                actor_id="digital_employee.runtime",
+            )
+        ticket.version += 1
+        conversation.version += 1
+        self.session.commit()
+
+    def _apply_category_profile(
+        self,
+        ticket: Ticket,
+        analysis: AnalysisResult,
+        *,
+        text: str,
+    ) -> AnalysisResult:
+        if (
+            analysis.risk_level == "R3"
+            or analysis.category_primary == "data_privacy_security"
+        ):
+            return analysis
+        category_name = ticket.external_metadata.get("category")
+        if not isinstance(category_name, str):
+            return analysis
+        profile = self.session.scalar(
+            select(EcommerceCategoryProfile).where(
+                EcommerceCategoryProfile.business_unit_id
+                == ticket.business_unit_id,
+                EcommerceCategoryProfile.name == category_name,
+                EcommerceCategoryProfile.status == "ACTIVE",
+            )
+        )
+        if profile is None:
+            return analysis
+        if any(
+            keyword in text
+            for keyword in profile.aftersales_keywords_json
+        ):
+            return replace(
+                analysis,
+                category_primary="ecommerce_aftersales",
+                category_secondary="category_after_sales",
+                confidence=max(analysis.confidence, 0.93),
+                needs_human=True,
+                human_reason="AFTER_SALES_REQUIRES_HUMAN",
+                reason_codes=[
+                    *analysis.reason_codes,
+                    "CATEGORY_AFTERSALES_KEYWORD",
+                ],
+            )
+        if (
+            analysis.risk_level not in {"R2", "R3"}
+            and any(
+                keyword in text
+                for keyword in profile.presales_keywords_json
+            )
+        ):
+            return replace(
+                analysis,
+                category_primary="ecommerce_presales",
+                category_secondary="category_presales",
+                confidence=max(analysis.confidence, 0.94),
+                needs_human=False,
+                human_reason=None,
+                reason_codes=[
+                    *analysis.reason_codes,
+                    "CATEGORY_PRESALES_KEYWORD",
+                ],
+            )
+        return analysis
+
+    def _apply_analysis(
+        self,
+        ticket: Ticket,
+        analysis: AnalysisResult,
+    ) -> None:
+        routing = get_routing_policy().decide(analysis)
+        ticket.category_primary = analysis.category_primary
+        ticket.category_secondary = analysis.category_secondary
+        ticket.confidence = analysis.confidence
+        ticket.summary = analysis.summary
+        ticket.risk_level = analysis.risk_level
+        ticket.priority = routing.priority
+        ticket.queue_id = routing.queue_id
+        ticket.needs_human = routing.needs_human
+        ticket.human_reason = routing.human_reason
+        if routing.needs_human:
+            ticket.status = TicketStatus.WAITING_HUMAN
+            transition_ticket(
+                self.session,
+                ticket,
+                WorkflowState.NEEDS_HUMAN,
+                reason_code=(
+                    routing.human_reason or "ROUTING_REQUIRES_HUMAN"
+                ),
+                actor_id="digital_employee.runtime",
+            )
+        ticket.version += 1
+
+    @staticmethod
+    def _analysis_payload(analysis: AnalysisResult) -> dict[str, object]:
+        return {
+            "category_primary": analysis.category_primary,
+            "category_secondary": analysis.category_secondary,
+            "confidence": analysis.confidence,
+            "risk_level": analysis.risk_level,
+            "risk_tags": analysis.risk_tags,
+            "reason_codes": analysis.reason_codes,
+            "summary": analysis.summary,
+            "needs_human": analysis.needs_human,
+            "human_reason": analysis.human_reason,
+            "model_provider": analysis.model_provider,
+            "model_name": analysis.model_name,
+        }
+
+    def _fail(
+        self,
+        turn: ConversationTurn,
+        conversation: CustomerConversation,
+        code: str,
+        detail: str,
+    ) -> None:
+        turn.status = "FAILED"
+        turn.stage_label = "处理失败"
+        turn.error_code = code
+        turn.error_message = detail[:2000]
+        turn.completed_at = datetime.now(UTC)
+        ticket = (
+            self.session.get(Ticket, turn.ticket_id)
+            if turn.ticket_id is not None
+            else None
+        )
+        if ticket is not None:
+            ticket.status = TicketStatus.WAITING_HUMAN
+            ticket.needs_human = True
+            ticket.human_reason = code
+            transition_ticket(
+                self.session,
+                ticket,
+                WorkflowState.NEEDS_HUMAN,
+                reason_code=code,
+                actor_id="digital_employee.runtime",
+            )
+            ticket.version += 1
+        message = CustomerConversationService(
+            self.session
+        ).append_assistant_message(
+            conversation_id=conversation.id,
+            ticket_id=turn.ticket_id,
+            content="这次没有安全完成处理，请稍后重试或转人工。",
+            created_by="system",
+        )
+        turn.assistant_message_id = message.id
+        conversation.version += 1
+        self.session.commit()
+
+
+def process_conversation_turn(turn_id: UUID, correlation_id: str) -> None:
+    with SessionLocal() as session:
+        ConversationTurnOrchestrator(session).process(
+            turn_id,
+            correlation_id=correlation_id,
+        )
+
+
+def _can_complete_grounded_turn(
+    ticket: Ticket,
+    grounding_status: str,
+) -> bool:
+    return (
+        grounding_status == "GROUNDED"
+        and not ticket.needs_human
+        and ticket.risk_level not in {"R2", "R3"}
+    )

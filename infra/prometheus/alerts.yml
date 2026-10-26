@@ -1,0 +1,75 @@
+groups:
+  - name: ticket-digital-worker
+    rules:
+      - alert: TicketSyncFailureRateHigh
+        expr: ticket_worker_sync_failure_rate > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: External ticket sync failure rate is above 10%
+          description: Check adapter health, credential expiry and external API limits.
+
+      - alert: TicketSyncRetryBacklogHigh
+        expr: ticket_worker_sync_retrying > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 20 tickets are waiting for external sync retry
+          description: Check worker throughput and external API availability.
+
+      - alert: TicketRagGroundingRateLow
+        expr: ticket_worker_rag_drafts > 10 and ticket_worker_rag_grounding_rate < 0.8
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 20% of drafts have no knowledge citation
+          description: Check knowledge coverage, retrieval thresholds and embedding version.
+
+      - alert: TicketPolicyCitationCoverageLow
+        expr: ticket_worker_rag_policy_citation_coverage < 0.95
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Policy claim citation coverage is below 95%
+          description: Disable automatic sending and inspect failing drafts.
+
+      - alert: TicketSemanticUnsupportedClaims
+        expr: ticket_worker_rag_semantic_unsupported_claims > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Semantic judge found unsupported claims
+          description: Review the judge configuration and block affected drafts.
+
+      - alert: TicketModelBudgetForecast
+        expr: ticket_worker_model_budget_forecast_alerts > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Digital employee model usage is projected to exceed budget
+          description: Review current token and cost burn before the daily or weekly limit is reached.
+
+      - alert: TicketModelBudgetExceeded
+        expr: ticket_worker_model_budget_exceeded > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Digital employee model budget is exhausted
+          description: Confirm local fallback behavior and review the employee budget profile.
+
+      - alert: TicketRateLimitRejectionsHigh
+        expr: sum(rate(ticket_worker_rate_limit_rejections_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Shared rate limiter rejects more than one request per second
+          description: Check client retry behavior, per-actor limits and Redis availability.
+

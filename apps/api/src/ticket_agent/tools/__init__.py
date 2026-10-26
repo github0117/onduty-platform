@@ -1,0 +1,2 @@
+"""Digital employee tool registry."""
+

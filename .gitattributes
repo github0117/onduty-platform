@@ -1,0 +1,14 @@
+# Third-party runtime overlay copied into the Docker image. Keep the files,
+# but exclude them from language statistics and diff noise.
+apps/api/vendor/** linguist-vendored -diff -merge
+
+# Bundled font assets.
+apps/api/assets/fonts/** linguist-vendored
+*.otf binary
+
+# Generated lockfiles and binary demo artifacts.
+apps/api/uv.lock linguist-generated
+apps/web/pnpm-lock.yaml linguist-generated
+*.png binary
+*.mp4 binary
+*.zip binary

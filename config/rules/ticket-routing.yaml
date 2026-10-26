@@ -1,0 +1,61 @@
+policy_version: "ticket-routing-0.1"
+
+defaults:
+  fallback_queue: "MANUAL_TRIAGE"
+  max_route_attempts: 2
+
+rules:
+  - id: ROUTE-SECURITY
+    priority: 1000
+    when:
+      any:
+        - field: classification.primary
+          op: eq
+          value: data_privacy_security
+        - field: risk.level
+          op: in
+          value: [R2, R3]
+    actions:
+      queue: SECURITY_RESPONSE
+      priority: P0
+      need_human: true
+      reason_code: HIGH_RISK_TOPIC
+
+  - id: ROUTE-COMPLAINT
+    priority: 900
+    when:
+      field: classification.primary
+      op: eq
+      value: complaint_escalation
+    actions:
+      queue: CUSTOMER_SUCCESS
+      priority: P1
+      need_human: true
+      reason_code: COMPLAINT_REQUIRES_HUMAN
+
+  - id: ROUTE-INCIDENT
+    priority: 500
+    when:
+      field: classification.primary
+      op: eq
+      value: service_incident
+    actions:
+      queue: TECH_SERVICE_PLATFORM
+      priority: P1
+      need_human: false
+
+  - id: ROUTE-HOWTO-STD
+    priority: 100
+    when:
+      all:
+        - field: classification.primary
+          op: eq
+          value: product_howto
+        - field: risk.level
+          op: eq
+          value: R0
+    actions:
+      queue: PRODUCT_SUPPORT
+      priority: P3
+      need_human: false
+

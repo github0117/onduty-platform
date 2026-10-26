@@ -1,0 +1,102 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Sync Success Rate",
+      "gridPos": {"h": 7, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "ticket_worker_sync_success_rate", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1, "min": 0}, "overrides": []}
+    },
+    {
+      "type": "stat",
+      "title": "Sync Failure Rate",
+      "gridPos": {"h": 7, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "ticket_worker_sync_failure_rate", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1, "min": 0}, "overrides": []}
+    },
+    {
+      "type": "stat",
+      "title": "Sync Retry Backlog",
+      "gridPos": {"h": 7, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "ticket_worker_sync_retrying", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "RAG Grounding Rate",
+      "gridPos": {"h": 7, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "ticket_worker_rag_grounding_rate", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1, "min": 0}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Sync Status by Business Unit",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 7},
+      "targets": [
+        {"expr": "ticket_worker_sync_pending", "legendFormat": "pending {{business_unit}}", "refId": "A"},
+        {"expr": "ticket_worker_sync_syncing", "legendFormat": "syncing {{business_unit}}", "refId": "B"},
+        {"expr": "ticket_worker_sync_retrying", "legendFormat": "retrying {{business_unit}}", "refId": "C"},
+        {"expr": "ticket_worker_sync_failed", "legendFormat": "failed {{business_unit}}", "refId": "D"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Evidence Quality",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 7},
+      "targets": [
+        {"expr": "ticket_worker_rag_grounding_rate", "legendFormat": "grounding {{business_unit}}", "refId": "A"},
+        {"expr": "ticket_worker_rag_policy_citation_coverage", "legendFormat": "policy citation {{business_unit}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "max": 1, "min": 0}, "overrides": []}
+    },
+    {
+      "type": "stat",
+      "title": "Model Tokens",
+      "gridPos": {"h": 7, "w": 6, "x": 0, "y": 16},
+      "targets": [{"expr": "ticket_worker_model_total_tokens", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Estimated Model Cost",
+      "gridPos": {"h": 7, "w": 6, "x": 6, "y": 16},
+      "targets": [{"expr": "ticket_worker_model_estimated_cost", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Budget Denials",
+      "gridPos": {"h": 7, "w": 6, "x": 12, "y": 16},
+      "targets": [{"expr": "ticket_worker_model_denied", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Budget Forecast Alerts",
+      "gridPos": {"h": 7, "w": 6, "x": 18, "y": 16},
+      "targets": [{"expr": "ticket_worker_model_budget_forecast_alerts", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Model Calls and Tokens by Business Unit",
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 23},
+      "targets": [
+        {"expr": "ticket_worker_model_calls", "legendFormat": "calls {{business_unit}}", "refId": "A"},
+        {"expr": "ticket_worker_model_succeeded", "legendFormat": "succeeded {{business_unit}}", "refId": "B"},
+        {"expr": "ticket_worker_model_failed", "legendFormat": "failed {{business_unit}}", "refId": "C"},
+        {"expr": "ticket_worker_model_denied", "legendFormat": "denied {{business_unit}}", "refId": "D"},
+        {"expr": "ticket_worker_model_total_tokens", "legendFormat": "tokens {{business_unit}}", "refId": "E"}
+      ]
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["ticket", "digital-worker", "rag"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "Ticket Digital Worker",
+  "uid": "ticket-digital-worker",
+  "version": 1
+}
+

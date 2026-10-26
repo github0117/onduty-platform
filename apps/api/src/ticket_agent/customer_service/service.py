@@ -1,0 +1,1811 @@
+import re
+from collections.abc import Sequence
+from datetime import UTC, datetime, time, timedelta
+from typing import Any
+from uuid import UUID
+
+from fastapi.encoders import jsonable_encoder
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from ticket_agent.audit.service import record_audit
+from ticket_agent.classification.conversation_signals import (
+    SmallTalkKind,
+    classify_small_talk,
+    repository_name,
+)
+from ticket_agent.customer_service.models import (
+    AgentPresence,
+    ConversationMemory,
+    ConversationTurn,
+    CustomerConversation,
+    CustomerMessage,
+    CustomerServiceNotification,
+)
+from ticket_agent.customer_service.schemas import (
+    AgentHeartbeat,
+    AgentPresenceList,
+    AgentPresenceView,
+    AssignmentQueue,
+    AssignmentQueueItem,
+    AssignmentResultItem,
+    AssignmentRunResult,
+    ConversationReassignRequest,
+    ConversationTurnView,
+    CustomerConversationCreate,
+    CustomerConversationList,
+    CustomerConversationView,
+    CustomerDailyMetric,
+    CustomerManualReplyCreate,
+    CustomerMessageCreate,
+    CustomerMessageView,
+    CustomerServiceAlertItem,
+    CustomerServiceAlertList,
+    CustomerServiceHistoryMetrics,
+    CustomerServiceMetrics,
+    CustomerServiceNotificationList,
+    CustomerServiceNotificationView,
+)
+from ticket_agent.digital_employees.models import DigitalEmployee
+from ticket_agent.digital_employees.router_service import DigitalEmployeeRouter
+from ticket_agent.identity.models import Principal
+from ticket_agent.shared.errors import ApiProblem
+from ticket_agent.tickets.domain import TicketStatus, WorkflowState
+from ticket_agent.tickets.models import Ticket, WorkflowTransition
+from ticket_agent.tickets.schemas import RequesterInput, SourceInput, TicketCreate
+from ticket_agent.tickets.service import TicketService
+
+
+class CustomerConversationService:
+    MAX_AGENT_CONVERSATIONS = 5
+    SLA_SECONDS = {"P0": 60, "P1": 180, "P2": 300, "P3": 600}
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(self, payload: CustomerConversationCreate) -> CustomerConversation:
+        conversation = CustomerConversation(
+            business_unit_id=payload.business_unit_id,
+            service_entry_id=payload.service_entry_id,
+            employee_id=payload.employee_id,
+            requester_ref=payload.requester_ref,
+            category_name=payload.category_name,
+            category_profile_id=payload.category_profile_id,
+            channel=payload.channel,
+            status="ACTIVE",
+        )
+        self.session.add(conversation)
+        self.session.commit()
+        self.session.refresh(conversation)
+        return conversation
+
+    def heartbeat(
+        self,
+        payload: AgentHeartbeat,
+        *,
+        agent_id: str,
+        actor_role: str = "agent",
+    ) -> AgentPresence:
+        presence = self.session.scalar(
+            select(AgentPresence).where(AgentPresence.agent_id == agent_id)
+        )
+        if presence is None:
+            presence = AgentPresence(
+                agent_id=agent_id,
+                display_name=payload.display_name,
+            )
+            self.session.add(presence)
+        presence.display_name = payload.display_name
+        presence.business_unit_id = payload.business_unit_id
+        presence.status = payload.status
+        presence.current_conversation_id = payload.current_conversation_id
+        presence.actor_role = actor_role
+        presence.skills_json = (
+            payload.skills
+            or [
+                "ecommerce_presales",
+                "ecommerce_aftersales",
+                "logistics",
+            ]
+        )
+        presence.risk_clearance = payload.risk_clearance or (
+            "R3" if actor_role in {"supervisor", "admin"} else "R2"
+        )
+        presence.max_conversations = payload.max_conversations or 5
+        presence.auto_assign_enabled = payload.auto_assign_enabled
+        presence.last_seen_at = datetime.now(UTC)
+        self.session.commit()
+        self.session.refresh(presence)
+        return presence
+
+    def presence(
+        self,
+        business_unit_id: str | None = None,
+    ) -> AgentPresenceList:
+        cutoff = datetime.now(UTC) - timedelta(seconds=60)
+        statement = select(AgentPresence).order_by(
+            AgentPresence.last_seen_at.desc()
+        )
+        if business_unit_id:
+            statement = statement.where(
+                AgentPresence.business_unit_id == business_unit_id
+            )
+        items = list(self.session.scalars(statement).all())
+        views = [
+            AgentPresenceView(
+                agent_id=item.agent_id,
+                display_name=item.display_name,
+                status=item.status,
+                current_conversation_id=item.current_conversation_id,
+                business_unit_id=item.business_unit_id,
+                actor_role=item.actor_role,
+                skills=item.skills_json,
+                risk_clearance=item.risk_clearance,
+                max_conversations=item.max_conversations,
+                auto_assign_enabled=item.auto_assign_enabled,
+                last_seen_at=item.last_seen_at,
+                online=_as_utc(item.last_seen_at) >= cutoff
+                and item.status == "ONLINE",
+            )
+            for item in items
+        ]
+        return AgentPresenceList(
+            items=views,
+            online_count=sum(item.online for item in views),
+        )
+
+    def assignment_queue(
+        self,
+        business_unit_id: str | None = None,
+    ) -> AssignmentQueue:
+        now = datetime.now(UTC)
+        statement = (
+            select(CustomerConversation, Ticket)
+            .outerjoin(Ticket, Ticket.id == CustomerConversation.current_ticket_id)
+            .where(
+                CustomerConversation.assigned_agent_id.is_(None),
+                CustomerConversation.status == "ACTIVE",
+                Ticket.workflow_state.in_(
+                    {
+                        WorkflowState.PENDING_REVIEW,
+                        WorkflowState.NEEDS_HUMAN,
+                    }
+                ),
+            )
+        )
+        if business_unit_id:
+            statement = statement.where(
+                CustomerConversation.business_unit_id == business_unit_id
+            )
+        rows = self.session.execute(statement).all()
+        rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        items = [
+            AssignmentQueueItem(
+                conversation_id=conversation.id,
+                requester_ref=conversation.requester_ref,
+                current_ticket_id=conversation.current_ticket_id,
+                priority=ticket.priority if ticket and ticket.priority else "P3",
+                risk_level=ticket.risk_level if ticket else None,
+                waiting_seconds=max(
+                    0,
+                    round((now - _as_utc(conversation.created_at)).total_seconds()),
+                ),
+                created_at=conversation.created_at,
+            )
+            for conversation, ticket in rows
+        ]
+        items.sort(
+            key=lambda item: (rank.get(item.priority, 9), -item.waiting_seconds)
+        )
+        return AssignmentQueue(items=items, total=len(items))
+
+    def reclaim_offline_conversations(
+        self,
+        *,
+        business_unit_id: str | None = None,
+        stale_after_seconds: int = 90,
+    ) -> int:
+        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        presence_statement = select(AgentPresence)
+        if business_unit_id:
+            presence_statement = presence_statement.where(
+                AgentPresence.business_unit_id == business_unit_id
+            )
+        presences = list(
+            self.session.scalars(presence_statement).all()
+        )
+        offline_agent_ids = {
+            presence.agent_id
+            for presence in presences
+            if presence.status != "ONLINE"
+            or _as_utc(presence.last_seen_at) < cutoff
+        }
+        for presence in presences:
+            if presence.agent_id in offline_agent_ids:
+                presence.status = "OFFLINE"
+                presence.current_conversation_id = None
+        if not offline_agent_ids:
+            self.session.commit()
+            return 0
+        conversation_statement = (
+            select(CustomerConversation)
+            .where(
+                CustomerConversation.assigned_agent_id.in_(offline_agent_ids),
+                CustomerConversation.status == "ACTIVE",
+            )
+            .with_for_update()
+        )
+        if business_unit_id:
+            conversation_statement = conversation_statement.where(
+                CustomerConversation.business_unit_id == business_unit_id
+            )
+        conversations = list(
+            self.session.scalars(conversation_statement).all()
+        )
+        for conversation in conversations:
+            conversation.assigned_agent_id = None
+            conversation.assigned_at = None
+            conversation.version += 1
+            conversation.status = "ACTIVE"
+        self.session.commit()
+        return len(conversations)
+
+    def auto_assign(
+        self,
+        business_unit_id: str | None = None,
+    ) -> AssignmentRunResult:
+        cutoff = datetime.now(UTC) - timedelta(seconds=60)
+        online = [
+            item
+            for item in self.presence(business_unit_id).items
+            if item.online and _as_utc(item.last_seen_at) >= cutoff
+            and item.auto_assign_enabled
+            and (
+                business_unit_id is None
+                or item.business_unit_id == business_unit_id
+            )
+        ]
+        if not online:
+            return AssignmentRunResult(
+                assignments=[],
+                assigned_count=0,
+                unassigned_count=self.assignment_queue(business_unit_id).total,
+            )
+        load_statement = (
+            select(
+                CustomerConversation.assigned_agent_id,
+                func.count(CustomerConversation.id),
+            )
+            .where(
+                CustomerConversation.assigned_agent_id.in_(
+                    [agent.agent_id for agent in online]
+                ),
+                CustomerConversation.status == "ACTIVE",
+            )
+            .group_by(CustomerConversation.assigned_agent_id)
+        )
+        if business_unit_id:
+            load_statement = load_statement.where(
+                CustomerConversation.business_unit_id == business_unit_id
+            )
+        load_rows = self.session.execute(load_statement).all()
+        loads = {agent_id: int(count) for agent_id, count in load_rows}
+        queue = self.assignment_queue(business_unit_id)
+        assignments: list[AssignmentResultItem] = []
+        for item in queue.items:
+            conversation = self.session.scalar(
+                select(CustomerConversation)
+                .where(CustomerConversation.id == item.conversation_id)
+                .with_for_update()
+            )
+            if conversation is None or conversation.assigned_agent_id is not None:
+                continue
+            ticket = (
+                self.session.get(Ticket, conversation.current_ticket_id)
+                if conversation.current_ticket_id
+                else None
+            )
+            risk_level = ticket.risk_level if ticket else "R1"
+            required_skill = _required_skill(ticket)
+            candidate_details: list[dict[str, Any]] = []
+            for candidate in online:
+                candidate_load = loads.get(candidate.agent_id, 0)
+                excluded_reasons: list[str] = []
+                if candidate_load >= candidate.max_conversations:
+                    excluded_reasons.append(
+                        f"并发已满 {candidate_load}/"
+                        f"{candidate.max_conversations}"
+                    )
+                if (
+                    _risk_rank(candidate.risk_clearance)
+                    < _risk_rank(risk_level)
+                ):
+                    excluded_reasons.append(
+                        f"风险权限 {candidate.risk_clearance} "
+                        f"低于工单 {risk_level}"
+                    )
+                if (
+                    candidate.skills
+                    and required_skill is not None
+                    and required_skill not in candidate.skills
+                ):
+                    excluded_reasons.append(
+                        f"技能不匹配，需要 {required_skill}"
+                    )
+                candidate_details.append(
+                    {
+                        "agent_id": candidate.agent_id,
+                        "eligible": not excluded_reasons,
+                        "excluded_reasons": excluded_reasons,
+                        "load": candidate_load,
+                        "max_conversations": candidate.max_conversations,
+                        "risk_clearance": candidate.risk_clearance,
+                        "skills": candidate.skills,
+                        "load_ratio": round(
+                            candidate_load
+                            / max(candidate.max_conversations, 1),
+                            4,
+                        ),
+                        "selected": False,
+                    }
+                )
+            available = [
+                agent
+                for agent in online
+                if loads.get(agent.agent_id, 0) < agent.max_conversations
+                and _risk_rank(agent.risk_clearance) >= _risk_rank(risk_level)
+                and (
+                    not agent.skills
+                    or required_skill is None
+                    or required_skill in agent.skills
+                )
+            ]
+            if not available:
+                continue
+            agent = min(
+                available,
+                key=lambda candidate: (
+                    0
+                    if risk_level in {"R2", "R3"}
+                    and candidate.actor_role in {"supervisor", "admin"}
+                    else 1,
+                    (
+                        loads.get(candidate.agent_id, 0)
+                        / max(candidate.max_conversations, 1)
+                    ),
+                    _as_utc(candidate.last_seen_at),
+                ),
+            )
+            conversation.assigned_agent_id = agent.agent_id
+            conversation.assigned_at = datetime.now(UTC)
+            conversation.version += 1
+            loads[agent.agent_id] = loads.get(agent.agent_id, 0) + 1
+            for candidate_detail in candidate_details:
+                candidate_detail["selected"] = (
+                    candidate_detail["agent_id"] == agent.agent_id
+                )
+            candidate_details.sort(
+                key=lambda candidate_detail: (
+                    bool(candidate_detail["selected"]),
+                    bool(candidate_detail["eligible"]),
+                    -float(candidate_detail["load_ratio"]),
+                ),
+                reverse=True,
+            )
+            reason_parts = [
+                (
+                    f"技能匹配“{required_skill}”"
+                    if required_skill
+                    else "当前工单未限定专用技能"
+                ),
+                (
+                    f"风险权限 {agent.risk_clearance} "
+                    f"覆盖 {risk_level}"
+                ),
+                (
+                    f"当前负载 {loads[agent.agent_id] - 1}/"
+                    f"{agent.max_conversations}"
+                ),
+            ]
+            if (
+                risk_level in {"R2", "R3"}
+                and agent.actor_role in {"supervisor", "admin"}
+            ):
+                reason_parts.append("高风险会话优先交给主管")
+            assignments.append(
+                AssignmentResultItem(
+                    conversation_id=conversation.id,
+                    agent_id=agent.agent_id,
+                    priority=item.priority,
+                    reason="；".join(reason_parts) + "。",
+                    candidates=candidate_details,
+                )
+            )
+        self.session.commit()
+        return AssignmentRunResult(
+            assignments=assignments,
+            assigned_count=len(assignments),
+            unassigned_count=self.assignment_queue(business_unit_id).total,
+        )
+
+    def alerts(self, *, business_unit_id: str | None = None) -> CustomerServiceAlertList:
+        now = datetime.now(UTC)
+        statement = (
+            select(CustomerConversation, Ticket)
+            .outerjoin(Ticket, Ticket.id == CustomerConversation.current_ticket_id)
+            .where(CustomerConversation.status == "ACTIVE")
+        )
+        if business_unit_id:
+            statement = statement.where(
+                CustomerConversation.business_unit_id == business_unit_id
+            )
+        rows = self.session.execute(statement).all()
+        items: list[CustomerServiceAlertItem] = []
+        for conversation, ticket in rows:
+            last_message = self.session.scalar(
+                select(CustomerMessage)
+                .where(CustomerMessage.conversation_id == conversation.id)
+                .order_by(CustomerMessage.sequence.desc())
+                .limit(1)
+            )
+            if last_message is not None and last_message.role != "BUYER":
+                continue
+            priority = ticket.priority if ticket and ticket.priority else "P3"
+            sla_seconds = self.SLA_SECONDS.get(priority, 600)
+            waiting_from = (
+                last_message.created_at
+                if last_message is not None
+                else conversation.created_at
+            )
+            waiting_seconds = max(
+                0,
+                round((now - _as_utc(waiting_from)).total_seconds()),
+            )
+            if waiting_seconds < sla_seconds:
+                continue
+            items.append(
+                CustomerServiceAlertItem(
+                    conversation_id=conversation.id,
+                    requester_ref=conversation.requester_ref,
+                    assigned_agent_id=conversation.assigned_agent_id,
+                    priority=priority,
+                    waiting_seconds=waiting_seconds,
+                    sla_seconds=sla_seconds,
+                    overdue_seconds=waiting_seconds - sla_seconds,
+                )
+            )
+        items.sort(
+            key=lambda item: (-item.overdue_seconds, item.conversation_id)
+        )
+        return CustomerServiceAlertList(items=items, total=len(items))
+
+    def escalate_overdue_conversations(
+        self,
+        *,
+        business_unit_id: str | None = None,
+    ) -> int:
+        escalated = 0
+        for alert in self.alerts(
+            business_unit_id=business_unit_id
+        ).items:
+            if alert.overdue_seconds < 300 or alert.priority in {"P0", "P1"}:
+                continue
+            target = "P1" if alert.overdue_seconds >= 900 else "P2"
+            conversation = self.session.get(
+                CustomerConversation, alert.conversation_id
+            )
+            if conversation is None:
+                continue
+            ticket = self.session.scalar(
+                select(Ticket).where(
+                    Ticket.id == conversation.current_ticket_id
+                )
+            )
+            if ticket is None or ticket.priority == target:
+                continue
+            previous = ticket.priority
+            ticket.priority = target
+            record_audit(
+                self.session,
+                correlation_id=f"sla-escalation:{alert.conversation_id}",
+                event_type="customer_service.sla.escalated",
+                actor_type="SERVICE",
+                actor_id="system.customer_service_sla",
+                resource_type="customer_conversation",
+                resource_id=alert.conversation_id,
+                action="escalate_priority",
+                decision="EXECUTED",
+                payload={
+                    "previous_priority": previous,
+                    "new_priority": target,
+                    "overdue_seconds": alert.overdue_seconds,
+                },
+            )
+            escalated += 1
+        self.session.commit()
+        return escalated
+
+    def sync_supervisor_notifications(
+        self,
+        business_unit_id: str | None = None,
+    ) -> int:
+        created = 0
+        for alert in self.alerts(business_unit_id=business_unit_id).items:
+            if alert.priority not in {"P0", "P1"}:
+                continue
+            existing = self.session.scalar(
+                select(CustomerServiceNotification).where(
+                    CustomerServiceNotification.conversation_id
+                    == alert.conversation_id,
+                    CustomerServiceNotification.status == "OPEN",
+                )
+            )
+            if existing is not None:
+                continue
+            conversation = self.session.get(
+                CustomerConversation, alert.conversation_id
+            )
+            if conversation is None:
+                continue
+            self.session.add(
+                CustomerServiceNotification(
+                    business_unit_id=conversation.business_unit_id,
+                    conversation_id=conversation.id,
+                    severity=alert.priority,
+                    title=f"{alert.priority} 客服会话超时",
+                    message=(
+                        f"买家 {alert.requester_ref} 已等待 "
+                        f"{alert.waiting_seconds} 秒，超过 SLA "
+                        f"{alert.overdue_seconds} 秒。"
+                    ),
+                )
+            )
+            created += 1
+        self.session.commit()
+        return created
+
+    def notifications(self, *, business_unit_id: str) -> CustomerServiceNotificationList:
+        items = list(
+            self.session.scalars(
+                select(CustomerServiceNotification)
+                .where(
+                    CustomerServiceNotification.business_unit_id == business_unit_id
+                )
+                .order_by(CustomerServiceNotification.created_at.desc())
+                .limit(100)
+            ).all()
+        )
+        return CustomerServiceNotificationList(
+            items=[self.notification_view(item) for item in items],
+            total=len(items),
+        )
+
+    def metrics(self, *, business_unit_id: str) -> CustomerServiceMetrics:
+        conversations = list(
+            self.session.scalars(
+                select(CustomerConversation).where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    CustomerConversation.status != "ARCHIVED",
+                )
+            ).all()
+        )
+        active = [item for item in conversations if item.status == "ACTIVE"]
+        alerts = self.alerts(business_unit_id=business_unit_id)
+        notifications = self.notifications(business_unit_id=business_unit_id)
+        now = datetime.now(UTC)
+        waiting = [
+            max(0, round((now - _as_utc(item.created_at)).total_seconds()))
+            for item in active
+        ]
+        total_messages = self.session.scalar(
+            select(func.count())
+            .select_from(CustomerMessage)
+            .join(
+                CustomerConversation,
+                CustomerConversation.id == CustomerMessage.conversation_id,
+            )
+            .where(
+                CustomerConversation.business_unit_id == business_unit_id,
+                CustomerConversation.status != "ARCHIVED",
+            )
+        ) or 0
+        ticket_ids = [
+            item.current_ticket_id
+            for item in active
+            if item.current_ticket_id is not None
+        ]
+        ticket_rows = (
+            self.session.execute(
+                select(Ticket.id, Ticket.risk_level).where(
+                    Ticket.id.in_(ticket_ids)
+                )
+            ).all()
+            if ticket_ids
+            else []
+        )
+        risk_by_ticket = {
+            ticket_id: risk_level
+            for ticket_id, risk_level in ticket_rows
+        }
+        risk_counts = {"R0": 0, "R1": 0, "R2": 0, "R3": 0, "UNKNOWN": 0}
+        for item in active:
+            risk_level = (
+                risk_by_ticket.get(item.current_ticket_id)
+                if item.current_ticket_id is not None
+                else None
+            )
+            risk_counts[
+                risk_level if risk_level in risk_counts else "UNKNOWN"
+            ] += 1
+        assignment_queue = self.assignment_queue(business_unit_id)
+        return CustomerServiceMetrics(
+            total_conversations=len(conversations),
+            active_conversations=len(active),
+            unassigned_conversations=assignment_queue.total,
+            online_agents=self.presence(business_unit_id).online_count,
+            sla_overdue=alerts.total,
+            open_supervisor_notifications=sum(
+                item.status == "OPEN" for item in notifications.items
+            ),
+            average_waiting_seconds=(
+                round(sum(waiting) / len(waiting)) if waiting else 0
+            ),
+            total_messages=int(total_messages),
+            risk_counts=risk_counts,
+        )
+
+    def history_metrics(
+        self,
+        *,
+        business_unit_id: str,
+        days: int,
+    ) -> CustomerServiceHistoryMetrics:
+        now = datetime.now(UTC)
+        end_day = now.date()
+        start_day = end_day - timedelta(days=days - 1)
+        start = datetime.combine(start_day, time.min, tzinfo=UTC)
+        conversations = list(
+            self.session.scalars(
+                select(CustomerConversation).where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    CustomerConversation.created_at >= start,
+                    CustomerConversation.status != "ARCHIVED",
+                )
+            ).all()
+        )
+        messages = list(
+            self.session.scalars(
+                select(CustomerMessage)
+                .join(
+                    CustomerConversation,
+                    CustomerConversation.id == CustomerMessage.conversation_id,
+                )
+                .where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    CustomerMessage.created_at >= start,
+                    CustomerConversation.status != "ARCHIVED",
+                )
+            ).all()
+        )
+        by_conversation: dict[UUID, list[CustomerMessage]] = {}
+        for message in messages:
+            by_conversation.setdefault(message.conversation_id, []).append(message)
+        response_times: list[int] = []
+        daily: dict[str, dict[str, object]] = {}
+        for index in range(days):
+            key = (start_day + timedelta(days=index)).isoformat()
+            daily[key] = {
+                "conversations_created": 0,
+                "messages": 0,
+                "buyer_messages": 0,
+                "assistant_messages": 0,
+                "first_responses": [],
+            }
+        for conversation in conversations:
+            key = _as_utc(conversation.created_at).date().isoformat()
+            if key in daily:
+                daily[key]["conversations_created"] = _integer_value(
+                    daily[key]["conversations_created"]
+                ) + 1
+            ordered = sorted(
+                by_conversation.get(conversation.id, []),
+                key=lambda item: item.sequence,
+            )
+            buyer = next((item for item in ordered if item.role == "BUYER"), None)
+            assistant = next(
+                (
+                    item
+                    for item in ordered
+                    if item.role == "ASSISTANT"
+                    and buyer is not None
+                    and item.sequence > buyer.sequence
+                ),
+                None,
+            )
+            if buyer and assistant and key in daily:
+                seconds = max(
+                    0,
+                    round(
+                        (
+                            _as_utc(assistant.created_at)
+                            - _as_utc(buyer.created_at)
+                        ).total_seconds()
+                    ),
+                )
+                response_times.append(seconds)
+                cast_list = daily[key]["first_responses"]
+                if isinstance(cast_list, list):
+                    cast_list.append(seconds)
+        for message in messages:
+            key = _as_utc(message.created_at).date().isoformat()
+            if key not in daily:
+                continue
+            daily[key]["messages"] = _integer_value(daily[key]["messages"]) + 1
+            if message.role == "BUYER":
+                daily[key]["buyer_messages"] = (
+                    _integer_value(daily[key]["buyer_messages"]) + 1
+                )
+            elif message.role == "ASSISTANT":
+                daily[key]["assistant_messages"] = (
+                    _integer_value(daily[key]["assistant_messages"]) + 1
+                )
+        daily_items = []
+        for key, values in daily.items():
+            responses = values["first_responses"]
+            daily_items.append(
+                CustomerDailyMetric(
+                    date=key,
+                    conversations_created=_integer_value(
+                        values["conversations_created"]
+                    ),
+                    messages=_integer_value(values["messages"]),
+                    buyer_messages=_integer_value(values["buyer_messages"]),
+                    assistant_messages=_integer_value(
+                        values["assistant_messages"]
+                    ),
+                    average_first_response_seconds=(
+                        round(sum(responses) / len(responses))
+                        if isinstance(responses, list) and responses
+                        else None
+                    ),
+                )
+            )
+        active = [item for item in conversations if item.status == "ACTIVE"]
+        unassigned = sum(item.assigned_agent_id is None for item in active)
+        return CustomerServiceHistoryMetrics(
+            days=days,
+            conversations_created=len(conversations),
+            messages=len(messages),
+            unassigned_rate=round(unassigned / len(active), 4) if active else 0.0,
+            average_first_response_seconds=(
+                round(sum(response_times) / len(response_times))
+                if response_times
+                else None
+            ),
+            daily=daily_items,
+        )
+
+    def get_notification(
+        self,
+        notification_id: UUID,
+    ) -> CustomerServiceNotification:
+        notification = self.session.get(CustomerServiceNotification, notification_id)
+        if notification is None:
+            raise ApiProblem(
+                status_code=404,
+                code="NOTIFICATION_NOT_FOUND",
+                title="Notification not found",
+                detail=f"Notification {notification_id} does not exist.",
+            )
+        return notification
+
+    def acknowledge_notification(
+        self,
+        notification_id: UUID,
+        *,
+        actor_id: str,
+    ) -> CustomerServiceNotification:
+        notification = self.get_notification(notification_id)
+        notification.status = "ACKNOWLEDGED"
+        notification.acknowledged_by = actor_id
+        notification.acknowledged_at = datetime.now(UTC)
+        self.session.commit()
+        self.session.refresh(notification)
+        return notification
+
+    def reassign(
+        self,
+        conversation_id: UUID,
+        payload: ConversationReassignRequest,
+        *,
+        supervisor_id: str,
+        correlation_id: str,
+    ) -> CustomerConversation:
+        conversation = self.session.scalar(
+            select(CustomerConversation)
+            .where(CustomerConversation.id == conversation_id)
+            .with_for_update()
+        )
+        if conversation is None:
+            return self.get(conversation_id)
+        if conversation.version != payload.expected_version:
+            raise ApiProblem(
+                status_code=409,
+                code="CONVERSATION_VERSION_CONFLICT",
+                title="Conversation was updated",
+                detail="Refresh the conversation before reassignment.",
+            )
+        previous_agent = conversation.assigned_agent_id
+        conversation.assigned_agent_id = payload.agent_id
+        conversation.assigned_at = datetime.now(UTC)
+        conversation.version += 1
+        record_audit(
+            self.session,
+            correlation_id=correlation_id,
+            event_type="customer_service.conversation.reassigned",
+            actor_type="USER",
+            actor_id=supervisor_id,
+            resource_type="customer_conversation",
+            resource_id=conversation.id,
+            action="reassign",
+            decision="EXECUTED",
+            reason_code=payload.reason,
+            payload={
+                "previous_agent_id": previous_agent,
+                "new_agent_id": payload.agent_id,
+            },
+        )
+        self.session.commit()
+        self.session.refresh(conversation)
+        return conversation
+
+    def notification_view(
+        self, notification: CustomerServiceNotification
+    ) -> CustomerServiceNotificationView:
+        return CustomerServiceNotificationView(
+            id=notification.id,
+            business_unit_id=notification.business_unit_id,
+            conversation_id=notification.conversation_id,
+            severity=notification.severity,
+            title=notification.title,
+            message=notification.message,
+            status=notification.status,
+            acknowledged_by=notification.acknowledged_by,
+            acknowledged_at=notification.acknowledged_at,
+            created_at=notification.created_at,
+        )
+
+    def get(self, conversation_id: UUID) -> CustomerConversation:
+        conversation = self.session.get(CustomerConversation, conversation_id)
+        if conversation is None:
+            raise ApiProblem(
+                status_code=404,
+                code="CONVERSATION_NOT_FOUND",
+                title="Conversation not found",
+                detail=f"Conversation {conversation_id} does not exist.",
+            )
+        return conversation
+
+    def append_buyer_message(
+        self,
+        conversation_id: UUID,
+        payload: CustomerMessageCreate,
+        *,
+        principal: Principal,
+        correlation_id: str,
+    ) -> tuple[CustomerConversation, UUID | None]:
+        conversation = self.session.scalar(
+            select(CustomerConversation)
+            .where(CustomerConversation.id == conversation_id)
+            .with_for_update()
+        )
+        if conversation is None:
+            raise ApiProblem(
+                status_code=404,
+                code="CONVERSATION_NOT_FOUND",
+                title="Conversation not found",
+                detail=f"Conversation {conversation_id} does not exist.",
+            )
+        history = self.messages(conversation.id)
+        enterprise_service = conversation.channel.startswith("enterprise")
+        source_system = (
+            "enterprise_service_desk" if enterprise_service else "ecommerce_demo"
+        )
+        context = "\n".join(
+            f"{'买家' if item.role == 'BUYER' else '客服'}：{item.content}"
+            for item in history[-6:]
+        )
+        body = (
+            f"历史对话：\n{context}\n\n当前问题：\n{payload.content}"
+            if context
+            else payload.content
+        )
+        sequence = self._next_sequence(conversation.id)
+        small_talk_kind = classify_small_talk(payload.content)
+        small_talk_employee = (
+            self.session.get(DigitalEmployee, conversation.employee_id)
+            if conversation.employee_id
+            else None
+        )
+        small_talk_reply = _small_talk_reply(
+            payload.content,
+            enterprise_service=enterprise_service,
+            kind=small_talk_kind,
+            employee=small_talk_employee,
+        )
+        if small_talk_reply is not None:
+            ticket_id = conversation.current_ticket_id
+            buyer_message = CustomerMessage(
+                conversation_id=conversation.id,
+                sequence=sequence,
+                role="BUYER",
+                content=payload.content.strip(),
+                ticket_id=ticket_id,
+                created_by=principal.actor_id,
+            )
+            assistant_message = CustomerMessage(
+                conversation_id=conversation.id,
+                sequence=sequence + 1,
+                role="ASSISTANT",
+                content=small_talk_reply,
+                ticket_id=ticket_id,
+                created_by="digital_employee",
+            )
+            self.session.add_all([buyer_message, assistant_message])
+            self.session.flush()
+            turn = ConversationTurn(
+                conversation_id=conversation.id,
+                ticket_id=ticket_id,
+                sequence=self._next_turn_sequence(conversation.id),
+                status="COMPLETED",
+                stage_label="问候已直接回复",
+                user_message_id=buyer_message.id,
+                assistant_message_id=assistant_message.id,
+                employee_id=conversation.employee_id,
+                intent="small_talk",
+                analysis_json={
+                    "small_talk_kind": small_talk_kind,
+                },
+                response_provider="deterministic",
+                response_model=(
+                    "employee-self-introduction-v1"
+                    if small_talk_kind == "identity"
+                    else "small-talk-v1"
+                ),
+                grounding_status="NOT_REQUIRED",
+                citations_json=[],
+                trace_json=["small_talk_fast_path"],
+                tool_calls_json=[],
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+            )
+            self.session.add(turn)
+            self._update_memory(
+                conversation.id,
+                turn.sequence,
+                payload.content,
+                small_talk_reply,
+            )
+            conversation.status = "ACTIVE"
+            conversation.version += 1
+            record_audit(
+                self.session,
+                correlation_id=correlation_id,
+                event_type="customer_service.small_talk.answered",
+                actor_type="SERVICE",
+                actor_id="digital_employee.small_talk",
+                resource_type="customer_conversation",
+                resource_id=conversation.id,
+                action="answer",
+                decision="EXECUTED",
+                payload={"message": payload.content.strip()},
+            )
+            self.session.commit()
+            self.session.refresh(conversation)
+            return conversation, None
+        existing_ticket = (
+            self.session.get(Ticket, conversation.current_ticket_id)
+            if conversation.current_ticket_id
+            else None
+        )
+        if existing_ticket is not None:
+            ticket = existing_ticket
+            created = True
+            previous_workflow_state = ticket.workflow_state
+            if conversation.service_entry_id is not None:
+                allowed_employee_ids = TicketService(
+                    self.session
+                )._service_entry_employee_ids(
+                    conversation.service_entry_id,
+                    business_unit_id=conversation.business_unit_id,
+                )
+                route_result = DigitalEmployeeRouter(
+                    self.session
+                ).route_text(
+                    business_unit_id=conversation.business_unit_id,
+                    subject=payload.content.strip().splitlines()[0][:120],
+                    body=payload.content.strip(),
+                    channel=conversation.channel,
+                    allowed_employee_ids=allowed_employee_ids,
+                )
+                reason_code = (
+                    route_result.decision.reason_code
+                    if route_result.decision is not None
+                    else "DEFAULT_EMPLOYEE"
+                )
+                current_employee = (
+                    self.session.get(DigitalEmployee, ticket.employee_id)
+                    if ticket.employee_id
+                    else None
+                )
+                preserve_current = (
+                    previous_workflow_state != WorkflowState.COMPLETED
+                    and reason_code
+                    in {
+                        "LOW_CONFIDENCE_DEFAULT",
+                        "NO_MATCH_DEFAULT",
+                    }
+                    and current_employee is not None
+                    and current_employee.status == "ACTIVE"
+                    and allowed_employee_ids is not None
+                    and current_employee.id in allowed_employee_ids
+                )
+                if preserve_current:
+                    if route_result.decision is not None:
+                        self.session.delete(route_result.decision)
+                else:
+                    ticket.employee_id = route_result.employee.id
+                    conversation.employee_id = route_result.employee.id
+                    if route_result.decision is not None:
+                        route_result.decision.ticket_id = ticket.id
+                        route_result.decision.conversation_id = (
+                            conversation.id
+                        )
+                    record_audit(
+                        self.session,
+                        correlation_id=correlation_id,
+                        event_type=(
+                            "customer_service.conversation.rerouted"
+                        ),
+                        actor_type="SERVICE",
+                        actor_id="digital_employee.router",
+                        resource_type="customer_conversation",
+                        resource_id=conversation.id,
+                        action="route",
+                        decision="EXECUTED",
+                        reason_code=reason_code,
+                        payload={
+                            "ticket_id": str(ticket.id),
+                            "previous_workflow_state": (
+                                previous_workflow_state
+                            ),
+                            "employee_id": str(
+                                route_result.employee.id
+                            ),
+                            "employee_key": (
+                                route_result.employee.employee_key
+                            ),
+                        },
+                    )
+            ticket.subject = payload.content.strip().splitlines()[0][:120]
+            ticket.body = body
+            ticket.status = TicketStatus.OPEN
+            ticket.workflow_state = WorkflowState.RECEIVED
+            ticket.version += 1
+        else:
+            ticket, created, _event_id = TicketService(self.session).create(
+                payload=TicketCreate(
+                    business_unit_id=conversation.business_unit_id,
+                    employee_id=conversation.employee_id,
+                    source=SourceInput(
+                        system=source_system,
+                        channel=conversation.channel,
+                        external_ticket_id=(
+                            f"CONV-{conversation.id}-initial"
+                        ),
+                    ),
+                    requester=RequesterInput(
+                        external_ref=conversation.requester_ref,
+                        customer_tier="standard",
+                    ),
+                    subject=payload.content.strip().splitlines()[0][:120],
+                    body=body,
+                    locale="zh-CN",
+                    attachments=[],
+                    metadata={
+                        "channel": source_system,
+                        **(
+                            {
+                                "service_entry_id": str(
+                                    conversation.service_entry_id
+                                )
+                            }
+                            if conversation.service_entry_id
+                            else {}
+                        ),
+                        **(
+                            {"service_domain": "enterprise"}
+                            if enterprise_service
+                            else {
+                                "category": (
+                                    conversation.category_name
+                                    if conversation.category_name
+                                    else "商品"
+                                )
+                            }
+                        ),
+                        **(
+                            {"product_id": payload.product_id}
+                            if payload.product_id
+                            else {}
+                        ),
+                        **({"sku": payload.sku} if payload.sku else {}),
+                    },
+                ),
+                idempotency_key=(
+                    f"conversation:{conversation.id}:initial"
+                ),
+                principal=principal,
+                correlation_id=correlation_id,
+                enqueue=False,
+            )
+        if created:
+            buyer_message = CustomerMessage(
+                conversation_id=conversation.id,
+                sequence=sequence,
+                role="BUYER",
+                content=payload.content.strip(),
+                ticket_id=ticket.id,
+                created_by=principal.actor_id,
+            )
+            self.session.add(buyer_message)
+            self.session.flush()
+            employee = (
+                self.session.get(DigitalEmployee, ticket.employee_id)
+                if ticket.employee_id
+                else None
+            )
+            turn = ConversationTurn(
+                conversation_id=conversation.id,
+                ticket_id=ticket.id,
+                sequence=self._next_turn_sequence(conversation.id),
+                status="RUNNING",
+                stage_label="正在识别问题",
+                user_message_id=buyer_message.id,
+                employee_id=ticket.employee_id,
+                employee_config_revision=(
+                    employee.config_revision if employee else None
+                ),
+                analysis_json={},
+                citations_json=[],
+                trace_json=[],
+                tool_calls_json=[],
+                started_at=datetime.now(UTC),
+            )
+            self.session.add(turn)
+            conversation.current_ticket_id = ticket.id
+            if conversation.employee_id is None:
+                conversation.employee_id = ticket.employee_id
+            conversation.status = "ACTIVE"
+            from ticket_agent.digital_employees.models import (
+                DigitalEmployeeRouteDecision,
+            )
+
+            route_decision = self.session.scalar(
+                select(DigitalEmployeeRouteDecision).where(
+                    DigitalEmployeeRouteDecision.ticket_id == ticket.id
+                )
+            )
+            if route_decision is not None:
+                route_decision.conversation_id = conversation.id
+            self.session.commit()
+            self.session.refresh(conversation)
+            return conversation, turn.id
+        return conversation, None
+
+    def append_assistant_reply(self, ticket_id: UUID, content: str) -> None:
+        buyer_message = self.session.scalar(
+            select(CustomerMessage)
+            .where(CustomerMessage.ticket_id == ticket_id, CustomerMessage.role == "BUYER")
+            .order_by(CustomerMessage.sequence)
+            .limit(1)
+        )
+        if buyer_message is None:
+            return
+        conversation = self.session.scalar(
+            select(CustomerConversation)
+            .where(CustomerConversation.id == buyer_message.conversation_id)
+            .with_for_update()
+        )
+        if conversation is None:
+            return
+        self.session.add(
+            CustomerMessage(
+                conversation_id=conversation.id,
+                sequence=self._next_sequence(conversation.id),
+                role="ASSISTANT",
+                content=content,
+                ticket_id=ticket_id,
+                created_by="digital_employee",
+            )
+        )
+        self.session.commit()
+
+    def messages(self, conversation_id: UUID) -> list[CustomerMessage]:
+        return list(
+            self.session.scalars(
+                select(CustomerMessage)
+                .where(CustomerMessage.conversation_id == conversation_id)
+                .order_by(CustomerMessage.sequence)
+            ).all()
+        )
+
+    def list(self, business_unit_id: str) -> CustomerConversationList:
+        items = list(
+            self.session.scalars(
+                select(CustomerConversation)
+                .where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    CustomerConversation.status != "ARCHIVED",
+                )
+                .order_by(CustomerConversation.updated_at.desc())
+                .limit(50)
+            ).all()
+        )
+        total = self.session.scalar(
+            select(func.count())
+            .select_from(CustomerConversation)
+            .where(
+                CustomerConversation.business_unit_id == business_unit_id,
+                CustomerConversation.status != "ARCHIVED",
+            )
+        ) or 0
+        return CustomerConversationList(
+            items=[self.view(item) for item in items],
+            total=total,
+        )
+
+    def archive_test_conversation(
+        self,
+        conversation_id: UUID,
+    ) -> CustomerConversation:
+        conversation = self.get(conversation_id)
+        if conversation.status != "ARCHIVED":
+            conversation.status = "ARCHIVED"
+            conversation.assigned_agent_id = None
+            conversation.assigned_at = None
+            conversation.version += 1
+            self.session.commit()
+            self.session.refresh(conversation)
+        return conversation
+
+    def archive_test_conversations(
+        self,
+        *,
+        business_unit_id: str,
+        requester_prefix: str,
+    ) -> int:
+        conversations = list(
+            self.session.scalars(
+                select(CustomerConversation).where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    CustomerConversation.requester_ref.like(
+                        f"{requester_prefix}%"
+                    ),
+                    CustomerConversation.status != "ARCHIVED",
+                )
+            ).all()
+        )
+        for conversation in conversations:
+            conversation.status = "ARCHIVED"
+            conversation.assigned_agent_id = None
+            conversation.assigned_at = None
+            conversation.version += 1
+        self.session.commit()
+        return len(conversations)
+
+    def takeover(
+        self,
+        conversation_id: UUID,
+        *,
+        expected_version: int,
+        agent_id: str,
+    ) -> CustomerConversation:
+        conversation = self.session.scalar(
+            select(CustomerConversation)
+            .where(CustomerConversation.id == conversation_id)
+            .with_for_update()
+        )
+        if conversation is None:
+            return self.get(conversation_id)
+        if conversation.version != expected_version:
+            raise ApiProblem(
+                status_code=409,
+                code="CONVERSATION_VERSION_CONFLICT",
+                title="Conversation was updated",
+                detail="Refresh the conversation before taking it over.",
+            )
+        if (
+            conversation.assigned_agent_id
+            and conversation.assigned_agent_id != agent_id
+        ):
+            raise ApiProblem(
+                status_code=409,
+                code="CONVERSATION_ALREADY_ASSIGNED",
+                title="Conversation already assigned",
+                detail=f"Conversation is assigned to {conversation.assigned_agent_id}.",
+            )
+        assigned_count = self.session.scalar(
+            select(func.count())
+            .select_from(CustomerConversation)
+            .where(
+                CustomerConversation.assigned_agent_id == agent_id,
+                CustomerConversation.status == "ACTIVE",
+                CustomerConversation.business_unit_id
+                == conversation.business_unit_id,
+            )
+        ) or 0
+        presence = self.session.scalar(
+            select(AgentPresence).where(AgentPresence.agent_id == agent_id)
+        )
+        capacity = (
+            presence.max_conversations
+            if presence is not None
+            else self.MAX_AGENT_CONVERSATIONS
+        )
+        if assigned_count >= capacity:
+            raise ApiProblem(
+                status_code=409,
+                code="AGENT_CAPACITY_REACHED",
+                title="Agent capacity reached",
+                detail=(
+                    f"An agent can handle at most "
+                    f"{capacity} active conversations."
+                ),
+            )
+        conversation.assigned_agent_id = agent_id
+        conversation.assigned_at = datetime.now(UTC)
+        conversation.version += 1
+        self.session.commit()
+        self.session.refresh(conversation)
+        return conversation
+
+    def release(self, conversation_id: UUID, *, agent_id: str) -> CustomerConversation:
+        conversation = self.session.scalar(
+            select(CustomerConversation)
+            .where(CustomerConversation.id == conversation_id)
+            .with_for_update()
+        )
+        if conversation is None:
+            return self.get(conversation_id)
+        if conversation.assigned_agent_id not in {None, agent_id}:
+            raise ApiProblem(
+                status_code=409,
+                code="CONVERSATION_ASSIGNED_TO_OTHER_AGENT",
+                title="Conversation assigned to another agent",
+                detail="Only the assigned agent can release this conversation.",
+            )
+        conversation.assigned_agent_id = None
+        conversation.assigned_at = None
+        conversation.version += 1
+        self.session.commit()
+        self.session.refresh(conversation)
+        return conversation
+
+    def send_manual_reply(
+        self,
+        conversation_id: UUID,
+        payload: CustomerManualReplyCreate,
+        *,
+        agent_id: str,
+        correlation_id: str,
+    ) -> CustomerConversation:
+        conversation = self.session.scalar(
+            select(CustomerConversation)
+            .where(CustomerConversation.id == conversation_id)
+            .with_for_update()
+        )
+        if conversation is None:
+            return self.get(conversation_id)
+        if conversation.assigned_agent_id != agent_id:
+            raise ApiProblem(
+                status_code=409,
+                code="CONVERSATION_NOT_ASSIGNED_TO_AGENT",
+                title="Conversation is not assigned to this agent",
+                detail="Take over the conversation before sending a manual reply.",
+            )
+        ticket = (
+            self.session.scalar(
+                select(Ticket)
+                .where(Ticket.id == conversation.current_ticket_id)
+                .with_for_update()
+            )
+            if conversation.current_ticket_id
+            else None
+        )
+        if ticket is None:
+            raise ApiProblem(
+                status_code=409,
+                code="CONVERSATION_TICKET_NOT_FOUND",
+                title="Conversation has no current ticket",
+                detail="A manual reply requires an active conversation ticket.",
+            )
+        if ticket.workflow_state not in {
+            WorkflowState.PENDING_REVIEW,
+            WorkflowState.NEEDS_HUMAN,
+            WorkflowState.TAKEN_OVER,
+        }:
+            raise ApiProblem(
+                status_code=409,
+                code="CONVERSATION_NOT_AWAITING_HUMAN",
+                title="Conversation is not awaiting human handling",
+                detail="The current ticket has already completed or is syncing.",
+            )
+        content = payload.content.strip()
+        reply_sequence = self._next_sequence(conversation.id)
+        self.session.add(
+            CustomerMessage(
+                conversation_id=conversation.id,
+                sequence=reply_sequence,
+                role="ASSISTANT",
+                content=content,
+                ticket_id=ticket.id,
+                created_by=agent_id,
+            )
+        )
+        self.session.flush()
+        conversation.version += 1
+        if payload.resolve:
+            previous_state = ticket.workflow_state
+            ticket.workflow_state = WorkflowState.COMPLETED
+            ticket.status = TicketStatus.RESOLVED
+            ticket.needs_human = False
+            ticket.human_reason = None
+            ticket.version += 1
+            conversation.assigned_agent_id = None
+            conversation.assigned_at = None
+            self.session.add(
+                CustomerMessage(
+                    conversation_id=conversation.id,
+                    sequence=reply_sequence + 1,
+                    role="ASSISTANT",
+                    content=(
+                        "人工处理已完成，会话已交还数字员工。"
+                        "后续问题将继续由数字员工接待。"
+                    ),
+                    ticket_id=ticket.id,
+                    created_by="digital_employee",
+                )
+            )
+            self.session.add(
+                WorkflowTransition(
+                    ticket_id=ticket.id,
+                    from_state=previous_state,
+                    to_state=WorkflowState.COMPLETED,
+                    reason_code="MANUAL_RESOLUTION",
+                    actor_type="USER",
+                    actor_id=agent_id,
+                )
+            )
+        record_audit(
+            self.session,
+            correlation_id=correlation_id,
+            event_type="customer_service.manual_reply",
+            actor_type="USER",
+            actor_id=agent_id,
+            resource_type="customer_conversation",
+            resource_id=conversation.id,
+            action="manual_reply",
+            decision="EXECUTED",
+            payload={
+                "ticket_id": str(ticket.id),
+                "resolved": payload.resolve,
+                "content_length": len(content),
+            },
+        )
+        self.session.commit()
+        self.session.refresh(conversation)
+        return conversation
+
+    def view(self, conversation: CustomerConversation) -> CustomerConversationView:
+        ticket = (
+            self.session.get(Ticket, conversation.current_ticket_id)
+            if conversation.current_ticket_id
+            else None
+        )
+        current_turn = self.session.scalar(
+            select(ConversationTurn)
+            .where(ConversationTurn.conversation_id == conversation.id)
+            .order_by(ConversationTurn.sequence.desc())
+            .limit(1)
+        )
+        return CustomerConversationView(
+            id=conversation.id,
+            business_unit_id=conversation.business_unit_id,
+            service_entry_id=conversation.service_entry_id,
+            employee_id=conversation.employee_id,
+            requester_ref=conversation.requester_ref,
+            category_name=conversation.category_name,
+            category_profile_id=conversation.category_profile_id,
+            channel=conversation.channel,
+            status=conversation.status,
+            current_ticket_id=conversation.current_ticket_id,
+            current_workflow_state=ticket.workflow_state if ticket else None,
+            current_ticket_status=ticket.status if ticket else None,
+            current_risk_level=ticket.risk_level if ticket else None,
+            current_priority=ticket.priority if ticket else None,
+            current_needs_human=ticket.needs_human if ticket else None,
+            assigned_agent_id=conversation.assigned_agent_id,
+            assigned_at=conversation.assigned_at,
+            version=conversation.version,
+            messages=[self.message_view(message) for message in self.messages(conversation.id)],
+            current_turn=(
+                self.turn_view(current_turn)
+                if current_turn is not None
+                else None
+            ),
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+        )
+
+    def message_view(self, message: CustomerMessage) -> CustomerMessageView:
+        return CustomerMessageView(
+            id=message.id,
+            sequence=message.sequence,
+            role=message.role,
+            content=message.content,
+            ticket_id=message.ticket_id,
+            created_by=message.created_by,
+            created_at=message.created_at,
+        )
+
+    def turn_view(self, turn: ConversationTurn) -> ConversationTurnView:
+        return ConversationTurnView(
+            id=turn.id,
+            conversation_id=turn.conversation_id,
+            ticket_id=turn.ticket_id,
+            sequence=turn.sequence,
+            status=turn.status,
+            stage_label=turn.stage_label,
+            employee_id=turn.employee_id,
+            employee_config_revision=turn.employee_config_revision,
+            intent=turn.intent,
+            analysis=turn.analysis_json,
+            response_provider=turn.response_provider,
+            response_model=turn.response_model,
+            grounding_status=turn.grounding_status,
+            citations=turn.citations_json,
+            trace=turn.trace_json,
+            tool_calls=turn.tool_calls_json,
+            error_code=turn.error_code,
+            error_message=turn.error_message,
+            started_at=turn.started_at,
+            completed_at=turn.completed_at,
+            created_at=turn.created_at,
+        )
+
+    def append_assistant_message(
+        self,
+        *,
+        conversation_id: UUID,
+        ticket_id: UUID | None,
+        content: str,
+        created_by: str = "digital_employee",
+    ) -> CustomerMessage:
+        message = CustomerMessage(
+            conversation_id=conversation_id,
+            sequence=self._next_sequence(conversation_id),
+            role="ASSISTANT",
+            content=content,
+            ticket_id=ticket_id,
+            created_by=created_by,
+        )
+        self.session.add(message)
+        self.session.flush()
+        return message
+
+    def complete_turn(
+        self,
+        *,
+        turn_id: UUID,
+        assistant_message: CustomerMessage,
+        response_provider: str,
+        response_model: str,
+        grounding_status: str,
+        citations: Sequence[dict[str, Any]],
+        trace: Sequence[str],
+        tool_calls: Sequence[dict[str, Any]],
+        intent: str | None,
+        analysis: dict[str, Any],
+    ) -> ConversationTurn:
+        turn = self.session.get(ConversationTurn, turn_id)
+        if turn is None:
+            raise ApiProblem(
+                status_code=404,
+                code="CONVERSATION_TURN_NOT_FOUND",
+                title="Conversation turn not found",
+                detail=f"Conversation turn {turn_id} does not exist.",
+            )
+        turn.status = "COMPLETED"
+        turn.stage_label = "回答已完成"
+        turn.assistant_message_id = assistant_message.id
+        turn.response_provider = response_provider
+        turn.response_model = response_model
+        turn.grounding_status = grounding_status
+        turn.citations_json = jsonable_encoder(list(citations))
+        turn.trace_json = list(trace)
+        turn.tool_calls_json = jsonable_encoder(list(tool_calls))
+        turn.intent = intent
+        turn.analysis_json = analysis
+        turn.completed_at = datetime.now(UTC)
+        user_message = self.session.get(
+            CustomerMessage,
+            turn.user_message_id,
+        )
+        self._update_memory(
+            turn.conversation_id,
+            turn.sequence,
+            user_message.content if user_message else "",
+            assistant_message.content,
+        )
+        self.session.commit()
+        return turn
+
+    def _update_memory(
+        self,
+        conversation_id: UUID,
+        turn_sequence: int,
+        user_content: str,
+        assistant_content: str,
+    ) -> None:
+        memory = self.session.get(ConversationMemory, conversation_id)
+        if memory is None:
+            memory = ConversationMemory(
+                conversation_id=conversation_id,
+                summary="",
+                slots_json={},
+                last_turn_sequence=0,
+            )
+            self.session.add(memory)
+        line = (
+            f"第 {turn_sequence} 轮 用户：{user_content.strip()[:500]} "
+            f"客服：{assistant_content.strip()[:800]}"
+        )
+        memory.summary = f"{memory.summary}\n{line}".strip()[-4000:]
+        slots = dict(memory.slots_json)
+        repository = repository_name(user_content)
+        if repository is None:
+            for previous_line in reversed(memory.summary.splitlines()):
+                repository = repository_name(previous_line)
+                if repository is not None:
+                    break
+        if repository is not None and repository.casefold() != "owner/repo":
+            slots["repository"] = repository
+        order_id = _first_match(
+            r"(\b[A-Z]{2,}(?:-[A-Z0-9]+){1,}\b)",
+            user_content,
+        )
+        if order_id is not None:
+            slots["order_id"] = order_id
+        memory.slots_json = slots
+        memory.last_turn_sequence = turn_sequence
+
+    def _next_sequence(self, conversation_id: UUID) -> int:
+        current = self.session.scalar(
+            select(func.max(CustomerMessage.sequence)).where(
+                CustomerMessage.conversation_id == conversation_id
+            )
+        ) or 0
+        return int(current) + 1
+
+    def _next_turn_sequence(self, conversation_id: UUID) -> int:
+        current = self.session.scalar(
+            select(func.max(ConversationTurn.sequence)).where(
+                ConversationTurn.conversation_id == conversation_id
+            )
+        ) or 0
+        return int(current) + 1
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _first_match(pattern: str, text: str) -> str | None:
+    match = re.search(pattern, text)
+    return match.group(1) if match else None
+
+
+def _integer_value(value: object) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def _risk_rank(level: str | None) -> int:
+    return {"R0": 0, "R1": 1, "R2": 2, "R3": 3}.get(level or "R1", 1)
+
+
+def _required_skill(ticket: Ticket | None) -> str | None:
+    if ticket is None:
+        return None
+    category = ticket.category_primary
+    if category in {"ecommerce_presales", "ecommerce_aftersales"}:
+        return category
+    if category in {"transaction_dispute", "complaint_escalation"}:
+        return "ecommerce_aftersales"
+    if ticket.subject and any(
+        keyword in ticket.subject.lower()
+        for keyword in ("物流", "快递", "运单", "发货")
+    ):
+        return "logistics"
+    return None
+
+
+def _small_talk_reply(
+    content: str,
+    *,
+    enterprise_service: bool,
+    kind: SmallTalkKind | None,
+    employee: DigitalEmployee | None,
+) -> str | None:
+    del content
+    if kind is None:
+        return None
+    if kind == "thanks":
+        return "不客气，还有其他问题可以继续问我。"
+    if kind == "farewell":
+        return "再见，有需要随时回来。"
+    if kind == "clarification":
+        return (
+            "可以。请说明你遇到的具体问题、涉及的对象和期望结果；"
+            "如果是研发仓库问题，请提供 owner/repo 格式的公开仓库。"
+        )
+    return _employee_introduction(
+        employee=employee,
+        enterprise_service=enterprise_service,
+    )
+
+
+def _employee_introduction(
+    *,
+    employee: DigitalEmployee | None,
+    enterprise_service: bool,
+) -> str:
+    if employee is not None:
+        employee_text = (
+            f"{employee.name} {employee.employee_key} "
+            f"{employee.template_code or ''}"
+        ).casefold()
+        capabilities = employee.manifest_json.get("capabilities", [])
+        capability_text = "、".join(
+            str(item)
+            for item in capabilities
+            if isinstance(item, str) and item.strip()
+        )
+        if any(term in employee_text for term in ("研发", "developer")):
+            return (
+                f"我是{employee.name}。我可以查询公开 GitHub 仓库的文档结构、"
+                "模块职责和依赖关系；回答会说明知识或只读工具依据。"
+                "私有仓库、密钥和访问令牌不会读取。"
+            )
+        if employee.template_code == "enterprise_service_desk":
+            return (
+                f"我是{employee.name}。我可以处理企业制度、账号、IT、流程和"
+                "工单问题；研发仓库文档问题会交给研发支持员工。"
+                "涉及权限、隐私、资金或外部写操作时会转人工确认。"
+            )
+        if capabilities:
+            return (
+                f"我是{employee.name}。我可以处理：{capability_text}。"
+                "我会优先依据已发布知识和获准工具回答；没有依据时会明确说明。"
+            )
+        return (
+            f"我是{employee.name}。请描述你的具体问题，我会先识别问题类型，"
+            "再选择相应知识、工具或人工处理。"
+        )
+    if enterprise_service:
+        return (
+            "我是企业服务台数字员工。你可以咨询制度、账号、IT、流程、"
+            "工单或公开仓库文档问题；我会根据问题自动选择专业员工。"
+        )
+    return "我是数字员工。你可以咨询商品、物流、售后或业务办理问题。"

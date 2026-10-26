@@ -1,0 +1,31 @@
+{
+  "name": "ticket-agent-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "lint": "tsc --noEmit",
+    "test:e2e:install": "PLAYWRIGHT_BROWSERS_PATH=../../.cache/ms-playwright PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright playwright install chromium",
+    "test:e2e": "playwright test",
+    "test:e2e:list": "playwright test --list",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.87.1",
+    "antd": "^5.27.3",
+    "oidc-client-ts": "^3.2.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  },
+  "packageManager": "pnpm@11.25.0"
+}

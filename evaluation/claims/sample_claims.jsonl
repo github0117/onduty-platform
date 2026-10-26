@@ -1,0 +1,8 @@
+{"case_id":"claim-001","claim_text":"退款申请需要人工审核。","claim_type":"policy","sources":["退款申请需要人工审核，具体时效以客服确认为准。"],"expected_verdict":"supported"}
+{"case_id":"claim-002","claim_text":"退款会在三个工作日内原路退回。","claim_type":"policy","sources":["退款申请需要人工审核。"],"expected_verdict":"unsupported"}
+{"case_id":"claim-003","claim_text":"通知配置可以在设置中心完成。","claim_type":"instruction","sources":["管理员进入设置中心，找到通知配置并保存。"],"expected_verdict":"supported"}
+{"case_id":"claim-004","claim_text":"所有账号自动获得管理员权限。","claim_type":"policy","sources":["管理员可以在后台为用户授予指定角色。"],"expected_verdict":"unsupported"}
+{"case_id":"claim-005","claim_text":"企业版本已经支持单点登录。","claim_type":"policy","sources":["单点登录功能正在规划中，尚未正式发布。"],"expected_verdict":"unsupported"}
+{"case_id":"claim-006","claim_text":"支持导出 CSV 格式报表。","claim_type":"instruction","sources":["报表中心支持导出 CSV 和 Excel 文件。"],"expected_verdict":"supported"}
+{"case_id":"claim-007","claim_text":"企业版本可能会支持单点登录。","claim_type":"policy","sources":["单点登录功能正在规划中，尚未正式发布。"],"expected_verdict":"uncertain"}
+

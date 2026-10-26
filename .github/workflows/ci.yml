@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend lint, types and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.5"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - run: uv python install 3.11
+      - run: uv sync --all-groups --frozen
+      - run: uv run ruff check src tests
+      - run: uv run mypy src
+      - name: Run test suite with coverage gate
+        run: >-
+          uv run pytest -q
+          --cov=src/ticket_agent
+          --cov-report=term-missing
+          --cov-fail-under=85
+
+  postgres:
+    name: Postgres and pgvector regression
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: ticket_agent
+          POSTGRES_USER: ticket_agent
+          POSTGRES_PASSWORD: ticket_agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticket_agent -d ticket_agent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://ticket_agent:ticket_agent@localhost:5432/ticket_agent
+      TEST_POSTGRES_URL: postgresql+psycopg://ticket_agent:ticket_agent@localhost:5432/ticket_agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.5"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - run: uv python install 3.11
+      - run: uv sync --all-groups --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run pytest tests/integration/test_postgres_pgvector.py -q
+
+  frontend:
+    name: Frontend type-check and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+
+  e2e:
+    name: Playwright end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile --store-dir .pnpm-store
+      - name: Build frontend
+        working-directory: apps/web
+        run: pnpm build
+      - name: Start demo stack
+        run: >-
+          docker compose -f infra/compose/docker-compose.yml --profile app up -d --build
+          postgres redis minio mock-business mock-business-mcp migrate api worker beat web
+      - name: Wait for demo stack
+        run: |
+          timeout 300 bash -c 'until curl -fsS http://127.0.0.1:5173/ >/dev/null; do sleep 5; done'
+          docker compose -f infra/compose/docker-compose.yml ps
+      - name: Seed demo data
+        run: >-
+          docker compose -f infra/compose/docker-compose.yml exec -T api
+          python scripts/seed_demo_data.py http://127.0.0.1:8000
+      - name: Run Playwright
+        run: >-
+          docker compose -f infra/compose/docker-compose.yml
+          --profile app --profile test run --rm e2e
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: |
+            apps/web/test-results
+            apps/web/playwright-report
+          retention-days: 7
+      - name: Stop demo stack
+        if: always()
+        run: >-
+          docker compose -f infra/compose/docker-compose.yml
+          --profile app --profile test down -v
