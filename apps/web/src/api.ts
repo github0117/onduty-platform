@@ -895,6 +895,16 @@ export function listEmployeeDraftRevisions(
   );
 }
 
+export function restoreEmployeeDraftRevision(
+  draftId: string,
+  revision: number,
+): Promise<DigitalEmployeeDraft> {
+  return request(
+    `/api/v1/digital-employee-drafts/${draftId}/revisions/${revision}/restore`,
+    { method: "POST" },
+  );
+}
+
 export function reviewEmployeeDraft(
   draftId: string,
   input: {

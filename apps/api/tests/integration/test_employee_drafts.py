@@ -186,6 +186,94 @@ def test_employee_draft_rejection_is_auditable_and_reopenable(
     )
 
 
+def test_employee_draft_revision_can_be_restored(
+    client: TestClient,
+) -> None:
+    draft = _create_finance_draft(client)
+    assert draft["revision"] == 1
+    edited = client.post(
+        f"/api/v1/digital-employee-drafts/{draft['id']}/edit",
+        headers=ADMIN,
+        json={
+            "name": "退款财务专员 v2",
+            "capabilities": ["退款审核", "财务复核"],
+            "intents": ["退款审核"],
+            "skill_codes": ["refund-finance"],
+            "tool_allowlist": ["ticket.read", "orders.read"],
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["revision"] == 2
+
+    history = client.get(
+        f"/api/v1/digital-employee-drafts/{draft['id']}/revisions",
+        headers=AGENT,
+    ).json()
+    initial = next(item for item in history if item["revision"] == 1)
+    assert initial["snapshot"]["name"] == draft["name"]
+    assert initial["snapshot"]["capabilities"] == draft["capabilities"]
+    assert initial["snapshot"]["tool_allowlist"] == draft["tool_allowlist"]
+
+    forbidden = client.post(
+        f"/api/v1/digital-employee-drafts/{draft['id']}"
+        "/revisions/1/restore",
+        headers=AGENT,
+    )
+    assert forbidden.status_code == 403
+
+    missing = client.post(
+        f"/api/v1/digital-employee-drafts/{draft['id']}"
+        "/revisions/999/restore",
+        headers=ADMIN,
+    )
+    assert missing.status_code == 404
+    assert (
+        missing.json()["code"]
+        == "EMPLOYEE_DRAFT_REVISION_NOT_FOUND"
+    )
+
+    restored = client.post(
+        f"/api/v1/digital-employee-drafts/{draft['id']}"
+        "/revisions/1/restore",
+        headers=ADMIN,
+    )
+    assert restored.status_code == 200, restored.text
+    restored_draft = restored.json()
+    assert restored_draft["status"] == "DRAFT"
+    assert restored_draft["revision"] == 3
+    assert restored_draft["name"] == draft["name"]
+    assert restored_draft["capabilities"] == draft["capabilities"]
+    assert restored_draft["intents"] == draft["intents"]
+    assert restored_draft["skill_codes"] == draft["skill_codes"]
+    assert restored_draft["tool_allowlist"] == draft["tool_allowlist"]
+    assert restored_draft["required_capability"] == (
+        draft["required_capability"]
+    )
+
+    restored_history = client.get(
+        f"/api/v1/digital-employee-drafts/{draft['id']}/revisions",
+        headers=AGENT,
+    ).json()
+    assert restored_history[0]["revision"] == 3
+    assert restored_history[0]["change_note"] == (
+        "Employee draft restored from revision 1"
+    )
+
+    approved = client.post(
+        f"/api/v1/digital-employee-drafts/{draft['id']}/review",
+        headers=ADMIN,
+        json={"decision": "APPROVE", "note": "回退内容确认"},
+    )
+    assert approved.status_code == 200
+    locked = client.post(
+        f"/api/v1/digital-employee-drafts/{draft['id']}"
+        "/revisions/1/restore",
+        headers=ADMIN,
+    )
+    assert locked.status_code == 409
+    assert locked.json()["code"] == "EMPLOYEE_DRAFT_NOT_EDITABLE"
+
+
 def test_employee_draft_publish_requires_evaluation(
     client: TestClient,
 ) -> None:

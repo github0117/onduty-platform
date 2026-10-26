@@ -197,6 +197,8 @@ flowchart LR
 - 员工草案在 DRAFT 状态可编辑；关键状态转换使用数据库行锁。
 - 草案创建、编辑、评审、重开、试用、评测、发布和回滚均落不可变版本快照，
   页面可查看修订时间线和操作人。
+- 版本历史支持逐字段对比；DRAFT 草案可回退名称、能力、意图、Skill 和工具白名单，
+  回退本身也会生成新快照，不删除历史版本。
 - 草案和模板拒绝原因由后端强制校验，不能通过绕过前端提交空原因。
 - 模板型草案试用会应用草案修改后的能力、意图、Skill 和工具白名单。
 - 草案与模板员工的评测、激活共用精确资源校验；发布前用 SHA-256 指纹复验资源，
@@ -469,13 +471,13 @@ make acceptance-final
 当前基线：
 
 ```text
-322 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
+323 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
 Python 测试覆盖率: 87%
 Ruff: passed
 mypy: passed（171 个源文件）
 TypeScript / Vite: passed
 GitHub Actions: backend lint/type/coverage + pgvector + frontend build + Playwright E2E
-Playwright 浏览器点击回归: 129 passed（21 个测试文件，已纳入 CI）
+Playwright 浏览器点击回归: 130 passed（21 个测试文件，已纳入 CI）
 只读并发基线: 50/100 并发，P95 460.89 / 850.71 ms（docs/load-test.md）
 PostgreSQL migration: b1f7a2c9e4d6 (head)
 全栈 Smoke: passed
@@ -516,7 +518,6 @@ PostgreSQL migration: b1f7a2c9e4d6 (head)
 - 当前 MCP 只支持 Streamable HTTP；stdio MCP 仍需容器隔离和命令白名单。
 - 岗位模板编辑页目前覆盖静态能力和 Skill/工具；知识空间与 MCP 资源可在后端快照
   和管理、克隆链路中继承，但尚未提供普通运营专用的图形化资源编辑器。
-- 草案版本历史已展示快照时间线，尚未提供逐字段差异对比和一键回放旧版本。
 - 内置系统模板在开发环境保留快捷 ACTIVE；生产环境仍需从 TRIAL 开始评测。
 - 已完成两路并发创建、并发克隆、完整业务链路验收和本地 50/100 并发只读基线，
   尚未使用独立压测机覆盖模型、MCP、写操作，也未做长时间稳定性测试和故障注入。

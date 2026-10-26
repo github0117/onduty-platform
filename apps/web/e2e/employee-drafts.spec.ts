@@ -273,6 +273,101 @@ test("编辑员工草案保存技能、意图和工具白名单", async ({ page 
   await expect(page.getByText("员工草案已更新")).toBeVisible();
 });
 
+test("员工草案可以对比差异并回退旧版本", async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.clear());
+  await mockDraftList(page);
+  const currentDraft = {
+    ...draft,
+    name: "E2E 退款财务专员升级版",
+    capabilities: ["退款审核", "金额核对", "财务复核"],
+    revision: 2,
+  };
+  const previousSnapshot = {
+    ...draft,
+    capabilities: ["退款审核"],
+    intents: ["退款审核"],
+    tool_allowlist: ["ticket.read"],
+    revision: 1,
+  };
+  await page.route(
+    "**/api/v1/digital-employee-drafts?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [currentDraft],
+          total: 1,
+        }),
+      });
+    },
+  );
+  await page.route(
+    `**/api/v1/digital-employee-drafts/${draftId}/revisions`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "e2e-revision-1",
+            draft_id: draftId,
+            revision: 1,
+            status: "DRAFT",
+            snapshot: previousSnapshot,
+            change_note: "Employee draft created",
+            created_by: "e2e-admin",
+            created_at: new Date().toISOString(),
+          },
+        ]),
+      });
+    },
+  );
+  const restoreRequest = page.waitForRequest(
+    (item) =>
+      item.method() === "POST" &&
+      item.url().endsWith(
+        `/api/v1/digital-employee-drafts/${draftId}/revisions/1/restore`,
+      ),
+  );
+  await page.route(
+    `**/api/v1/digital-employee-drafts/${draftId}/revisions/1/restore`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...currentDraft,
+          ...previousSnapshot,
+          revision: 3,
+        }),
+      });
+    },
+  );
+  await page.goto("/employees/drafts");
+  await page.getByText("版本历史 · 1").click();
+  await page
+    .getByRole("button", { name: /对比版本/ })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "版本对比 · v1 → 当前 v2",
+  });
+  await expect(
+    dialog.getByText("E2E 退款财务专员", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("E2E 退款财务专员升级版"),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("退款审核、金额核对、财务复核"),
+  ).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "回退到此版本" })
+    .click();
+  await restoreRequest;
+  await expect(page.getByText("已回退到 v1")).toBeVisible();
+});
+
 test("已发布草案可以沉淀为岗位模板", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
   await mockDraftList(

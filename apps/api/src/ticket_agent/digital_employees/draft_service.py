@@ -4,6 +4,7 @@ import builtins
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,6 +39,14 @@ from ticket_agent.digital_employees.service import (
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.workforce.service import WorkforceTaskService
+
+
+class _DraftRevisionContent(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    capabilities: list[str] = Field(default_factory=list)
+    intents: list[str] = Field(default_factory=list)
+    skill_codes: list[str] = Field(default_factory=list)
+    tool_allowlist: list[str] = Field(default_factory=list)
 
 
 class DigitalEmployeeDraftService:
@@ -271,6 +280,67 @@ class DigitalEmployeeDraftService:
             draft,
             actor_id=actor_id,
             note="Employee draft content updated",
+        )
+        self.session.commit()
+        self.session.refresh(draft)
+        return draft
+
+    def restore_revision(
+        self,
+        draft_id: UUID,
+        revision: int,
+        *,
+        actor_id: str,
+    ) -> DigitalEmployeeDraft:
+        draft = self.get_for_update(draft_id)
+        if draft.status != "DRAFT":
+            raise ApiProblem(
+                status_code=409,
+                code="EMPLOYEE_DRAFT_NOT_EDITABLE",
+                title="Employee draft is not editable",
+                detail="Only a DRAFT can restore a previous revision.",
+            )
+        row = self.session.scalar(
+            select(DigitalEmployeeDraftRevision).where(
+                DigitalEmployeeDraftRevision.draft_id == draft_id,
+                DigitalEmployeeDraftRevision.revision == revision,
+            )
+        )
+        if row is None:
+            raise ApiProblem(
+                status_code=404,
+                code="EMPLOYEE_DRAFT_REVISION_NOT_FOUND",
+                title="Employee draft revision not found",
+                detail=(
+                    f"Revision {revision} does not exist for draft "
+                    f"{draft_id}."
+                ),
+            )
+        try:
+            content = _DraftRevisionContent.model_validate(
+                row.snapshot_json
+            )
+        except ValidationError as exc:
+            raise ApiProblem(
+                status_code=409,
+                code="EMPLOYEE_DRAFT_REVISION_INCOMPLETE",
+                title="Employee draft revision is incomplete",
+                detail=(
+                    f"Revision {revision} does not contain a complete "
+                    "content snapshot."
+                ),
+            ) from exc
+        draft.name = content.name
+        draft.capabilities_json = content.capabilities
+        draft.intents_json = content.intents
+        draft.skill_codes_json = content.skill_codes
+        draft.tool_allowlist_json = content.tool_allowlist
+        draft.revision += 1
+        self.session.flush()
+        self._record_revision(
+            draft,
+            actor_id=actor_id,
+            note=f"Employee draft restored from revision {revision}",
         )
         self.session.commit()
         self.session.refresh(draft)

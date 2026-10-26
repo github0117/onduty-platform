@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Path, Query, Request, status
 
 from ticket_agent.api.dependencies import Actor, DbSession, correlation_id
 from ticket_agent.audit.service import record_audit
@@ -520,6 +520,40 @@ def list_capability_draft_revisions(
     ensure_ticket_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     return DigitalEmployeeDraftService(db).list_revisions(draft_id)
+
+
+@router.post(
+    "/digital-employee-drafts/{draft_id}/revisions/{revision}/restore",
+    response_model=DigitalEmployeeDraftView,
+)
+def restore_capability_draft_revision(
+    draft_id: UUID,
+    revision: Annotated[int, Path(ge=1)],
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+) -> DigitalEmployeeDraftView:
+    ensure_knowledge_admin(principal)
+    _ensure_draft_access(db, principal, draft_id)
+    service = DigitalEmployeeDraftService(db)
+    draft = service.restore_revision(
+        draft_id,
+        revision,
+        actor_id=principal.actor_id,
+    )
+    _audit(
+        db,
+        request,
+        principal,
+        draft.id,
+        "digital_employee_draft.revision_restored",
+        "restore_revision",
+        {
+            "restored_revision": revision,
+            "revision": draft.revision,
+        },
+    )
+    return service.view(draft)
 
 
 @router.post(

@@ -60,6 +60,7 @@ import {
   reviewEmployeeDraft,
   reviewManagedEmployeeTemplate,
   reopenManagedEmployeeTemplate,
+  restoreEmployeeDraftRevision,
   retryWorkforceTask,
   rollbackEmployeeDraft,
   rollbackManagedEmployeeTemplate,
@@ -2881,7 +2882,7 @@ function EmployeeDraftsCard({
                       ]}
                     />
                   )}
-                  <DraftRevisionHistory draftId={draft.id} />
+                  <DraftRevisionHistory draft={draft} />
                   <Space wrap>
                     {(draft.status === "DRAFT" ||
                       draft.status === "IN_REVIEW") && (
@@ -3133,50 +3134,253 @@ function EmployeeDraftsCard({
   );
 }
 
+type DraftContent = {
+  name: string;
+  capabilities: string[];
+  intents: string[];
+  skill_codes: string[];
+  tool_allowlist: string[];
+};
+
+const draftContentLabels: Record<keyof DraftContent, string> = {
+  name: "名称",
+  capabilities: "能力",
+  intents: "路由意图",
+  skill_codes: "Skill 编码",
+  tool_allowlist: "工具白名单",
+};
+
+function readDraftContent(
+  source: Record<string, unknown>,
+): DraftContent {
+  const readList = (key: string): string[] => {
+    const value = source[key];
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : [];
+  };
+  return {
+    name: typeof source.name === "string" ? source.name : "",
+    capabilities: readList("capabilities"),
+    intents: readList("intents"),
+    skill_codes: readList("skill_codes"),
+    tool_allowlist: readList("tool_allowlist"),
+  };
+}
+
+function formatDraftContentValue(value: string | string[]): string {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value.join("、") : "（空）";
+  }
+  return value || "（空）";
+}
+
+function draftContentDiff(
+  snapshot: Record<string, unknown>,
+  draft: DigitalEmployeeDraft,
+): { key: string; label: string; before: string; after: string }[] {
+  const previous = readDraftContent(snapshot);
+  const current: DraftContent = {
+    name: draft.name,
+    capabilities: draft.capabilities,
+    intents: draft.intents,
+    skill_codes: draft.skill_codes,
+    tool_allowlist: draft.tool_allowlist,
+  };
+  return (
+    Object.keys(draftContentLabels) as (keyof DraftContent)[]
+  )
+    .filter(
+      (key) =>
+        JSON.stringify(previous[key]) !==
+        JSON.stringify(current[key]),
+    )
+    .map((key) => ({
+      key,
+      label: draftContentLabels[key],
+      before: formatDraftContentValue(previous[key]),
+      after: formatDraftContentValue(current[key]),
+    }));
+}
+
 function DraftRevisionHistory({
-  draftId,
+  draft,
 }: {
-  draftId: string;
+  draft: DigitalEmployeeDraft;
 }) {
+  const queryClient = useQueryClient();
+  const [preview, setPreview] =
+    useState<DigitalEmployeeDraftRevision | null>(null);
   const revisions = useQuery({
-    queryKey: ["employee-draft-revisions", draftId],
-    queryFn: () => listEmployeeDraftRevisions(draftId),
+    queryKey: ["employee-draft-revisions", draft.id],
+    queryFn: () => listEmployeeDraftRevisions(draft.id),
+  });
+  const restore = useMutation({
+    mutationFn: (revision: number) =>
+      restoreEmployeeDraftRevision(draft.id, revision),
+    onSuccess: async (_draft, revision) => {
+      message.success(`已回退到 v${revision}`);
+      setPreview(null);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["employee-drafts"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["employee-draft-revisions"],
+        }),
+      ]);
+    },
+    onError: (error: Error) => message.error(error.message),
   });
   const items: DigitalEmployeeDraftRevision[] =
     revisions.data ?? [];
   if (items.length === 0) return null;
+  const rows = preview
+    ? draftContentDiff(preview.snapshot, draft)
+    : [];
+  const canRestore =
+    draft.status === "DRAFT" &&
+    preview !== null &&
+    preview.revision !== draft.revision &&
+    rows.length > 0;
   return (
-    <Collapse
-      size="small"
-      items={[
-        {
-          key: "revisions",
-          label: `版本历史 · ${items.length}`,
-          children: (
-            <Timeline
-              items={items.map((revision) => ({
-                color: draftStatusColor(revision.status),
-                children: (
-                  <Space direction="vertical" size={0}>
-                    <Space wrap>
-                      <Text strong>v{revision.revision}</Text>
-                      <Tag color={draftStatusColor(revision.status)}>
-                        {draftStatus(revision.status)}
-                      </Tag>
-                    </Space>
-                    <Text>{revision.change_note || "状态更新"}</Text>
-                    <Text type="secondary">
-                      {revision.created_by} ·{" "}
-                      {new Date(revision.created_at).toLocaleString()}
-                    </Text>
-                  </Space>
-                ),
-              }))}
-            />
-          ),
-        },
-      ]}
-    />
+    <>
+      <Collapse
+        size="small"
+        items={[
+          {
+            key: "revisions",
+            label: `版本历史 · ${items.length}`,
+            children: (
+              <Timeline
+                items={items.map((revision) => {
+                  const changed = draftContentDiff(
+                    revision.snapshot,
+                    draft,
+                  );
+                  return {
+                    color: draftStatusColor(revision.status),
+                    children: (
+                      <Space direction="vertical" size={4}>
+                        <Space wrap>
+                          <Text strong>v{revision.revision}</Text>
+                          <Tag
+                            color={draftStatusColor(revision.status)}
+                          >
+                            {draftStatus(revision.status)}
+                          </Tag>
+                        </Space>
+                        <Text>
+                          {revision.change_note || "状态更新"}
+                        </Text>
+                        <Text type="secondary">
+                          {revision.created_by} ·{" "}
+                          {new Date(
+                            revision.created_at,
+                          ).toLocaleString()}
+                        </Text>
+                        <Button
+                          size="small"
+                          onClick={() => setPreview(revision)}
+                        >
+                          {changed.length > 0
+                            ? `对比版本 · ${changed.length} 项变更`
+                            : "查看版本快照"}
+                        </Button>
+                      </Space>
+                    ),
+                  };
+                })}
+              />
+            ),
+          },
+        ]}
+      />
+      <Modal
+        open={preview !== null}
+        title={
+          preview
+            ? `版本对比 · v${preview.revision} → 当前 v${draft.revision}`
+            : "版本对比"
+        }
+        width={760}
+        onCancel={() => setPreview(null)}
+        footer={[
+          <Button key="close" onClick={() => setPreview(null)}>
+            关闭
+          </Button>,
+          <Button
+            key="restore"
+            type="primary"
+            disabled={!canRestore}
+            loading={restore.isPending}
+            onClick={() => {
+              if (preview) restore.mutate(preview.revision);
+            }}
+          >
+            回退到此版本
+          </Button>,
+        ]}
+      >
+        {preview && (
+          <Space
+            direction="vertical"
+            size="middle"
+            style={{ width: "100%" }}
+          >
+            <Text type="secondary">
+              左侧是所选版本，右侧是当前草案。回退只恢复名称、能力、
+              路由意图、Skill 编码和工具白名单，不会改变评审状态，
+              也不会删除历史版本。
+            </Text>
+            {rows.length > 0 ? (
+              <Table
+                size="small"
+                pagination={false}
+                rowKey="key"
+                dataSource={rows}
+                columns={[
+                  {
+                    title: "字段",
+                    dataIndex: "label",
+                    width: 120,
+                  },
+                  {
+                    title: `所选版本 v${preview.revision}`,
+                    dataIndex: "before",
+                    render: (value: string) => (
+                      <Text>{value}</Text>
+                    ),
+                  },
+                  {
+                    title: `当前 v${draft.revision}`,
+                    dataIndex: "after",
+                    render: (value: string) => (
+                      <Text>{value}</Text>
+                    ),
+                  },
+                ]}
+              />
+            ) : (
+              <Alert
+                type="success"
+                showIcon
+                message="该版本与当前草案内容一致"
+              />
+            )}
+            {draft.status !== "DRAFT" && (
+              <Alert
+                type="info"
+                showIcon
+                message={`当前草案状态为 ${draftStatus(
+                  draft.status,
+                )}，只有 DRAFT 状态可以回退内容。`}
+              />
+            )}
+          </Space>
+        )}
+      </Modal>
+    </>
   );
 }
 
