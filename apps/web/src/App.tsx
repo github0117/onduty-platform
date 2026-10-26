@@ -415,7 +415,7 @@ export default function App() {
     key: "platform-management",
     label: "平台管理",
     children: [
-      { key: "/employees/roster", label: "数字员工" },
+      { key: "/employees/roster", label: "员工、Skill 与 MCP" },
       { key: "/knowledge", label: "知识与评测" },
       { key: "/models", label: "模型与连接" },
       { key: "/operations", label: "运行与审计" },

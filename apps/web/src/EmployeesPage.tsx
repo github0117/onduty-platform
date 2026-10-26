@@ -708,7 +708,7 @@ export default function EmployeesPage({
           type="info"
           showIcon
           message="Skill 与 MCP 属于员工能力配置"
-          description="Skill 定义岗位的判断和处置规程；MCP 连接订单、工单、客户等业务系统并提供可授权工具。两者都在左侧“数字员工”页面内维护，并可在每位员工的配置中绑定。"
+          description="Skill 定义岗位的判断和处置规程；MCP 连接订单、工单、客户等业务系统并提供可授权工具。两者都在“员工、Skill 与 MCP”页面内维护，并可在每位员工的配置中绑定。"
           action={
             <Space wrap>
               <Button onClick={() => onNavigate?.("/employees/skills")}>
