@@ -193,7 +193,8 @@ flowchart LR
 - 已验证的员工草案可沉淀为数据库化岗位模板，经批准和发布后用于创建更多员工。
 - 自定义模板支持模板草案、批准、拒绝、发布和停用，停用后不能继续创建员工。
 - 岗位模板编辑页可选择知识空间、按空间限定工作流，并逐项选择 MCP 工具；
-  已有绑定保留原授权，新增 MCP 连接默认只授予只读工具。
+  已有绑定保留原授权，新增 MCP 连接默认只授予只读工具。员工配置页同样支持
+  逐项工具授权和写审批开关，写工具审批人不能是请求人。
 - 模板沉淀会快照试用员工实际绑定的 Skill、知识空间、MCP、模型和知识策略。
 - 自定义模板创建员工默认进入 TRIAL，继承资源并评测通过后才转为 ACTIVE。
 - 员工草案在 DRAFT 状态可编辑；关键状态转换使用数据库行锁。
@@ -479,7 +480,7 @@ Ruff: passed
 mypy: passed（171 个源文件）
 TypeScript / Vite: passed
 GitHub Actions: backend lint/type/coverage + pgvector + frontend build + Playwright E2E
-Playwright 浏览器点击回归: 130 passed（21 个测试文件，已纳入 CI）
+Playwright 浏览器点击回归: 131 passed，1 skipped（21 个测试文件，已纳入 CI）
 只读并发基线: 50/100 并发，P95 460.89 / 850.71 ms（docs/load-test.md）
 PostgreSQL migration: b1f7a2c9e4d6 (head)
 全栈 Smoke: passed
@@ -518,8 +519,8 @@ PostgreSQL migration: b1f7a2c9e4d6 (head)
 - 当前没有外部商城店铺、企业订单和物流接口，验收使用临时 MCP Server 验证协议，不能视为生产业务已接通。
 - 数字员工“语义路由”当前使用本地确定性文本相似度，不调用外部 Embedding 或语义模型。
 - 当前 MCP 只支持 Streamable HTTP；stdio MCP 仍需容器隔离和命令白名单。
-- 岗位模板编辑页已支持选择知识空间、限定绑定工作流和逐工具 MCP 授权；
-  写审批仍需在员工级配置中单独授权，知识绑定 scope JSON 仍需通过配置接口维护。
+- 岗位模板和员工配置页已支持选择知识空间、限定绑定工作流、逐工具 MCP 授权和
+  写审批开关；知识绑定 scope JSON 仍需通过配置接口维护。
 - 内置系统模板在开发环境保留快捷 ACTIVE；生产环境仍需从 TRIAL 开始评测。
 - 已完成两路并发创建、并发克隆、完整业务链路验收和本地 50/100 并发只读基线，
   尚未使用独立压测机覆盖模型、MCP、写操作，也未做长时间稳定性测试和故障注入。

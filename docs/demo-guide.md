@@ -19,7 +19,7 @@
 > 我这个项目的重点不是接一个大模型，而是解决 Agent 真正落地时的工程问题：
 > 我怎么组织 RAG 和 Skill 路由，怎么用 LangGraph 控制节点和状态，怎么通过 MCP
 > 调业务工具，怎么用审批、幂等、对账和审计避免模型乱执行。当前 323 个后端测试
->（87% 覆盖率）和 130 个历史页面场景覆盖了权限、跨租户越权、并发、失败恢复和
+>（87% 覆盖率）和 131 个历史页面场景覆盖了权限、跨租户越权、并发、失败恢复和
 > 旧数据兼容。
 
 ## 用户问题
@@ -170,8 +170,8 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
   和实际流式读取字节数，超限返回 `413 PAYLOAD_TOO_LARGE`。
 - GitHub Actions CI：后端 lint / 类型检查 / 覆盖率门槛 85%，Postgres + pgvector
   回归，前端 TypeScript 检查和 production build，以及完整 Playwright 页面回归
-  （启动 Compose 栈、写入演示数据后运行 129 个用例）。
-- Playwright：129 个页面用例已纳入 CI。
+  （启动 Compose 栈、写入演示数据后运行 132 个用例）。
+- Playwright：131 passed，1 skipped，已纳入 CI。
 - Ruff、mypy、TypeScript 和 Vite production build 通过。
 - 本地只读并发基线：50 并发 100% 成功、P95 460.89 ms；100 并发 P95 850.71 ms，
   复现脚本和边界见 [只读并发压测](load-test.md)。

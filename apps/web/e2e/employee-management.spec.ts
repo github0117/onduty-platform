@@ -91,6 +91,12 @@ const connector = {
       input_schema: {},
       is_write: false,
     },
+    {
+      name: "orders.refund",
+      description: "提交退款",
+      input_schema: {},
+      is_write: true,
+    },
   ],
   last_checked_at: now,
   last_check_error: null,
@@ -395,6 +401,35 @@ test("员工配置保存按钮提交知识、Skill、MCP 和预算快照", async
   await drawer
     .getByPlaceholder(/例如：你是一名耐心、简洁的售后客服/)
     .fill("E2E 角色提示词");
+  await drawer
+    .locator(".ant-form-item")
+    .filter({ hasText: "绑定知识空间" })
+    .locator(".ant-select-selector")
+    .click();
+  await page
+    .getByText("E2E 售后知识 · e2e_after_sales", { exact: true })
+    .last()
+    .click();
+  await drawer
+    .getByPlaceholder("例如 finance_review（留空=全部）")
+    .fill("refund_specialist_v1");
+  await drawer
+    .locator(".ant-form-item")
+    .filter({ hasText: "MCP（业务工具）" })
+    .locator(".ant-select-selector")
+    .click();
+  await page
+    .getByText("E2E 订单中心 · e2e-orders", { exact: true })
+    .last()
+    .click();
+  await expect(
+    drawer.getByRole("checkbox", { name: /orders\.get/ }),
+  ).toBeChecked();
+  await drawer.getByText("orders.refund · 写工具", { exact: true }).click();
+  await drawer.getByText("允许发起写审批", { exact: true }).click();
+  await expect(
+    drawer.getByRole("checkbox", { name: "允许发起写审批" }),
+  ).toBeChecked();
   await drawer.getByRole("button", { name: "保存配置" }).click();
   const request = await requestPromise;
   expect(request.postDataJSON()).toMatchObject({
@@ -402,6 +437,22 @@ test("员工配置保存按钮提交知识、Skill、MCP 和预算快照", async
     handoff_queue: "AFTER_SALES_REVIEW",
     instruction: "E2E 角色提示词",
     tool_allowlist: ["ticket.read", "knowledge.search", "draft.create"],
+    knowledge_bindings: [
+      {
+        knowledge_space_id: "space-e2e",
+        workflow_key: "refund_specialist_v1",
+        scope: {},
+        enabled: true,
+      },
+    ],
+    mcp_bindings: [
+      {
+        connector_id: "mcp-e2e",
+        enabled: true,
+        allowed_tools: ["orders.get", "orders.refund"],
+        write_approved: true,
+      },
+    ],
   });
   expect(savedProfile.name).toBe("E2E 售后专员升级版");
   await expect(page.getByText("数字员工配置已保存")).toBeVisible();

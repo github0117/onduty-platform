@@ -4219,8 +4219,17 @@ function EmployeeConfigDrawer({
   const [instruction, setInstruction] = useState("");
   const [tools, setTools] = useState<string[]>([]);
   const [knowledgeSpaceIds, setKnowledgeSpaceIds] = useState<string[]>([]);
+  const [knowledgeWorkflowKeys, setKnowledgeWorkflowKeys] = useState<
+    Record<string, string>
+  >({});
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [mcpConnectorIds, setMcpConnectorIds] = useState<string[]>([]);
+  const [mcpTools, setMcpTools] = useState<Record<string, string[]>>(
+    {},
+  );
+  const [mcpWriteApproved, setMcpWriteApproved] = useState<
+    Record<string, boolean>
+  >({});
   const [topK, setTopK] = useState<number | null>(5);
   const [minScore, setMinScore] = useState<number | null>(0.15);
   const [dailyCost, setDailyCost] = useState<number | null>(null);
@@ -4269,6 +4278,13 @@ function EmployeeConfigDrawer({
     knowledgeBindings.isError ||
     skillBindings.isError ||
     mcpBindings.isError;
+  const defaultKnowledgeScope = objectValue(
+    objectValue(employee?.knowledge_policy).default_scope,
+  );
+  const defaultKnowledgeWorkflow =
+    typeof defaultKnowledgeScope.workflow === "string"
+      ? defaultKnowledgeScope.workflow
+      : "";
 
   useEffect(() => {
     if (!employee) return;
@@ -4294,10 +4310,19 @@ function EmployeeConfigDrawer({
   }, [employee]);
 
   useEffect(() => {
+    const enabled = (knowledgeBindings.data ?? []).filter(
+      (binding) => binding.enabled,
+    );
     setKnowledgeSpaceIds(
-      (knowledgeBindings.data ?? [])
-        .filter((binding) => binding.enabled)
-        .map((binding) => binding.knowledge_space_id),
+      enabled.map((binding) => binding.knowledge_space_id),
+    );
+    setKnowledgeWorkflowKeys(
+      Object.fromEntries(
+        enabled.map((binding) => [
+          binding.knowledge_space_id,
+          binding.workflow_key ?? "",
+        ]),
+      ),
     );
   }, [knowledgeBindings.data]);
 
@@ -4310,10 +4335,27 @@ function EmployeeConfigDrawer({
   }, [skillBindings.data]);
 
   useEffect(() => {
+    const enabled = (mcpBindings.data ?? []).filter(
+      (binding) => binding.enabled,
+    );
     setMcpConnectorIds(
-      (mcpBindings.data ?? [])
-        .filter((binding) => binding.enabled)
-        .map((binding) => binding.connector_id),
+      enabled.map((binding) => binding.connector_id),
+    );
+    setMcpTools(
+      Object.fromEntries(
+        enabled.map((binding) => [
+          binding.connector_id,
+          binding.allowed_tools,
+        ]),
+      ),
+    );
+    setMcpWriteApproved(
+      Object.fromEntries(
+        enabled.map((binding) => [
+          binding.connector_id,
+          binding.write_approved,
+        ]),
+      ),
     );
   }, [mcpBindings.data]);
 
@@ -4338,13 +4380,6 @@ function EmployeeConfigDrawer({
           binding,
         ]),
       );
-      const defaultKnowledgeScope = objectValue(
-        objectValue(employee.knowledge_policy).default_scope,
-      );
-      const defaultWorkflow =
-        typeof defaultKnowledgeScope.workflow === "string"
-          ? defaultKnowledgeScope.workflow
-          : null;
       const existingSkills = new Map(
         (skillBindings.data ?? []).map((binding) => [
           binding.skill_id,
@@ -4369,9 +4404,14 @@ function EmployeeConfigDrawer({
         model_profile: profile,
         knowledge_bindings: knowledgeSpaceIds.map((knowledgeSpaceId) => {
           const existing = existingBySpace.get(knowledgeSpaceId);
+          const workflowKey = (
+            knowledgeWorkflowKeys[knowledgeSpaceId] ??
+            existing?.workflow_key ??
+            defaultKnowledgeWorkflow
+          ).trim();
           return {
             knowledge_space_id: knowledgeSpaceId,
-            workflow_key: existing?.workflow_key ?? defaultWorkflow,
+            workflow_key: workflowKey || null,
             scope: existing?.scope ?? {},
             enabled: true,
           };
@@ -4390,11 +4430,13 @@ function EmployeeConfigDrawer({
             connector_id: connectorId,
             enabled: true,
             allowed_tools:
+              mcpTools[connectorId] ??
               existing?.allowed_tools ??
-              (connector?.tools ?? [])
-                .filter((tool) => !tool.is_write)
-                .map((tool) => tool.name),
-            write_approved: existing?.write_approved ?? false,
+              readOnlyToolNames(connector),
+            write_approved:
+              mcpWriteApproved[connectorId] ??
+              existing?.write_approved ??
+              false,
           };
         }),
       });
@@ -4557,7 +4599,16 @@ function EmployeeConfigDrawer({
                 mode="multiple"
                 allowClear
                 value={knowledgeSpaceIds}
-                onChange={setKnowledgeSpaceIds}
+                onChange={(ids: string[]) => {
+                  setKnowledgeSpaceIds(ids);
+                  setKnowledgeWorkflowKeys((previous) => {
+                    const next = { ...previous };
+                    for (const id of ids) {
+                      next[id] ??= defaultKnowledgeWorkflow;
+                    }
+                    return next;
+                  });
+                }}
                 placeholder="选择允许该员工使用的知识空间"
                 loading={spaces.isLoading}
                 options={(spaces.data ?? [])
@@ -4568,6 +4619,48 @@ function EmployeeConfigDrawer({
                   }))}
               />
             </Form.Item>
+            {advanced && knowledgeSpaceIds.length > 0 && (
+              <Form.Item
+                label="知识绑定工作流"
+                extra="留空时该知识空间适用于员工的全部工作流。"
+              >
+                <Space
+                  direction="vertical"
+                  size="small"
+                  style={{ width: "100%" }}
+                >
+                  {knowledgeSpaceIds.map((id) => {
+                    const space = (spaces.data ?? []).find(
+                      (item) => item.id === id,
+                    );
+                    return (
+                      <div key={id}>
+                        <Text type="secondary">
+                          {space
+                            ? `${space.name} · ${space.code}`
+                            : id}
+                        </Text>
+                        <Input
+                          value={
+                            knowledgeWorkflowKeys[id] ??
+                            defaultKnowledgeWorkflow
+                          }
+                          onChange={(event) =>
+                            setKnowledgeWorkflowKeys(
+                              (previous) => ({
+                                ...previous,
+                                [id]: event.target.value,
+                              }),
+                            )
+                          }
+                          placeholder="例如 finance_review（留空=全部）"
+                        />
+                      </div>
+                    );
+                  })}
+                </Space>
+              </Form.Item>
+            )}
             <Form.Item
               label={advanced ? "Skill（岗位规程）" : "专业技能"}
               extra="LangGraph 会根据当前问题命中的触发词选择 Skill；停用的 Skill 不会进入运行时。"
@@ -4588,25 +4681,142 @@ function EmployeeConfigDrawer({
               />
             </Form.Item>
             {advanced && (
-              <Form.Item
-                label="MCP（业务工具）"
-                extra="连接订单、客户、工单等外部系统；仅授权已发现的工具，写工具仍需单独审批。"
-              >
-                <Select
-                  mode="multiple"
-                  allowClear
-                  value={mcpConnectorIds}
-                  onChange={setMcpConnectorIds}
-                  placeholder="选择该员工可用的 MCP 连接器"
-                  loading={mcpConnectors.isLoading}
-                  options={(mcpConnectors.data ?? [])
-                    .filter((connector) => connector.status === "ACTIVE")
-                    .map((connector) => ({
-                      value: connector.id,
-                      label: `${connector.name} · ${connector.code}`,
-                    }))}
-                />
-              </Form.Item>
+              <>
+                <Form.Item
+                  label="MCP（业务工具）"
+                  extra="连接订单、客户、工单等外部系统；仅授权已发现的工具，写工具仍需单独审批。"
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    value={mcpConnectorIds}
+                    onChange={(ids: string[]) => {
+                      setMcpConnectorIds(ids);
+                      setMcpTools((previous) => {
+                        const next = { ...previous };
+                        for (const id of ids) {
+                          next[id] ??= readOnlyToolNames(
+                            (mcpConnectors.data ?? []).find(
+                              (item) => item.id === id,
+                            ),
+                          );
+                        }
+                        return next;
+                      });
+                      setMcpWriteApproved((previous) => {
+                        const next = { ...previous };
+                        for (const id of ids) {
+                          if (!(id in next)) next[id] = false;
+                        }
+                        return next;
+                      });
+                    }}
+                    placeholder="选择该员工可用的 MCP 连接器"
+                    loading={mcpConnectors.isLoading}
+                    options={(mcpConnectors.data ?? [])
+                      .filter((connector) => connector.status === "ACTIVE")
+                      .map((connector) => ({
+                        value: connector.id,
+                        label: `${connector.name} · ${connector.code}`,
+                      }))}
+                  />
+                </Form.Item>
+                {mcpConnectorIds.length > 0 && (
+                  <Form.Item
+                    label="MCP 工具授权"
+                    extra="可逐项授权工具；写工具必须勾选“允许发起写审批”才能在运行时发起审批，审批人不能是请求人。"
+                  >
+                    <Space
+                      direction="vertical"
+                      size="small"
+                      style={{ width: "100%" }}
+                    >
+                      {mcpConnectorIds.map((id) => {
+                        const connector = (
+                          mcpConnectors.data ?? []
+                        ).find((item) => item.id === id);
+                        const selected = mcpTools[id] ?? [];
+                        const writeToolNames = (
+                          connector?.tools ?? []
+                        )
+                          .filter((tool) => tool.is_write)
+                          .map((tool) => tool.name);
+                        const hasWriteTool = writeToolNames.some(
+                          (name) => selected.includes(name),
+                        );
+                        return (
+                          <Card
+                            key={id}
+                            size="small"
+                            title={
+                              connector
+                                ? `${connector.name} · ${connector.code}`
+                                : id
+                            }
+                          >
+                            {connector && connector.tools.length > 0 ? (
+                              <>
+                                <Checkbox.Group
+                                  value={selected}
+                                  options={connector.tools.map(
+                                    (tool) => ({
+                                      label: tool.is_write
+                                        ? `${tool.name} · 写工具`
+                                        : tool.name,
+                                      value: tool.name,
+                                    }),
+                                  )}
+                                  onChange={(values) => {
+                                    const allowed = values.map(String);
+                                    setMcpTools((previous) => ({
+                                      ...previous,
+                                      [id]: allowed,
+                                    }));
+                                    if (
+                                      !writeToolNames.some((name) =>
+                                        allowed.includes(name),
+                                      )
+                                    ) {
+                                      setMcpWriteApproved(
+                                        (previous) => ({
+                                          ...previous,
+                                          [id]: false,
+                                        }),
+                                      );
+                                    }
+                                  }}
+                                />
+                                <div style={{ marginTop: 8 }}>
+                                  <Checkbox
+                                    checked={
+                                      mcpWriteApproved[id] ?? false
+                                    }
+                                    disabled={!hasWriteTool}
+                                    onChange={(event) =>
+                                      setMcpWriteApproved(
+                                        (previous) => ({
+                                          ...previous,
+                                          [id]: event.target.checked,
+                                        }),
+                                      )
+                                    }
+                                  >
+                                    允许发起写审批
+                                  </Checkbox>
+                                </div>
+                              </>
+                            ) : (
+                              <Text type="secondary">
+                                连接器尚未发现工具，请先检查连接。
+                              </Text>
+                            )}
+                          </Card>
+                        );
+                      })}
+                    </Space>
+                  </Form.Item>
+                )}
+              </>
             )}
             {advanced && (
               <Space size="middle" align="start" className="form-row">
