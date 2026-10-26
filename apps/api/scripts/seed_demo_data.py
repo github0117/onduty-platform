@@ -170,6 +170,20 @@ def main() -> None:
             ),
             _ensure_knowledge(
                 client,
+                space_id=enterprise_space["id"],
+                title="测试数据｜费用报销与假期申请流程",
+                doc_type="SOP",
+                scope={"audiences": ["support_agent"]},
+                content=(
+                    "员工报销费用时，应在费用发生后 30 天内于财务系统提交报销单，"
+                    "附上发票和事由，直属主管审批后由财务复核。"
+                    "年假和请假需要在 HR 系统提交申请，年假应提前三个工作日申请"
+                    "并由直属主管审批。会议室通过企业日历预订，单次连续使用不超过"
+                    "四小时；门禁和办公用品在服务台提交申请后由行政处理。"
+                ),
+            ),
+            _ensure_knowledge(
+                client,
                 space_id=hr_space["id"],
                 title="测试数据｜新员工入职资料清单",
                 doc_type="SOP",

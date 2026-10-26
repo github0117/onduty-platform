@@ -282,6 +282,134 @@ def test_enterprise_service_conversation_uses_enterprise_channel(
     assert payload["employee"]["workflow_key"] == "customer_service_ticket_v1"
 
 
+def test_enterprise_expense_question_is_classified_and_grounded(
+    client: TestClient,
+) -> None:
+    space = client.post(
+        "/api/v1/knowledge-spaces",
+        headers=ADMIN,
+        json={
+            "business_unit_id": "bu_demo",
+            "code": "enterprise_expense_policy",
+            "name": "企业费用与假期制度",
+            "description": "费用报销、假期和行政服务流程",
+            "domain": "enterprise_service",
+            "channel": "enterprise_service",
+            "category": "企业服务",
+            "workflow_key": "enterprise_service_ticket_v1",
+            "owner_id": "admin-1",
+        },
+    )
+    assert space.status_code == 201, space.text
+    document = client.post(
+        "/api/v1/knowledge-documents",
+        headers=ADMIN,
+        json={
+            "space_id": space.json()["id"],
+            "business_unit_id": "bu_demo",
+            "title": "企业费用报销与假期申请流程",
+            "doc_type": "SOP",
+            "owner_id": "admin-1",
+            "scope": {"audiences": ["support_agent"]},
+        },
+    )
+    assert document.status_code == 201, document.text
+    document_id = document.json()["id"]
+    version = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions",
+        headers=ADMIN,
+        json={
+            "version_label": "1.0",
+            "content": (
+                "员工报销费用时，应在费用发生后 30 天内于财务系统提交报销单，"
+                "附上发票和事由，直属主管审批后由财务复核。"
+                "年假和请假需要在 HR 系统提交申请，年假应提前三个工作日申请"
+                "并由直属主管审批。"
+            ),
+            "effective_from": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert version.status_code == 201, version.text
+    published = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions/"
+        f"{version.json()['id']}/publish",
+        headers=ADMIN,
+        json={"release_note": "enterprise expense policy"},
+    )
+    assert published.status_code == 200, published.text
+    skill = client.post(
+        "/api/v1/skills",
+        headers=ADMIN,
+        json={
+            "business_unit_id": "bu_demo",
+            "code": "enterprise-expense-support",
+            "name": "企业费用与假期支持",
+            "description": "回答费用报销、发票和假期申请流程。",
+            "instructions": "仅依据已发布的企业制度回答，涉及资金动作时转财务人工确认。",
+            "triggers": ["报销", "发票", "费用", "年假", "请假"],
+            "tools": ["knowledge.search", "ticket.read", "draft.create"],
+            "status": "ACTIVE",
+        },
+    )
+    assert skill.status_code == 201, skill.text
+    employee = client.post(
+        "/api/v1/digital-employees/from-template",
+        headers=ADMIN,
+        json={
+            "name": "费用制度服务台",
+            "template_code": "enterprise_service_desk",
+            "business_unit_id": "bu_demo",
+            "knowledge_space_ids": [space.json()["id"]],
+            "skill_ids": [skill.json()["id"]],
+            "mcp_connector_ids": [],
+            "model_profile": {},
+            "change_note": "enterprise expense policy test",
+        },
+    )
+    assert employee.status_code == 201, employee.text
+    conversation = client.post(
+        "/api/v1/customer-service/conversations",
+        headers=AGENT,
+        json={
+            "business_unit_id": "bu_demo",
+            "employee_id": employee.json()["id"],
+            "requester_ref": "enterprise-expense-001",
+            "channel": "enterprise_service",
+        },
+    )
+    assert conversation.status_code == 201, conversation.text
+    conversation_id = conversation.json()["id"]
+    message = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/messages",
+        headers=AGENT,
+        json={"content": "公司报销流程是什么？"},
+    )
+    assert message.status_code == 202, message.text
+    ticket = client.get(
+        f"/api/v1/tickets/{message.json()['current_ticket_id']}",
+        headers=AGENT,
+    )
+    assert ticket.status_code == 200, ticket.text
+    payload = ticket.json()
+    assert payload["classification"]["primary"] == "billing_invoice"
+    assert payload["routing"]["queue_id"] == "FINANCE_SUPPORT"
+    assert payload["needs_human"] is True
+    assert payload["routing"]["human_reason"] == "POLICY_REQUIRES_HUMAN_REVIEW"
+
+    suggestion = client.post(
+        (
+            "/api/v1/customer-service/conversations/"
+            f"{conversation_id}/reply-suggestions"
+        ),
+        headers=AGENT,
+    )
+    assert suggestion.status_code == 200, suggestion.text
+    payload = suggestion.json()
+    assert payload["skill"] == "enterprise-expense-support"
+    assert payload["grounding_status"] == "GROUNDED"
+    assert payload["citations"]
+
+
 def test_auto_assignment_matches_skill_risk_and_load(
     client: TestClient,
 ) -> None:
