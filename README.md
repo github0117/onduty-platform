@@ -455,7 +455,7 @@ PostgreSQL migration: a7d3f9c1b642 (head)
 - PostgreSQL + pgvector
 - Redis + Celery + Celery Beat
 - MCP Python SDK
-- MinIO
+- 对象存储（本地卷，S3 兼容接口可选）
 - FFmpeg
 - Nginx
 

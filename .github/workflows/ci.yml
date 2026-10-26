@@ -25,6 +25,8 @@ jobs:
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: uv run ruff check src tests
       - run: uv run mypy src
       - name: Run test suite with coverage gate
@@ -122,7 +124,7 @@ jobs:
         run: |
           set -o pipefail
           docker compose -f infra/compose/docker-compose.yml --profile app up -d --build \
-            postgres redis minio mock-business mock-business-mcp migrate api worker beat web 2>&1 | tee stack.log
+            postgres redis mock-business mock-business-mcp migrate api worker beat web 2>&1 | tee stack.log
       - name: Annotate stack startup failure
         if: failure()
         run: |

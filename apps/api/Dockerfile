@@ -43,8 +43,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /var/lib/ticket-agent \
-    && chown app:app /var/lib/ticket-agent
+    && mkdir -p /var/lib/ticket-agent/objects \
+    && chown -R app:app /var/lib/ticket-agent
 
 USER 10001:10001
 

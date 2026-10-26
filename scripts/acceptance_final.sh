@@ -32,7 +32,7 @@ write_report() {
     printf '# 数字员工平台最终验收报告\n\n'
     printf '日期：%s  \n' "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
     printf '结论：**%s**  \n' "$status"
-    printf '环境：Docker Compose、PostgreSQL、Redis、MinIO、Celery、模拟业务系统\n\n'
+    printf '环境：Docker Compose、PostgreSQL、Redis、本地对象存储、Celery、模拟业务系统\n\n'
     printf '## 验收结果\n\n'
     printf '| 验收项 | 结果 | 日志 |\n'
     printf '|---|---|---|\n'

@@ -145,16 +145,23 @@ def mux_storyboard_audio(
             command.extend(
                 ["-stream_loop", "-1", "-i", str(mock_music_path)]
             )
+        # loudnorm 对整段数字静音会算出 ±Inf 增益，FFmpeg 7.x 随后把 NaN
+        # 送进 AAC 编码器导致整条视频渲染失败。aeval 把非有限采样归零；
+        # aformat 重新声明声道布局，否则编码器不认 aeval 输出的 "2 channels"。
+        loudness = (
+            "loudnorm=I=-16:TP=-1.5:LRA=11,"
+            "aeval=exprs='if(isnan(val(0))+isinf(val(0)),0,val(0))',"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo"
+        )
         if background_music is None:
             audio_filter = (
-                "[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,"
-                "aresample=48000[aout]"
+                f"[1:a]aresample=48000,{loudness},aresample=48000[aout]"
             )
         else:
             audio_filter = (
                 "[1:a]aresample=48000,"
                 "aformat=sample_fmts=fltp:channel_layouts=stereo,"
-                "loudnorm=I=-16:TP=-1.5:LRA=11,"
+                f"{loudness},"
                 "asplit=2[voice][side];"
                 f"[2:a]aresample=48000,volume={background_music_volume:.3f},"
                 "aformat=sample_fmts=fltp:channel_layouts=stereo,"
@@ -163,7 +170,7 @@ def mux_storyboard_audio(
                 "ratio=8:attack=20:release=400[ducked];"
                 "[ducked][voice]amix=inputs=2:duration=first:"
                 "dropout_transition=0,aresample=48000,"
-                "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]"
+                f"{loudness},aresample=48000[aout]"
             )
         command.extend(
             [
