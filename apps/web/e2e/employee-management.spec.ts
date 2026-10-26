@@ -388,11 +388,15 @@ test("员工配置保存按钮提交知识、Skill、MCP 和预算快照", async
     drawer.getByText("MCP（业务工具）", { exact: true }),
   ).toBeVisible();
   await drawer.locator(".ant-input").first().fill("E2E 售后专员升级版");
+  await drawer
+    .getByPlaceholder(/例如：你是一名耐心、简洁的售后客服/)
+    .fill("E2E 角色提示词");
   await drawer.getByRole("button", { name: "保存配置" }).click();
   const request = await requestPromise;
   expect(request.postDataJSON()).toMatchObject({
     name: "E2E 售后专员升级版",
     handoff_queue: "AFTER_SALES_REVIEW",
+    instruction: "E2E 角色提示词",
     tool_allowlist: ["ticket.read", "knowledge.search", "draft.create"],
   });
   expect(savedProfile.name).toBe("E2E 售后专员升级版");
