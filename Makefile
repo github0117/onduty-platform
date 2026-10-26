@@ -9,8 +9,11 @@ CLAIM_PROVIDER ?= local
 INFRA_API_URL ?= http://127.0.0.1:8000
 SEED_API_URL ?= http://127.0.0.1:8000
 E2E_ARGS ?=
+LOAD_TEST_CONCURRENCY ?= 50
+LOAD_TEST_DURATION ?= 60
+LOAD_TEST_ARGS ?=
 
-.PHONY: install test smoke infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint typecheck format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke observability-up observability-down e2e-web e2e-web-docker
+.PHONY: install test smoke load-test infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint typecheck format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke observability-up observability-down e2e-web e2e-web-docker
 
 install:
 	cd apps/api && uv sync --all-groups
@@ -21,6 +24,11 @@ test:
 
 smoke:
 	cd apps/api && uv run $(UV_RUN_FLAGS) python scripts/smoke_closed_loop.py
+
+load-test:
+	cd apps/api && uv run $(UV_RUN_FLAGS) python ../../scripts/load_test.py \
+		--concurrency $(LOAD_TEST_CONCURRENCY) \
+		--duration $(LOAD_TEST_DURATION) $(LOAD_TEST_ARGS)
 
 infra-acceptance:
 	cd apps/api && uv run $(UV_RUN_FLAGS) python scripts/acceptance_real_infra.py $(INFRA_API_URL)
