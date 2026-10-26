@@ -1,5 +1,7 @@
 # OnDuty · 数字员工平台（Digital Workforce Platform）
 
+[![CI](https://github.com/github0117/onduty-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/github0117/onduty-platform/actions/workflows/ci.yml)
+
 这是一个可验收的数字员工平台能力演示环境。主演示业务为 **国内电商客服与运营**，
 覆盖商品知识、订单物流、退款审批、人工接管、商品上架策划、规则检查、素材生产、
 短视频、审核和上架资料包导出。
@@ -16,6 +18,36 @@
   → 人工审核 / 编辑 / 退回
   → 上架资料包导出
 ```
+
+## 系统架构
+
+```mermaid
+flowchart LR
+  Web["React + Vite 前端"] --> Nginx["Nginx"]
+  Nginx --> API["FastAPI API"]
+  API --> PG[("PostgreSQL<br/>+ pgvector")]
+  API --> Redis[("Redis")]
+  API --> Store[("对象存储<br/>本地卷 / S3 兼容")]
+  Redis --> Worker["Celery Worker"]
+  Worker --> PG
+  Worker --> Store
+  Worker --> Biz["业务系统 / MCP 工具"]
+  Beat["Celery Beat"] --> Redis
+  Prom["Prometheus"] -. "/metrics 抓取" .-> API
+  Grafana["Grafana"] --> Prom
+```
+
+## 界面预览
+
+| 演示总览 | 工单与 HR |
+| --- | --- |
+| <img src="docs/assets/screenshots/overview.png" alt="演示总览" width="480"> | <img src="docs/assets/screenshots/tickets.png" alt="工单队列" width="480"> |
+| **客服工作台** | **知识库** |
+| <img src="docs/assets/screenshots/customer-service.png" alt="客服工作台" width="480"> | <img src="docs/assets/screenshots/knowledge.png" alt="知识库" width="480"> |
+| **电商上架审核** | **数字员工配置** |
+| <img src="docs/assets/screenshots/ecommerce.png" alt="电商上架审核" width="480"> | <img src="docs/assets/screenshots/employees.png" alt="数字员工配置" width="480"> |
+
+截图由 `apps/web/e2e/docs-screenshots.spec.ts` 在演示栈上生成。
 
 ## 当前能力
 
