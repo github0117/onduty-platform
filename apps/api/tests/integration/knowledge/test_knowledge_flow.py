@@ -451,6 +451,98 @@ def test_search_filters_by_knowledge_scope(client: TestClient) -> None:
     assert unscoped.json()["items"] == []
 
 
+def test_employee_binding_scope_round_trips_and_limits_retrieval(
+    client: TestClient,
+) -> None:
+    space = _create_space(
+        client,
+        code="binding_scope_space",
+        name="绑定范围空间",
+        workflow_key="customer_service_ticket_v1",
+    )
+    document_id = _create_document(
+        client,
+        title="绑定范围通知指南",
+        space_id=str(space["id"]),
+    )
+    version = _create_version(
+        client,
+        document_id,
+        label="1.0",
+        content="团队消息通知在设置中心完成配置，管理员按部门启用渠道。",
+    )
+    _publish(client, document_id, str(version["id"]))
+    employee = client.post(
+        "/api/v1/digital-employees/from-template",
+        headers=ADMIN_HEADERS,
+        json={
+            "name": "绑定范围客服",
+            "template_code": "ecommerce_presales",
+            "business_unit_id": "bu_demo",
+        },
+    )
+    assert employee.status_code == 201, employee.text
+    employee_id = str(employee.json()["id"])
+    scope = {"audience": "support_agent"}
+    configured = client.put(
+        f"/api/v1/digital-employees/{employee_id}/configuration",
+        headers=ADMIN_HEADERS,
+        json={
+            "knowledge_bindings": [
+                {
+                    "knowledge_space_id": space["id"],
+                    "workflow_key": "customer_service_ticket_v1",
+                    "scope": scope,
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    assert configured.json()["status"] == "TRIAL"
+
+    bindings = client.get(
+        f"/api/v1/digital-employees/{employee_id}/knowledge-bindings",
+        headers=AGENT_HEADERS,
+    )
+    assert bindings.status_code == 200, bindings.text
+    binding = next(
+        item
+        for item in bindings.json()
+        if item["knowledge_space_id"] == space["id"]
+    )
+    assert binding["scope"] == scope
+    assert binding["workflow_key"] == "customer_service_ticket_v1"
+
+    activated = client.post(
+        f"/api/v1/digital-employees/{employee_id}/activate",
+        headers=ADMIN_HEADERS,
+    )
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["status"] == "ACTIVE"
+
+    def search(scopes: dict[str, str]) -> dict[str, object]:
+        response = client.post(
+            "/api/v1/knowledge/search",
+            headers=AGENT_HEADERS,
+            json={
+                "query": "团队消息通知在哪里配置",
+                "business_unit_id": "bu_demo",
+                "employee_id": employee_id,
+                "scope": scopes,
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    matched = search({"audience": "support_agent"})
+    mismatched = search({"audience": "finance_agent"})
+    assert {item["title"] for item in matched["items"]} == {
+        "绑定范围通知指南"
+    }
+    assert mismatched["items"] == []
+
+
 def test_search_filters_by_dynamic_knowledge_space(client: TestClient) -> None:
     presales = _create_space(
         client,

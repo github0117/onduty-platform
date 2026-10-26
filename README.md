@@ -475,7 +475,7 @@ make acceptance-final
 当前基线：
 
 ```text
-326 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
+327 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
 Python 测试覆盖率: 87%
 Ruff: passed
 mypy: passed（171 个源文件）
