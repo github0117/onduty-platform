@@ -28,11 +28,18 @@ jobs:
       - run: uv run ruff check src tests
       - run: uv run mypy src
       - name: Run test suite with coverage gate
-        run: >-
-          uv run pytest -q
-          --cov=src/ticket_agent
-          --cov-report=term-missing
-          --cov-fail-under=85
+        run: |
+          set -o pipefail
+          uv run pytest -q \
+            --cov=src/ticket_agent \
+            --cov-report=term-missing \
+            --cov-fail-under=85 2>&1 | tee pytest.log
+      - name: Annotate test failures
+        if: failure()
+        run: |
+          tail -n 30 pytest.log > failure-tail.log || true
+          message=$(tr '\n' ' ' < failure-tail.log | cut -c1-6000)
+          echo "::error title=pytest failure::${message}"
 
   postgres:
     name: Postgres and pgvector regression
@@ -112,9 +119,16 @@ jobs:
         working-directory: apps/web
         run: pnpm build
       - name: Start demo stack
-        run: >-
-          docker compose -f infra/compose/docker-compose.yml --profile app up -d --build
-          postgres redis minio mock-business mock-business-mcp migrate api worker beat web
+        run: |
+          set -o pipefail
+          docker compose -f infra/compose/docker-compose.yml --profile app up -d --build \
+            postgres redis minio mock-business mock-business-mcp migrate api worker beat web 2>&1 | tee stack.log
+      - name: Annotate stack startup failure
+        if: failure()
+        run: |
+          tail -n 30 stack.log > failure-tail.log || true
+          message=$(tr '\n' ' ' < failure-tail.log | cut -c1-6000)
+          echo "::error title=compose failure::${message}"
       - name: Wait for demo stack
         run: |
           timeout 300 bash -c 'until curl -fsS http://127.0.0.1:5173/ >/dev/null; do sleep 5; done'
