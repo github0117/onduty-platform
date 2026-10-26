@@ -148,6 +148,19 @@ def main() -> None:
             ),
             _ensure_knowledge(
                 client,
+                space_id=it_space["id"],
+                title="测试数据｜VPN 与 IT 报障处理指南",
+                doc_type="SOP",
+                scope={"audiences": ["support_agent"]},
+                content=(
+                    "办公室 VPN 连不上时，先确认当前网络可以访问互联网，并重启"
+                    "VPN 客户端后重试。仍然失败时创建 IT 支持工单，附上错误提示、"
+                    "发生时间和所在办公区；VPN 账号锁定请联系 IT 服务台解锁。"
+                    "会议室投屏故障、邮件收发异常和系统报错同样通过 IT 支持工单处理。"
+                ),
+            ),
+            _ensure_knowledge(
+                client,
                 space_id=enterprise_space["id"],
                 title="测试数据｜企业通知配置指南",
                 doc_type="SOP",
