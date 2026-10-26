@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -1524,3 +1525,177 @@ def test_technical_question_without_tool_does_not_use_generic_template(
     )
     assert "研发支持数字员工" in identity_payload["messages"][-1]["content"]
     assert "产品支持组" not in identity_payload["messages"][-1]["content"]
+
+
+def _read_sse_stream(response: object) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    event_name = ""
+    data_lines: list[str] = []
+    for raw_line in response.iter_lines():  # type: ignore[attr-defined]
+        line = raw_line if isinstance(raw_line, str) else raw_line.decode()
+        if line.startswith("event: "):
+            event_name = line[len("event: ") :]
+        elif line.startswith("data: "):
+            data_lines.append(line[len("data: ") :])
+        elif not line:
+            if data_lines:
+                payload = json.loads("\n".join(data_lines))
+                payload.setdefault("type", event_name)
+                events.append(payload)
+            event_name = ""
+            data_lines = []
+    return events
+
+
+def test_streaming_message_returns_live_stage_and_text_events(
+    client: TestClient,
+) -> None:
+    space = client.post(
+        "/api/v1/knowledge-spaces",
+        headers=ADMIN,
+        json={
+            "business_unit_id": "bu_demo",
+            "code": "streaming_expense_policy",
+            "name": "流式测试费用制度",
+            "description": "费用报销流程",
+            "domain": "enterprise_service",
+            "channel": "enterprise_service",
+            "category": "企业服务",
+            "workflow_key": "enterprise_service_ticket_v1",
+            "owner_id": "admin-1",
+        },
+    )
+    assert space.status_code == 201, space.text
+    document = client.post(
+        "/api/v1/knowledge-documents",
+        headers=ADMIN,
+        json={
+            "space_id": space.json()["id"],
+            "business_unit_id": "bu_demo",
+            "title": "企业费用报销流程",
+            "doc_type": "SOP",
+            "owner_id": "admin-1",
+            "scope": {"audiences": ["support_agent"]},
+        },
+    )
+    assert document.status_code == 201, document.text
+    document_id = document.json()["id"]
+    version = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions",
+        headers=ADMIN,
+        json={
+            "version_label": "1.0",
+            "content": (
+                "员工报销费用时，应在费用发生后 30 天内于财务系统提交报销单，"
+                "附上发票和事由，直属主管审批后由财务复核。"
+            ),
+            "effective_from": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert version.status_code == 201, version.text
+    published = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions/"
+        f"{version.json()['id']}/publish",
+        headers=ADMIN,
+        json={"release_note": "streaming policy"},
+    )
+    assert published.status_code == 200, published.text
+    employee = client.post(
+        "/api/v1/digital-employees/from-template",
+        headers=ADMIN,
+        json={
+            "name": "企业服务台流式数字员工",
+            "template_code": "enterprise_service_desk",
+            "business_unit_id": "bu_demo",
+            "knowledge_space_ids": [space.json()["id"]],
+            "skill_ids": [],
+            "mcp_connector_ids": [],
+            "model_profile": {},
+            "change_note": "streaming conversation test",
+        },
+    )
+    assert employee.status_code == 201, employee.text
+
+    conversation = client.post(
+        "/api/v1/customer-service/conversations",
+        headers=AGENT,
+        json={
+            "business_unit_id": "bu_demo",
+            "employee_id": employee.json()["id"],
+            "requester_ref": "streaming-enterprise-001",
+            "channel": "enterprise_service",
+        },
+    )
+    assert conversation.status_code == 201, conversation.text
+    conversation_id = conversation.json()["id"]
+
+    with client.stream(
+        "POST",
+        f"/api/v1/customer-service/conversations/{conversation_id}/messages/stream",
+        headers=AGENT,
+        json={"content": "公司报销流程是什么？"},
+    ) as response:
+        assert response.status_code == 200, response.read()
+        events = _read_sse_stream(response)
+
+    event_types = [str(event["type"]) for event in events]
+    assert event_types[0] == "start"
+    assert event_types[-1] == "done"
+    assert "status" in event_types
+    assert "delta" in event_types
+
+    stages = [
+        str(event["stage"]) for event in events if event["type"] == "status"
+    ]
+    assert stages[0] == "正在识别问题"
+    assert any("检索" in stage for stage in stages)
+
+    streamed_text = "".join(
+        str(event["text"]) for event in events if event["type"] == "delta"
+    )
+    assert streamed_text
+
+    done = events[-1]
+    final_conversation = done["conversation"]
+    assert isinstance(final_conversation, dict)
+    assistant = [
+        message
+        for message in final_conversation["messages"]
+        if message["role"] == "ASSISTANT"
+    ][-1]
+    assert assistant["created_by"] == "digital_employee"
+    assert assistant["content"] == streamed_text
+    assert final_conversation["current_turn"]["status"] == "COMPLETED"
+
+
+def test_streaming_small_talk_returns_start_and_done_without_deltas(
+    client: TestClient,
+) -> None:
+    conversation = client.post(
+        "/api/v1/customer-service/conversations",
+        headers=AGENT,
+        json={
+            "business_unit_id": "bu_demo",
+            "requester_ref": "streaming-small-talk",
+            "channel": "enterprise_service",
+        },
+    )
+    assert conversation.status_code == 201, conversation.text
+    conversation_id = conversation.json()["id"]
+
+    with client.stream(
+        "POST",
+        f"/api/v1/customer-service/conversations/{conversation_id}/messages/stream",
+        headers=AGENT,
+        json={"content": "你好"},
+    ) as response:
+        assert response.status_code == 200, response.read()
+        events = _read_sse_stream(response)
+
+    assert [event["type"] for event in events] == ["start", "done"]
+    final_conversation = events[-1]["conversation"]
+    assert isinstance(final_conversation, dict)
+    assert [message["role"] for message in final_conversation["messages"]] == [
+        "BUYER",
+        "ASSISTANT",
+    ]

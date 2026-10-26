@@ -103,6 +103,58 @@ async function createProductConversation(
   return { conversationId, requesterRef, ticketId };
 }
 
+async function createEnterpriseHrConversation(
+  request: APIRequestContext,
+): Promise<{
+  conversationId: string;
+  ticketId: string;
+}> {
+  const entries = await request.get(
+    "/api/v1/business-service-entries?business_unit_id=bu_demo",
+    { headers: apiHeaders },
+  );
+  expect(entries.ok()).toBeTruthy();
+  const entry = (
+    (await entries.json()) as Array<{
+      id: string;
+      code: string;
+    }>
+  ).find((item) => item.code === "enterprise_service_desk");
+  expect(entry).toBeTruthy();
+
+  const suffix = Date.now().toString(36);
+  const conversation = await request.post(
+    "/api/v1/customer-service/conversations",
+    {
+      headers: apiHeaders,
+      data: {
+        business_unit_id: "bu_demo",
+        service_entry_id: entry!.id,
+        requester_ref: `e2e-enterprise-hr-${suffix}`,
+      },
+    },
+  );
+  expect(conversation.ok()).toBeTruthy();
+  const conversationId = (
+    (await conversation.json()) as { id: string }
+  ).id;
+  createdConversationIds.add(conversationId);
+  const message = await request.post(
+    `/api/v1/customer-service/conversations/${conversationId}/messages`,
+    {
+      headers: apiHeaders,
+      data: { content: "你好，我想咨询入职资料怎么准备" },
+    },
+  );
+  expect(message.ok()).toBeTruthy();
+  const ticketId = (
+    (await message.json()) as { current_ticket_id: string }
+  ).current_ticket_id;
+  expect(ticketId).toBeTruthy();
+  createdTicketIds.add(ticketId);
+  return { conversationId, ticketId };
+}
+
 test.afterEach(async ({ request }) => {
   for (const conversationId of createdConversationIds) {
     const response = await request.post(
@@ -296,7 +348,7 @@ test("业务页面不再显示全局技术视图切换，技术能力进入资�
 
   await expect(
     page.getByRole("heading", {
-      name: "像研发同事一样问，像 Agent 一样执行",
+      name: "像员工一样问，自动分派给对的人",
     }),
   ).toBeVisible();
   await expect(
@@ -339,11 +391,17 @@ test("企业服务台和电商客服使用独立入口且不显示场景切换�
 
   await expect(
     page.getByRole("heading", {
-      name: "像研发同事一样问，像 Agent 一样执行",
+      name: "像员工一样问，自动分派给对的人",
     }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "仓库文档" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "入职材料" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "账号被锁" }),
   ).toBeVisible();
   await expect(
     page
@@ -353,12 +411,14 @@ test("企业服务台和电商客服使用独立入口且不显示场景切换�
   await expect(
     page
       .locator(".chat-window")
-      .getByText("研发支持场景 · 在线，可以继续提问", { exact: true }),
+      .getByText("企业服务台 · 自动分派 · 在线，可以继续提问", {
+        exact: true,
+      }),
   ).toBeVisible();
   await expect(
     page
       .locator(".chat-identity-party.operator")
-      .getByText("模拟买家", { exact: true }),
+      .getByText("模拟员工", { exact: true }),
   ).toBeVisible();
   await expect(
     page
@@ -378,7 +438,7 @@ test("企业服务台和电商客服使用独立入口且不显示场景切换�
   ).toBeVisible();
   await expect(
     page.getByText(
-      "提取公开 GitHub 仓库名和具体技术问题。",
+      "从问题中判断是研发文档、入职材料、账号权限还是内部流程。",
       { exact: true },
     ),
   ).toBeVisible();
@@ -419,11 +479,11 @@ test("企业服务台和电商客服使用独立入口且不显示场景切换�
   ).toHaveCount(0);
   await expect(page).toHaveURL(/scenario=ecommerce/);
 
-  await page.getByText("研发支持 Agent", { exact: true }).click();
+  await page.getByText("企业服务台 Agent", { exact: true }).click();
   await expect(page).toHaveURL(/\/customer-service$/);
   await expect(
     page.getByRole("heading", {
-      name: "像研发同事一样问，像 Agent 一样执行",
+      name: "像员工一样问，自动分派给对的人",
     }),
   ).toBeVisible();
 });
@@ -439,7 +499,7 @@ test("聊天发送后立即清空输入并显示发送中气泡", async ({
     releaseMessage = resolve;
   });
   await page.route(
-    `**/api/v1/customer-service/conversations/${conversationId}/messages`,
+    `**/api/v1/customer-service/conversations/${conversationId}/messages/stream`,
     async (route) => {
       if (route.request().method() !== "POST") {
         await route.continue();
@@ -475,6 +535,12 @@ test("聊天发送后立即清空输入并显示发送中气泡", async ({
 
   releaseMessage?.();
   await expect(page.getByText(/你（买家）.*发送中/)).toHaveCount(0);
+  const streamingBubble = page.locator(".chat-bubble-streaming");
+  await expect(streamingBubble).toBeVisible();
+  await expect(
+    page.locator(".chat-bubble-streaming + .chat-bubble-meta"),
+  ).toContainText(/数字员工 · 正在/);
+  await expect(streamingBubble).toHaveCount(0, { timeout: 30_000 });
 });
 
 test("切换体验身份后不会恢复上一位身份的聊天会话", async ({
@@ -665,6 +731,48 @@ test("有商品知识时聊天页会显示数字员工回复", async ({
   await expect(
     page.getByText(assistantText, { exact: true }),
   ).toBeVisible();
+});
+
+test("聊天页可从分配给员工的会话打开能力快照", async ({
+  page,
+  request,
+}) => {
+  const { conversationId, ticketId } =
+    await createEnterpriseHrConversation(request);
+  await page.addInitScript(
+    ({ conversationId, ticketId }) => {
+      window.localStorage.clear();
+      window.localStorage.setItem(
+        "digital-workforce:test-identity",
+        "service-agent",
+      );
+      window.localStorage.setItem(
+        "digital-workforce:customer-chat-demo:v2:bu_demo:service-agent:enterprise",
+        JSON.stringify({ conversationId, ticketId }),
+      );
+    },
+    { conversationId, ticketId },
+  );
+  await page.goto(
+    `/customer-service?scenario=enterprise&conversation=${conversationId}`,
+  );
+  await expect(
+    page.getByText("你好，我想咨询入职资料怎么准备", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: "HR 入职资料数字员工",
+      exact: true,
+    })
+    .first()
+    .click();
+  const drawer = page.locator(".ant-drawer-content");
+  await expect(
+    drawer.getByText("员工快照 · HR 入职资料数字员工"),
+  ).toBeVisible();
+  await expect(drawer.getByText("跨入口复用")).toBeVisible();
+  await expect(drawer.getByText("企业服务台入口")).toBeVisible();
+  await expect(drawer.getByText("内部 HR 服务入口")).toBeVisible();
 });
 
 test("新聊天会话绑定业务入口并由后端选择员工", async ({

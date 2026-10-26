@@ -116,7 +116,7 @@ test("业务经理可从角色首页查看运行与审计指标", async ({ page 
     page.getByRole("button", { name: "检查并恢复演示数据" }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("menuitem", { name: "研发支持 Agent", exact: true }),
+    page.getByRole("menuitem", { name: "企业服务台 Agent", exact: true }),
   ).toBeVisible();
   await capture(page, "04-business-manager");
 });

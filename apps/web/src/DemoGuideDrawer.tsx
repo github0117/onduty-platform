@@ -33,12 +33,12 @@ const demoGuideSteps: {
   {
     title: "看清技术主线",
     description:
-      "研发支持 Agent 的链路：FastAPI + React 应用底座 → LangGraph 按 Skill 路由 → RAG 检索授权知识 → DeepWiki MCP 只读工具 → ToolCall 与 Trace 留痕。这一步不需要跳转，直接进入下一步检查员工上岗状态。",
+      "企业服务台 Agent 的链路：统一入口 → 按问题自动选择数字员工 → 加载该员工的 Skill、知识空间和 MCP 授权 → LangGraph 执行 → ToolCall 与 Trace 留痕。研发文档只是其中一条可核验的公开 MCP 链路。这一步不需要跳转，直接进入下一步检查员工上岗状态。",
   },
   {
     title: "检查员工上岗状态",
     description:
-      "在员工名单中找到“研发支持数字员工”，查看 Skill、知识、MCP 和上岗检查结果。",
+      "在员工名单中找到“研发支持数字员工”或“HR 入职资料数字员工”，点击姓名打开能力快照，查看上岗检查、Skill、知识、MCP 和所在业务入口。HR 员工同时服务企业服务台和内部 HR 入口，快照会标出跨入口复用。也可以在地址后加 ?employee=<员工 ID> 直接分享这名员工的快照。",
     path: "/employees/roster",
   },
   {
@@ -48,9 +48,9 @@ const demoGuideSteps: {
     path: "/employees/integrations",
   },
   {
-    title: "运行研发支持 Agent",
+    title: "运行企业服务台 Agent",
     description:
-      "进入企业服务台，询问 modelcontextprotocol/python-sdk 的模块职责和项目文档结构。",
+      "进入企业服务台，依次试“仓库文档”“入职材料”“账号被锁”，观察同一入口按问题自动分派到不同数字员工。回复后点击对话窗口标题里的员工姓名，可以直接打开这名员工在平台里的配置快照，看到对话与平台配置使用的是同一名数字员工。",
     path: "/customer-service?scenario=enterprise",
   },
   {
@@ -84,7 +84,7 @@ export default function DemoGuideDrawer({
 
   return (
     <Drawer
-      title="研发支持 Agent · 5 步技术演示"
+      title="企业服务台 Agent · 5 步技术演示"
       placement="right"
       width={520}
       open
@@ -157,8 +157,8 @@ export default function DemoGuideDrawer({
       <Alert
         type="info"
         showIcon
-        message="只需要完成研发支持这一条主链"
-        description="按顺序检查员工、真实 MCP、Agent 对话和 Trace。电商、HR 与内容生产只是复用案例，不需要现场逐个演示。"
+        message="只需要完成企业服务台这一条主链"
+        description="按顺序检查员工、真实 MCP、多渠道自动分派和 Trace。对话窗口标题会显示本次由哪名数字员工处理，点击姓名即可核对它的 Skill、知识、MCP 和业务入口；HR 员工同时服务企业服务台和内部 HR 入口，可以在“业务入口与分派”页看到跨入口复用标记。电商与内容生产是另一组复用案例，不需要现场逐个演示。"
       />
       <Steps
         className="demo-guide-steps"

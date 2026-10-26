@@ -324,7 +324,7 @@ test("客服聊天、工作台、审批和事故均有独立入口", async ({ pa
   await page.goto("/customer-service");
   await expect(
     page.getByRole("heading", {
-      name: "像研发同事一样问，像 Agent 一样执行",
+      name: "像员工一样问，自动分派给对的人",
     }),
   ).toBeVisible();
 

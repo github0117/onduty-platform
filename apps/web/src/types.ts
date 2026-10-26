@@ -532,6 +532,9 @@ export interface DigitalEmployeeRouteCandidate {
   matched_subject_terms?: string[];
   matched_body_terms?: string[];
   matched_synonyms?: string[];
+  explicit_intents?: string[];
+  inherited_intents?: string[];
+  suppressed_intents?: string[];
   fallback?: boolean;
   priority?: number | null;
   selected?: boolean;
@@ -539,6 +542,77 @@ export interface DigitalEmployeeRouteCandidate {
 
 export interface DigitalEmployeeRouteDecisionList {
   items: DigitalEmployeeRouteDecision[];
+  total: number;
+}
+
+export interface DigitalEmployeeRouteIntentConflict {
+  term: string;
+  employee_ids: string[];
+  employee_names: string[];
+  entry_ids: string[];
+  entry_names: string[];
+  source: "EXPLICIT" | "INHERITED" | "MIXED";
+}
+
+export interface DigitalEmployeeRouteIntentSuppression {
+  term: string;
+  affected_employee_ids: string[];
+  affected_employee_names: string[];
+  owner_employee_ids: string[];
+  owner_employee_names: string[];
+  entry_ids: string[];
+  entry_names: string[];
+}
+
+export interface DigitalEmployeeRouteIntentConflictList {
+  business_unit_id: string;
+  active_employee_count: number;
+  checked_terms: number;
+  conflicts: DigitalEmployeeRouteIntentConflict[];
+  suppressed: DigitalEmployeeRouteIntentSuppression[];
+}
+
+export interface DigitalEmployeeRouteEvaluationCase {
+  id: string;
+  business_unit_id: string;
+  service_entry_id: string;
+  expected_employee_id: string;
+  expected_employee_name: string;
+  question: string;
+  notes: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DigitalEmployeeRouteEvaluationResult {
+  case_id: string;
+  question: string;
+  expected_employee_id: string;
+  expected_employee_name: string;
+  predicted_employee_id: string;
+  predicted_employee_name: string;
+  matched: boolean;
+  reason_code: string;
+  confidence: number;
+  candidates: DigitalEmployeeRouteCandidate[];
+}
+
+export interface DigitalEmployeeRouteEvaluationRun {
+  id: string;
+  business_unit_id: string;
+  service_entry_id: string | null;
+  total: number;
+  passed: number;
+  failed: number;
+  accuracy: number;
+  results: DigitalEmployeeRouteEvaluationResult[];
+  created_by: string;
+  created_at: string;
+}
+
+export interface DigitalEmployeeRouteEvaluationRunList {
+  items: DigitalEmployeeRouteEvaluationRun[];
   total: number;
 }
 

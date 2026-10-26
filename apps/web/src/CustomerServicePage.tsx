@@ -68,9 +68,11 @@ import {
   reviewTicket,
   requestMcpActionCompensation,
   sendManualCustomerReply,
+  streamCustomerConversationMessage,
   takeOverCustomerConversation,
   watchCustomerConversation,
 } from "./api";
+import EmployeeProfileDrawer from "./EmployeeProfileDrawer";
 import type {
   AssignmentRunResult,
   CustomerConversation,
@@ -334,11 +336,20 @@ function CustomerChatDemo({
   );
   const [input, setInput] = useState("");
   const [pendingBuyerText, setPendingBuyerText] = useState("");
+  const [liveReply, setLiveReply] = useState<{
+    conversationId: string;
+    turnId: string | null;
+    text: string;
+    stage: string;
+  } | null>(null);
+  const liveConversationRef = useRef<string | null>(null);
+  const minConversationVersionRef = useRef(0);
   const [editingReview, setEditingReview] = useState(false);
   const [reviewDraftText, setReviewDraftText] = useState("");
   const [manualSuggestion, setManualSuggestion] =
     useState<CustomerReplySuggestion | null>(null);
   const [manualSuggestionError, setManualSuggestionError] = useState("");
+  const [profileEmployeeId, setProfileEmployeeId] = useState("");
   const [followLatest, setFollowLatest] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -385,11 +396,13 @@ function CustomerChatDemo({
   });
 
   useEffect(() => {
+    minConversationVersionRef.current = 0;
     if (!conversationId) return;
     const controller = new AbortController();
     watchCustomerConversation(
       conversationId,
       (updated) => {
+        if (updated.version < minConversationVersionRef.current) return;
         queryClient.setQueryData(
           ["chat-demo-conversation", conversationId],
           updated,
@@ -437,6 +450,8 @@ function CustomerChatDemo({
     setTicketId("");
     setInput("");
     setPendingBuyerText("");
+    setLiveReply(null);
+    liveConversationRef.current = null;
     setEditingReview(false);
     setReviewDraftText("");
     setManualSuggestion(null);
@@ -517,29 +532,100 @@ function CustomerChatDemo({
         activeConversationId = created.id;
         setConversationId(created.id);
       }
-      const updated = await addCustomerConversationMessage(
-        activeConversationId,
-        {
-          content: normalized,
-          productId: ecommerceScenario ? selectedProduct?.id : undefined,
-          sku: ecommerceScenario ? selectedProduct?.sku : undefined,
-        },
-      );
-      return updated;
+      liveConversationRef.current = activeConversationId;
+      setLiveReply({
+        conversationId: activeConversationId,
+        turnId: null,
+        text: "",
+        stage: "正在连接数字员工",
+      });
+      let streamError = "";
+      try {
+        await streamCustomerConversationMessage(
+          activeConversationId,
+          {
+            content: normalized,
+            productId: ecommerceScenario ? selectedProduct?.id : undefined,
+            sku: ecommerceScenario ? selectedProduct?.sku : undefined,
+          },
+          (event) => {
+            if (liveConversationRef.current !== activeConversationId) return;
+            if (event.type === "start") {
+              setPendingBuyerText("");
+              setLiveReply((current) =>
+                current && current.conversationId === activeConversationId
+                  ? {
+                      ...current,
+                      turnId: event.turn_id,
+                      stage: "正在识别问题",
+                    }
+                  : current,
+              );
+              queryClient.setQueryData(
+                ["chat-demo-conversation", activeConversationId],
+                event.conversation,
+              );
+              setTicketId(event.conversation.current_ticket_id ?? "");
+              return;
+            }
+            if (event.type === "status") {
+              setLiveReply((current) =>
+                current && current.conversationId === activeConversationId
+                  ? { ...current, stage: event.stage }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "delta") {
+              setLiveReply((current) =>
+                current && current.conversationId === activeConversationId
+                  ? { ...current, text: current.text + event.text }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "replace") {
+              setLiveReply((current) =>
+                current && current.conversationId === activeConversationId
+                  ? { ...current, text: event.text }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "done") {
+              minConversationVersionRef.current = Math.max(
+                minConversationVersionRef.current,
+                event.conversation.version,
+              );
+              queryClient.setQueryData(
+                ["chat-demo-conversation", event.conversation.id],
+                event.conversation,
+              );
+              setTicketId(event.conversation.current_ticket_id ?? "");
+              return;
+            }
+            if (event.type === "error") {
+              streamError =
+                "数字员工这次没有完成回复，请稍后重试。";
+            }
+          },
+        );
+      } finally {
+        if (liveConversationRef.current === activeConversationId) {
+          liveConversationRef.current = null;
+          setLiveReply(null);
+        }
+      }
+      if (streamError) throw new Error(streamError);
     },
-    onSuccess: async (updated) => {
+    onSuccess: async () => {
       setInput("");
       setPendingBuyerText("");
       setManualSuggestion(null);
       setManualSuggestionError("");
-      setTicketId(updated.current_ticket_id ?? "");
-      queryClient.setQueryData(
-        ["chat-demo-conversation", updated.id],
-        updated,
-      );
       void Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["chat-demo-conversation", updated.id],
+          queryKey: ["chat-demo-conversation"],
         }),
         queryClient.invalidateQueries({
           queryKey: ["chat-demo-ticket"],
@@ -549,6 +635,9 @@ function CustomerChatDemo({
     onError: (error: Error, submittedText) => {
       setPendingBuyerText("");
       setInput((current) => current || submittedText);
+      void queryClient.invalidateQueries({
+        queryKey: ["chat-demo-conversation"],
+      });
       message.error(error.message);
     },
   });
@@ -580,6 +669,8 @@ function CustomerChatDemo({
     setTicketId("");
     setInput("");
     setPendingBuyerText("");
+    setLiveReply(null);
+    liveConversationRef.current = null;
     setEditingReview(false);
     setReviewDraftText("");
     setManualSuggestion(null);
@@ -591,6 +682,10 @@ function CustomerChatDemo({
   const currentConversation: CustomerConversation | undefined =
     conversation.data;
   const currentTicket = ticket.data;
+  const activeLiveReply =
+    liveReply && liveReply.conversationId === conversationId
+      ? liveReply
+      : null;
   const messages = currentConversation?.messages ?? [];
   const currentTurn = currentConversation?.current_turn ?? null;
   const turnInFlight = Boolean(
@@ -608,6 +703,16 @@ function CustomerChatDemo({
   const currentTurnDeliveredAnswer = Boolean(
     currentTurn?.status === "COMPLETED" && latestAssistant,
   );
+
+  useEffect(() => {
+    if (!currentConversation) return;
+    setLiveReply((current) =>
+      current && current.conversationId !== currentConversation.id
+        ? null
+        : current,
+    );
+  }, [currentConversation]);
+
   const draftText = currentTicket?.draft?.text?.trim() ?? "";
   const draftAlreadyDelivered = Boolean(
     draftText &&
@@ -718,6 +823,7 @@ function CustomerChatDemo({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [
+    activeLiveReply?.text,
     draftText,
     messages.length,
     pendingBuyerText,
@@ -747,8 +853,12 @@ function CustomerChatDemo({
           text: "请用 GitHub 仓库文档查询 modelcontextprotocol/python-sdk 的模块职责和项目文档结构。",
         },
         {
-          title: "依赖关系",
-          text: "请查询 modelcontextprotocol/python-sdk 的主要模块和依赖关系，并说明依据。",
+          title: "入职材料",
+          text: "我想咨询入职资料需要准备哪些材料？",
+        },
+        {
+          title: "账号被锁",
+          text: "我的企业账号被锁定了，应该怎么处理？",
         },
         {
           title: "权限边界",
@@ -776,20 +886,20 @@ function CustomerChatDemo({
       ]
     : [
         {
-          title: "识别研发任务",
-          description: "提取公开 GitHub 仓库名和具体技术问题。",
+          title: "识别服务请求",
+          description: "从问题中判断是研发文档、入职材料、账号权限还是内部流程。",
         },
         {
-          title: "选择研发员工",
-          description: "按代码仓库、项目文档和依赖关系意图路由。",
+          title: "选择对应员工",
+          description: "在入口员工池中按意图、优先级和置信度分派。",
         },
         {
-          title: "检索授权规范",
-          description: "只检索研发支持员工获准使用的知识空间。",
+          title: "加载岗位能力",
+          description: "使用该员工获准的 Skill、知识空间、MCP 和角色提示词。",
         },
         {
-          title: "调用只读 MCP",
-          description: "规划 DeepWiki 工具，执行后生成实时引用和 ToolCall。",
+          title: "执行并留痕",
+          description: "只读工具直接执行，高风险动作转人工，全程保留 Trace。",
         },
       ];
   const workflowLabel = currentTicket
@@ -800,11 +910,13 @@ function CustomerChatDemo({
       )
     : scenario === "ecommerce"
       ? "等待咨询"
-      : "等待研发问题";
+      : "等待服务请求";
   const employeeName =
     currentTicket?.employee.name ??
     "由业务入口自动分派";
-  const sceneLabel = ecommerceScenario ? "电商客服场景" : "研发支持场景";
+  const sceneLabel = ecommerceScenario
+    ? "电商客服场景"
+    : "企业服务台 · 自动分派";
   const statusText = send.isPending
     ? "正在发送"
     : processing
@@ -849,20 +961,20 @@ function CustomerChatDemo({
               ? "边对话，边看处理依据"
               : ecommerceScenario
                 ? "像买家一样问，像客服一样答"
-                : "像研发同事一样问，像 Agent 一样执行"}
+                : "像员工一样问，自动分派给对的人"}
           </Title>
           <Paragraph type="secondary">
             {technicalMode
               ? "保留真实对话，同时在右侧查看员工路由、分类置信度、知识引用、风险和处理状态。"
               : ecommerceScenario
                 ? "不用先配置参数。直接输入问题，系统会自动识别意图、查知识并生成回复；遇到退款或高风险动作时会转人工确认。"
-                : "直接询问公开 GitHub 仓库的模块、文档或依赖关系。系统会路由研发支持员工、检索授权规范、调用 DeepWiki MCP，并返回可追溯引用。"}
+                : "研发文档、入职材料、账号权限和内部流程都可以直接问。系统会在同一个服务台入口里自动选择对应数字员工，并显示本次由谁处理。"}
           </Paragraph>
           <div className="chat-identity-strip">
             <div className="chat-identity-party operator">
               <span>当前视角</span>
-              <strong>模拟买家</strong>
-              <small>这里只体验客户侧对话，不显示内部岗位身份</small>
+              <strong>模拟{requestPartyLabel}</strong>
+              <small>这里只体验请求方对话，不显示内部岗位身份</small>
             </div>
             <div className="chat-identity-connector" aria-hidden="true">
               →
@@ -870,7 +982,20 @@ function CustomerChatDemo({
             <div className="chat-identity-party conversation">
               <span>这段对话里</span>
               <strong>
-                你（模拟{requestPartyLabel}）↔ {employeeName}
+                你（模拟{requestPartyLabel}）↔{" "}
+                {currentTicket?.employee ? (
+                  <Button
+                    type="link"
+                    className="employee-profile-link"
+                    onClick={() =>
+                      setProfileEmployeeId(currentTicket.employee.id)
+                    }
+                  >
+                    {currentTicket.employee.name}
+                  </Button>
+                ) : (
+                  employeeName
+                )}
               </strong>
               <small>
                 {serviceEntryDisplayName} · {serviceEntryEmployeeCount} 名数字员工可参与分派
@@ -903,14 +1028,28 @@ function CustomerChatDemo({
               <div className="chat-avatar">AI</div>
               <div>
                 <Space size={8}>
-                  <Text strong>{employeeName}</Text>
+                  {currentTicket?.employee ? (
+                    <Button
+                      type="link"
+                      className="employee-profile-link"
+                      onClick={() =>
+                        setProfileEmployeeId(currentTicket.employee!.id)
+                      }
+                    >
+                      {currentTicket.employee.name}
+                    </Button>
+                  ) : (
+                    <Text strong>{employeeName}</Text>
+                  )}
                   <span className="chat-online">
                     <span className="chat-online-dot" />
                     在线
                   </span>
                 </Space>
                 <div className="chat-window-subtitle">
-                  {sceneLabel} · {statusText}
+                  {currentTicket?.employee
+                    ? `本次由该员工处理 · ${statusText}`
+                    : `${sceneLabel} · ${statusText}`}
                 </div>
               </div>
             </Space>
@@ -946,7 +1085,7 @@ function CustomerChatDemo({
                 <div className="chat-bubble">
                   {ecommerceScenario
                     ? "您好，我是电商客服数字员工。您可以直接描述商品、物流或售后问题，我会先给出处理建议；涉及退款等高风险动作时，会转人工确认。"
-                    : "您好，我是研发支持数字员工。请提供 owner/repo 格式的公开 GitHub 仓库和技术问题；我会检索仓库文档、调用只读 MCP 工具，并说明回答依据。私有仓库、敏感信息或工具失败会转人工处理。"}
+                    : "您好，这里是企业服务台。研发仓库、入职材料、账号权限和内部流程都可以直接问，我会根据问题分派给对应的数字员工。分派结果和员工的 Skill、知识、MCP 配置都可以在对话里点开查看；高风险事项会转人工确认。"}
                 </div>
                 <div className="chat-bubble-meta">数字员工 · 刚刚</div>
               </div>
@@ -989,12 +1128,17 @@ function CustomerChatDemo({
                         ? `你（${requestPartyLabel}）`
                         : fromHuman
                           ? `人工客服 · ${item.created_by}`
-                          : "数字员工"}
+                          : currentTicket?.employee
+                            ? `${currentTicket.employee.name} · 数字员工`
+                            : "数字员工"}
                       {" · "}
-                      {new Date(item.created_at).toLocaleTimeString("zh-CN", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      {new Date(item.created_at).toLocaleTimeString(
+                        "zh-CN",
+                        {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        },
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1014,7 +1158,27 @@ function CustomerChatDemo({
               </div>
             )}
 
-            {(send.isPending || (processing && !technicalAnswerInFlight)) && (
+            {activeLiveReply?.text && (
+              <div className="chat-message-row assistant">
+                <Avatar className="chat-small-avatar">AI</Avatar>
+                <div className="chat-message-content">
+                  <div className="chat-bubble chat-bubble-streaming">
+                    {activeLiveReply.text}
+                    <span className="chat-stream-caret" />
+                  </div>
+                  <div className="chat-bubble-meta">
+                    {currentTicket?.employee
+                      ? `${currentTicket.employee.name} · 数字员工`
+                      : "数字员工"}
+                    {" · "}
+                    {activeLiveReply.stage || "正在回复"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(send.isPending || (processing && !technicalAnswerInFlight)) &&
+              !activeLiveReply?.text && (
               <div className="chat-message-row assistant">
                 <Avatar className="chat-small-avatar">AI</Avatar>
                 <div className="chat-message-content">
@@ -1024,13 +1188,14 @@ function CustomerChatDemo({
                     <span />
                   </div>
                   <div className="chat-bubble-meta">
-                    {send.isPending
-                      ? "消息已送达，正在创建服务任务"
-                      : !currentTicket
-                        ? "正在读取业务上下文"
-                        : !currentTicket.classification
-                          ? "正在识别问题类型"
-                          : "正在检索知识并生成处理建议"}
+                    {activeLiveReply?.stage ??
+                      (send.isPending
+                        ? "消息已送达，正在创建服务任务"
+                        : !currentTicket
+                          ? "正在读取业务上下文"
+                          : !currentTicket.classification
+                            ? "正在识别问题类型"
+                            : "正在检索知识并生成处理建议")}
                   </div>
                 </div>
               </div>
@@ -1153,7 +1318,7 @@ function CustomerChatDemo({
               </div>
             )}
 
-            {technicalAnswerInFlight && (
+            {technicalAnswerInFlight && !activeLiveReply?.text && (
                 <div className="chat-message-row assistant">
                   <Avatar className="chat-small-avatar">AI</Avatar>
                   <div className="chat-message-content">
@@ -1163,7 +1328,9 @@ function CustomerChatDemo({
                       <span />
                     </div>
                     <div className="chat-bubble-meta">
-                      {currentTurn?.stage_label ?? "正在处理本轮问题"}
+                      {activeLiveReply?.stage ??
+                        currentTurn?.stage_label ??
+                        "正在处理本轮问题"}
                     </div>
                   </div>
                 </div>
@@ -1497,6 +1664,20 @@ function CustomerChatDemo({
                             }`}
                             description={routeDecision.reason}
                           />
+                          {(currentTicket?.employee?.id ??
+                            selectedRouteCandidate?.employee_id) && (
+                            <Button
+                              size="small"
+                              onClick={() =>
+                                setProfileEmployeeId(
+                                  currentTicket?.employee?.id ??
+                                    selectedRouteCandidate!.employee_id,
+                                )
+                              }
+                            >
+                              查看员工 Skill、知识与 MCP
+                            </Button>
+                          )}
                           <Space wrap size={4}>
                             <Tag>
                               判断把握{" "}
@@ -1876,8 +2057,21 @@ function CustomerChatDemo({
                   <div className="chat-context-row">
                     <Text type="secondary">数字员工</Text>
                     <Text>
-                      {currentTicket?.employee.name ??
-                        "等待自动分派"}
+                      {currentTicket?.employee ? (
+                        <Button
+                          type="link"
+                          className="employee-profile-link"
+                          onClick={() =>
+                            setProfileEmployeeId(
+                              currentTicket.employee.id,
+                            )
+                          }
+                        >
+                          {currentTicket.employee.name}
+                        </Button>
+                      ) : (
+                        "等待自动分派"
+                      )}
                     </Text>
                   </div>
                   <div className="chat-context-row">
@@ -1930,6 +2124,16 @@ function CustomerChatDemo({
           ) : null}
         </div>
       </div>
+      <EmployeeProfileDrawer
+        employeeId={profileEmployeeId}
+        employee={
+          employees.data?.find(
+            (employee) => employee.id === profileEmployeeId,
+          ) ?? null
+        }
+        open={Boolean(profileEmployeeId)}
+        onClose={() => setProfileEmployeeId("")}
+      />
     </div>
   );
 }

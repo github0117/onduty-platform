@@ -22,6 +22,7 @@ apps/web/.pnpm-store/
 apps/web/node_modules/
 .cache/
 test-results/
+apps/web/demo-output/
 playwright-report/
 blob-report/
 celerybeat-schedule*

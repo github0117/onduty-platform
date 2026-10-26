@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
@@ -161,6 +162,7 @@ class TicketModelGateway(Protocol):
         queue_id: str,
         snippets: list[DraftSnippet],
         skill_instructions: str | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> DraftGenerationResponse: ...
 
     def generate_workforce_step(

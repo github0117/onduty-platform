@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -65,6 +66,7 @@ class DigitalEmployeeRouter:
         body: str,
         channel: str,
         allowed_employee_ids: set[UUID] | None = None,
+        persist_decision: bool = True,
     ) -> EmployeeRouteResult:
         subject_text = subject.casefold()
         body_text = body.casefold()
@@ -93,6 +95,7 @@ class DigitalEmployeeRouter:
             )
             return EmployeeRouteResult(employee=employee, decision=None)
 
+        explicit_owners = explicit_intent_owners(rows, channel)
         candidates: list[dict[str, Any]] = []
         for employee, rule in rows:
             excluded_reasons: list[str] = []
@@ -106,23 +109,15 @@ class DigitalEmployeeRouter:
                 excluded_reasons.append(
                     f"渠道 {channel} 不在规则范围 {rule.channels_json}"
                 )
-            intent_values = (
-                [
-                    *rule.intents_json,
-                    *_manifest_strings(employee, "intents"),
-                    *_manifest_strings(employee, "capabilities"),
-                    *_template_intents(employee.template_code),
-                ]
-                if rule is not None
-                else [
-                    *_manifest_strings(employee, "intents"),
-                    *_manifest_strings(employee, "capabilities"),
-                    *_template_intents(employee.template_code),
-                ]
+            intent_breakdown = digital_employee_intent_breakdown(
+                employee,
+                rule,
+                explicit_owners=explicit_owners,
             )
-            intent_terms = _unique_strings(
-                intent_values
-            )
+            explicit_terms = intent_breakdown["explicit"]
+            inherited_terms = intent_breakdown["inherited"]
+            suppressed_terms = intent_breakdown["suppressed"]
+            intent_terms = intent_breakdown["effective"]
             matched_subject_terms = [
                 term
                 for term in intent_terms
@@ -191,6 +186,9 @@ class DigitalEmployeeRouter:
                     "matched_subject_terms": matched_subject_terms,
                     "matched_body_terms": matched_body_terms,
                     "matched_synonyms": matched_synonyms,
+                    "explicit_intents": explicit_terms,
+                    "inherited_intents": inherited_terms,
+                    "suppressed_intents": suppressed_terms,
                     "fallback": bool(rule and rule.fallback),
                     "priority": rule.priority if rule is not None else None,
                     "selected": False,
@@ -216,8 +214,9 @@ class DigitalEmployeeRouter:
                 score=0.0,
                 confidence=0.1,
             )
-            self.session.add(decision)
-            self.session.flush()
+            if persist_decision:
+                self.session.add(decision)
+                self.session.flush()
             return EmployeeRouteResult(employee=employee, decision=decision)
 
         eligible.sort(
@@ -264,8 +263,9 @@ class DigitalEmployeeRouter:
                     score=0.0,
                     confidence=0.2,
                 )
-                self.session.add(decision)
-                self.session.flush()
+                if persist_decision:
+                    self.session.add(decision)
+                    self.session.flush()
                 return EmployeeRouteResult(
                     employee=employee,
                     decision=decision,
@@ -370,9 +370,69 @@ class DigitalEmployeeRouter:
             score=float(winner["score"]),
             confidence=confidence,
         )
-        self.session.add(decision)
-        self.session.flush()
+        if persist_decision:
+            self.session.add(decision)
+            self.session.flush()
         return EmployeeRouteResult(employee=selected, decision=decision)
+
+
+def explicit_intent_owners(
+    rows: Iterable[Any],
+    channel: str,
+) -> dict[str, set[str]]:
+    """Map explicit rule intents to the employees that claim them.
+
+    Only explicit route-rule intents participate in ownership. Manifest and
+    template terms are inherited defaults, so a specialist rule inside the
+    same entry pool can take a term away from a generic template employee.
+    """
+
+    owners: dict[str, set[str]] = {}
+    for employee, rule in rows:
+        if employee.status != "ACTIVE" or rule is None or not rule.enabled:
+            continue
+        if rule.channels_json and channel not in rule.channels_json:
+            continue
+        for term in _unique_strings(rule.intents_json):
+            owners.setdefault(term.casefold(), set()).add(str(employee.id))
+    return owners
+
+
+def digital_employee_intent_breakdown(
+    employee: DigitalEmployee,
+    rule: DigitalEmployeeRouteRule | None,
+    *,
+    explicit_owners: dict[str, set[str]] | None = None,
+) -> dict[str, list[str]]:
+    """Separate explicit, inherited, suppressed and effective intents."""
+
+    explicit = (
+        _unique_strings(rule.intents_json)
+        if rule is not None and rule.enabled
+        else []
+    )
+    inherited_values = [
+        *_manifest_strings(employee, "intents"),
+        *_manifest_strings(employee, "capabilities"),
+        *_template_intents(employee.template_code),
+    ]
+    inherited: list[str] = []
+    suppressed: list[str] = []
+    own_id = str(employee.id)
+    for term in _unique_strings(inherited_values):
+        if term in explicit:
+            continue
+        owners = (explicit_owners or {}).get(term.casefold())
+        if owners and own_id not in owners:
+            suppressed.append(term)
+        else:
+            inherited.append(term)
+    return {
+        "explicit": explicit,
+        "inherited": inherited,
+        "suppressed": suppressed,
+        "effective": _unique_strings([*explicit, *inherited]),
+    }
 
 
 def _manifest_strings(

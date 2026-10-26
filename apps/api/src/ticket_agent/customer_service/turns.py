@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
@@ -14,6 +15,7 @@ from ticket_agent.customer_service.models import (
     CustomerMessage,
 )
 from ticket_agent.customer_service.service import CustomerConversationService
+from ticket_agent.customer_service.streaming import stream_text
 from ticket_agent.customer_service.suggestions import (
     CustomerReplySuggestionService,
 )
@@ -32,7 +34,15 @@ class ConversationTurnOrchestrator:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def process(self, turn_id: UUID, *, correlation_id: str) -> None:
+    def process(
+        self,
+        turn_id: UUID,
+        *,
+        correlation_id: str,
+        on_stage: Callable[[str], None] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_text_replace: Callable[[str], None] | None = None,
+    ) -> None:
         turn = self.session.scalar(
             select(ConversationTurn)
             .where(ConversationTurn.id == turn_id)
@@ -69,7 +79,21 @@ class ConversationTurnOrchestrator:
             )
             return
 
-        turn.stage_label = "正在识别问题"
+        streamed_parts: list[str] = []
+
+        def emit_stage(label: str) -> None:
+            turn.stage_label = label
+            if on_stage is not None:
+                on_stage(label)
+
+        def emit_delta(delta: str) -> None:
+            if not delta:
+                return
+            streamed_parts.append(delta)
+            if on_text_delta is not None:
+                on_text_delta(delta)
+
+        emit_stage("正在识别问题")
         turn.started_at = datetime.now(UTC)
         self.session.commit()
 
@@ -86,12 +110,16 @@ class ConversationTurnOrchestrator:
         self._apply_analysis(ticket, analysis)
         turn.analysis_json = self._analysis_payload(analysis)
         turn.intent = analysis.category_primary
-        turn.stage_label = "正在检索知识并处理"
+        emit_stage("正在检索知识并处理")
         self.session.commit()
 
         try:
             suggestion = CustomerReplySuggestionService(
-                self.session
+                self.session,
+                on_stage=on_stage,
+                on_text_delta=(
+                    emit_delta if on_text_delta is not None else None
+                ),
             ).generate(
                 conversation.id,
                 agent_id="digital_employee.runtime",
@@ -110,12 +138,23 @@ class ConversationTurnOrchestrator:
             )
             return
 
+        assistant_content = suggestion.text
+        if on_text_delta is not None:
+            streamed_text = "".join(streamed_parts)
+            if not streamed_text:
+                stream_text(assistant_content, emit_delta)
+            elif (
+                streamed_text != assistant_content
+                and on_text_replace is not None
+            ):
+                on_text_replace(assistant_content)
+
         assistant = CustomerConversationService(
             self.session
         ).append_assistant_message(
             conversation_id=conversation.id,
             ticket_id=ticket.id,
-            content=suggestion.text,
+            content=assistant_content,
         )
         CustomerConversationService(self.session).complete_turn(
             turn_id=turn.id,
@@ -316,6 +355,83 @@ def process_conversation_turn(turn_id: UUID, correlation_id: str) -> None:
         ConversationTurnOrchestrator(session).process(
             turn_id,
             correlation_id=correlation_id,
+        )
+
+
+def process_conversation_turn_stream(
+    turn_id: UUID,
+    correlation_id: str,
+    emit: Callable[[dict[str, object]], None],
+) -> None:
+    """Run a turn and publish live stage/text events for SSE consumers."""
+    with SessionLocal() as session:
+        turn = session.get(ConversationTurn, turn_id)
+        if turn is None:
+            emit(
+                {
+                    "type": "error",
+                    "turn_id": str(turn_id),
+                    "message": "TURN_NOT_FOUND",
+                }
+            )
+            return
+        conversation_id = turn.conversation_id
+        try:
+            ConversationTurnOrchestrator(session).process(
+                turn_id,
+                correlation_id=correlation_id,
+                on_stage=lambda label: emit(
+                    {
+                        "type": "status",
+                        "turn_id": str(turn_id),
+                        "stage": label,
+                    }
+                ),
+                on_text_delta=lambda text: emit(
+                    {
+                        "type": "delta",
+                        "turn_id": str(turn_id),
+                        "text": text,
+                    }
+                ),
+                on_text_replace=lambda text: emit(
+                    {
+                        "type": "replace",
+                        "turn_id": str(turn_id),
+                        "text": text,
+                    }
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            session.rollback()
+            emit(
+                {
+                    "type": "error",
+                    "turn_id": str(turn_id),
+                    "message": type(exc).__name__,
+                }
+            )
+            return
+        try:
+            view = CustomerConversationService(session).view(
+                CustomerConversationService(session).get(conversation_id)
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            session.rollback()
+            emit(
+                {
+                    "type": "error",
+                    "turn_id": str(turn_id),
+                    "message": type(exc).__name__,
+                }
+            )
+            return
+        emit(
+            {
+                "type": "done",
+                "turn_id": str(turn_id),
+                "conversation": view.model_dump(mode="json"),
+            }
         )
 
 

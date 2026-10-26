@@ -136,6 +136,205 @@ const routeRule = {
   updated_at: now,
 };
 
+const activeEmployee = {
+  ...employee,
+  id: "employee-active",
+  employee_key: "e2e_enterprise_desk",
+  name: "企业服务台数字员工",
+  template_code: "enterprise_service_desk",
+  status: "ACTIVE",
+};
+
+const evaluationEntry = {
+  id: "entry-evaluation",
+  business_unit_id: "bu_demo",
+  code: "enterprise_service_desk",
+  name: "企业服务台入口",
+  description: "承接制度、账号、IT、财务和内部流程请求。",
+  domain: "enterprise_service",
+  channel: "enterprise_service",
+  status: "ACTIVE",
+  default_employee_id: activeEmployee.id,
+  fallback_employee_id: activeEmployee.id,
+  human_queue_id: "ENTERPRISE_SERVICE_DESK",
+  knowledge_scope: {},
+  sla_policy: {},
+  employees: [
+    {
+      employee_id: activeEmployee.id,
+      employee_key: activeEmployee.employee_key,
+      employee_name: activeEmployee.name,
+      role_type: "PRIMARY",
+      priority: 10,
+      enabled: true,
+      employee_status: activeEmployee.status,
+    },
+  ],
+  version: 1,
+  created_at: now,
+  updated_at: now,
+};
+
+const routeEvaluationCase = {
+  id: "evaluation-case-e2e",
+  business_unit_id: "bu_demo",
+  service_entry_id: evaluationEntry.id,
+  expected_employee_id: activeEmployee.id,
+  expected_employee_name: activeEmployee.name,
+  question: "报销需要准备哪些发票？",
+  notes: "财务与费用",
+  enabled: true,
+  created_at: now,
+  updated_at: now,
+};
+
+const routeEvaluationRun = {
+  id: "evaluation-run-e2e",
+  business_unit_id: "bu_demo",
+  service_entry_id: evaluationEntry.id,
+  total: 2,
+  passed: 1,
+  failed: 1,
+  accuracy: 0.5,
+  results: [
+    {
+      case_id: routeEvaluationCase.id,
+      question: routeEvaluationCase.question,
+      expected_employee_id: activeEmployee.id,
+      expected_employee_name: activeEmployee.name,
+      predicted_employee_id: activeEmployee.id,
+      predicted_employee_name: activeEmployee.name,
+      matched: true,
+      reason_code: "INTENT_MATCH",
+      confidence: 0.88,
+      candidates: [],
+    },
+    {
+      case_id: "evaluation-case-miss",
+      question: "入职材料需要准备什么？",
+      expected_employee_id: "employee-hr",
+      expected_employee_name: "HR 入职资料数字员工",
+      predicted_employee_id: activeEmployee.id,
+      predicted_employee_name: activeEmployee.name,
+      matched: false,
+      reason_code: "INTENT_MATCH",
+      confidence: 0.71,
+      candidates: [
+        {
+          employee_id: activeEmployee.id,
+          employee_key: activeEmployee.employee_key,
+          employee_name: activeEmployee.name,
+          template_code: activeEmployee.template_code,
+          status: "ACTIVE",
+          eligible: true,
+          excluded_reasons: [],
+          score: 0.71,
+          keyword_score: 0.5,
+          semantic_score: 0.3,
+          matched_intents: ["入职"],
+          explicit_intents: ["账号", "报销"],
+          inherited_intents: ["制度", "流程"],
+          suppressed_intents: [],
+          fallback: false,
+          selected: true,
+        },
+        {
+          employee_id: "employee-hr",
+          employee_key: "hr_onboarding",
+          employee_name: "HR 入职资料数字员工",
+          template_code: "hr_onboarding",
+          status: "ACTIVE",
+          eligible: true,
+          excluded_reasons: [],
+          score: 0.62,
+          keyword_score: 0.5,
+          semantic_score: 0.2,
+          matched_intents: ["入职"],
+          explicit_intents: ["入职", "年假"],
+          inherited_intents: ["资料"],
+          suppressed_intents: [],
+          fallback: false,
+          selected: false,
+        },
+      ],
+    },
+  ],
+  created_by: "demo-admin",
+  created_at: now,
+};
+
+const intentConflictPayload = {
+  business_unit_id: "bu_demo",
+  active_employee_count: 3,
+  checked_terms: 18,
+  conflicts: [
+    {
+      term: "报销",
+      employee_ids: [activeEmployee.id, "employee-finance"],
+      employee_names: [activeEmployee.name, "财务共享服务"],
+      entry_ids: [evaluationEntry.id],
+      entry_names: [evaluationEntry.name],
+      source: "EXPLICIT",
+    },
+  ],
+  suppressed: [
+    {
+      term: "入职",
+      affected_employee_ids: [activeEmployee.id],
+      affected_employee_names: [activeEmployee.name],
+      owner_employee_ids: ["employee-hr"],
+      owner_employee_names: ["HR 入职资料数字员工"],
+      entry_ids: [evaluationEntry.id],
+      entry_names: [evaluationEntry.name],
+    },
+  ],
+};
+
+async function mockRouteEvaluationShell(page: Page): Promise<void> {
+  await mockEmployeeShell(page, [activeEmployee]);
+  await page.route(
+    "**/api/v1/business-service-entries?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([evaluationEntry]),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/digital-employee-route-evaluation-cases?*",
+    async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([routeEvaluationCase]),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/digital-employee-route-evaluation-runs?*",
+    async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [routeEvaluationRun],
+          total: 1,
+        }),
+      });
+    },
+  );
+}
+
 const businessEntry = {
   id: "entry-e2e",
   business_unit_id: "bu_demo",
@@ -833,4 +1032,150 @@ test("路由结果使用员工姓名和中文原因，不直接暴露内部状�
     page.getByText("当前渠道不在派发规则范围内", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText(/EVALUATION_FAILED/)).toHaveCount(0);
+});
+
+test("路由管理页展示意图冲突和继承意图让位", async ({ page }) => {
+  await mockRouteEvaluationShell(page);
+  await page.route(
+    "**/api/v1/digital-employee-route-rules?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: "[]",
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/digital-employee-route-decisions?business_unit_id=bu_demo*",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [], total: 0 }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/digital-employee-route-intent-conflicts?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(intentConflictPayload),
+      });
+    },
+  );
+  await openPage(page, "/employees/routing");
+
+  await expect(
+    page.getByText("意图归属冲突检查", { exact: true }),
+  ).toBeVisible();
+  const conflictRow = page
+    .locator("tr")
+    .filter({ hasText: "报销" })
+    .first();
+  await expect(conflictRow).toContainText("双方显式配置");
+  await expect(conflictRow).toContainText("财务共享服务");
+  const suppressionRow = page
+    .locator("tr")
+    .filter({ hasText: "入职" })
+    .first();
+  await expect(suppressionRow).toContainText("企业服务台数字员工");
+  await expect(suppressionRow).toContainText("HR 入职资料数字员工");
+
+  await page.getByRole("button", { name: "打开路由评测" }).click();
+  await expect(page).toHaveURL(/\/employees\/route-evaluation/);
+});
+
+test("路由评测页展示准确率、误派原因并支持添加问题", async ({ page }) => {
+  await mockRouteEvaluationShell(page);
+  const createRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes(
+        "/api/v1/digital-employee-route-evaluation-cases",
+      ),
+  );
+  await page.route(
+    "**/api/v1/digital-employee-route-evaluation-cases?*",
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...routeEvaluationCase,
+          id: "evaluation-case-created",
+          question: "办公室 VPN 连不上怎么办？",
+        }),
+      });
+    },
+  );
+  const runRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes(
+        "/api/v1/digital-employee-route-evaluation-runs",
+      ),
+  );
+  await page.route(
+    "**/api/v1/digital-employee-route-evaluation-runs?*",
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify(routeEvaluationRun),
+      });
+    },
+  );
+  await openPage(page, "/employees/route-evaluation");
+
+  await expect(
+    page.getByRole("heading", { name: "路由评测集" }),
+  ).toBeVisible();
+  await expect(page.getByText("最近准确率")).toBeVisible();
+  await expect(
+    page.getByText("报销需要准备哪些发票？").first(),
+  ).toBeVisible();
+  await expect(page.getByText("1 / 2").first()).toBeVisible();
+
+  const missRow = page
+    .locator("tr")
+    .filter({ hasText: "入职材料需要准备什么？" })
+    .first();
+  await expect(missRow).toContainText("误派");
+  await expect(missRow).toContainText("HR 入职资料数字员工");
+  await missRow.locator(".ant-table-row-expand-icon").click();
+  await expect(page.getByText("显式", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("继承", { exact: true }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "添加问题" }).click();
+  const dialog = page.getByRole("dialog", { name: "添加评测问题" });
+  await dialog.getByLabel("评测问题").fill("办公室 VPN 连不上怎么办？");
+  await dialog.getByLabel("评测备注").fill("IT 与账号");
+  await dialog.getByRole("button", { name: "添加问题" }).click();
+  const create = await createRequest;
+  expect(create.postDataJSON()).toMatchObject({
+    service_entry_id: evaluationEntry.id,
+    expected_employee_id: activeEmployee.id,
+    question: "办公室 VPN 连不上怎么办？",
+    notes: "IT 与账号",
+  });
+
+  await page.getByRole("button", { name: "运行评测" }).click();
+  const run = await runRequest;
+  expect(run.postDataJSON()).toEqual({
+    service_entry_id: evaluationEntry.id,
+  });
+  await expect(
+    page.getByText("路由评测完成：准确率 50%"),
+  ).toBeVisible();
 });

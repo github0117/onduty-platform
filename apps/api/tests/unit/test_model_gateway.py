@@ -485,6 +485,63 @@ def test_openai_compatible_generate_draft_uses_known_citation() -> None:
     assert "企业通知配置指南" in captured["payload"]["messages"][1]["content"]
 
 
+def test_openai_compatible_streams_draft_text_deltas() -> None:
+    draft = {
+        "text": "请按配置指南进入设置中心完成通知配置。",
+        "claims": [
+            {
+                "text": "请按配置指南进入设置中心完成通知配置。",
+                "claim_type": "instruction",
+                "cited_chunk_ids": ["chunk-1"],
+            }
+        ],
+        "cited_chunk_ids": [],
+    }
+    encoded = json.dumps(draft, ensure_ascii=False)
+    parts = [encoded[index : index + 3] for index in range(0, len(encoded), 3)]
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        body = "".join(
+            "data: "
+            + json.dumps(
+                {"choices": [{"delta": {"content": part}}]},
+                ensure_ascii=False,
+            )
+            + "\n\n"
+            for part in parts
+        )
+        body += "data: [DONE]\n\n"
+        return httpx.Response(
+            200,
+            content=body.encode(),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    deltas: list[str] = []
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = OpenAICompatibleGateway(_settings(), client=client).generate_draft(
+        subject="如何配置通知",
+        body="请指导配置团队通知。",
+        category="product_howto",
+        queue_id="PRODUCT_SUPPORT",
+        snippets=[
+            DraftSnippet(
+                chunk_id="chunk-1",
+                title="企业通知配置指南",
+                version="1.0",
+                content="管理员进入设置中心配置团队消息通知。",
+            )
+        ],
+        on_text_delta=deltas.append,
+    )
+
+    assert captured["payload"]["stream"] is True
+    assert "".join(deltas) == draft["text"]
+    assert result.draft.text == draft["text"]
+
+
 def test_employee_instructions_are_injected_as_lower_priority_block() -> None:
     systems: list[str] = []
 

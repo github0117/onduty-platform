@@ -46,8 +46,8 @@ const routeMeta: Record<string, RouteMeta> = {
     category: "Agent 演示",
   },
   "/customer-service": {
-    title: "Agent 对话 · 研发支持与复用案例",
-    description: "研发支持为主，电商客服作为平台复用案例",
+    title: "Agent 对话 · 企业服务台多员工分派",
+    description: "一个入口绑定研发支持、HR 和企业服务台员工，按问题自动分派",
     category: "Agent 演示",
   },
   "/customer-service/workbench": {
@@ -113,6 +113,11 @@ const routeMeta: Record<string, RouteMeta> = {
   "/employees/routing": {
     title: "平台能力 · 业务入口与员工路由",
     description: "先绑定入口员工池，再配置意图、优先级和兜底员工",
+    category: "平台管理",
+  },
+  "/employees/route-evaluation": {
+    title: "平台能力 · 路由评测集",
+    description: "用固定问题回归验证员工分派，量化意图识别准确率",
     category: "平台管理",
   },
   "/employees/supervisor": {
@@ -183,6 +188,7 @@ const employeeSections: Record<string, EmployeeSection> = {
   "/employees/skills": "skills",
   "/employees/integrations": "integrations",
   "/employees/routing": "routing",
+  "/employees/route-evaluation": "route-evaluation",
   "/employees/supervisor": "supervisor",
   "/employees/drafts": "drafts",
 };
@@ -223,6 +229,7 @@ const employeePageNavigation = [
   { key: "/employees/skills", label: "Skill（岗位规程）" },
   { key: "/employees/integrations", label: "MCP（业务连接）" },
   { key: "/employees/routing", label: "业务入口与分派" },
+  { key: "/employees/route-evaluation", label: "路由评测" },
   { key: "/employees/supervisor", label: "主管编排" },
   { key: "/employees/drafts", label: "上岗审核" },
 ] as const;
@@ -402,7 +409,7 @@ export default function App() {
     key: "demo-scenarios",
     label: "Agent 演示",
     children: [
-      { key: "/customer-service", label: "研发支持 Agent" },
+      { key: "/customer-service", label: "企业服务台 Agent" },
       { key: "/ecommerce", label: "电商运营复用" },
       { key: "/tickets", label: "内部工单 / HR" },
     ],
@@ -480,7 +487,14 @@ export default function App() {
             {isTestIdentityMode() && (
               <>
                 {activePath === "/customer-service" ? (
-                  <Tag color="cyan">演示视角：买家</Tag>
+                  <Tag color="cyan">
+                    演示视角：
+                    {new URLSearchParams(window.location.search).get(
+                      "scenario",
+                    ) === "ecommerce"
+                      ? "买家"
+                      : "员工"}
+                  </Tag>
                 ) : (
                   <Tag color="cyan">
                     当前视角：

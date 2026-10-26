@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from ticket_agent.classification.conversation_signals import (
     is_technical_documentation_question,
 )
@@ -125,8 +127,9 @@ class LocalModelGateway:
         queue_id: str,
         snippets: list[DraftSnippet],
         skill_instructions: str | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> DraftGenerationResponse:
-        del subject, body, queue_id, skill_instructions
+        del subject, body, queue_id, skill_instructions, on_text_delta
         templates = {
             "ecommerce_presales": (
                 "您好，已根据商品知识为您整理商品信息。"

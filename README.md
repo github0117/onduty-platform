@@ -39,13 +39,15 @@ flowchart LR
 
 ## 界面预览
 
-| 研发支持 Agent | 工单与 HR |
+| 企业服务台 Agent | 工单与 HR |
 | --- | --- |
-| <img src="docs/assets/screenshots/customer-service-enterprise.png" alt="研发支持 Agent" width="480"> | <img src="docs/assets/screenshots/tickets.png" alt="工单队列" width="480"> |
+| <img src="docs/assets/screenshots/customer-service-enterprise.png" alt="企业服务台 Agent" width="480"> | <img src="docs/assets/screenshots/tickets.png" alt="工单队列" width="480"> |
 | **客服工作台** | **知识库** |
 | <img src="docs/assets/screenshots/customer-service.png" alt="客服工作台" width="480"> | <img src="docs/assets/screenshots/knowledge.png" alt="知识库" width="480"> |
 | **电商上架审核** | **数字员工配置** |
 | <img src="docs/assets/screenshots/ecommerce.png" alt="电商上架审核" width="480"> | <img src="docs/assets/screenshots/employees.png" alt="数字员工配置" width="480"> |
+| **员工能力快照（跨入口复用）** | **业务入口与员工池** |
+| <img src="docs/assets/screenshots/employee-snapshot.png" alt="员工能力快照" width="480"> | <img src="docs/assets/screenshots/employee-routing.png" alt="业务入口与员工池" width="480"> |
 
 截图由 `apps/web/e2e/docs-screenshots.spec.ts` 在演示栈上生成。
 
@@ -94,6 +96,10 @@ flowchart LR
 - 演示种子包含 316 不锈钢保温杯商品知识，AI 商品回答具备可检索依据。
 - 买家对话页只展示模拟买家视角；内部客服、主管和平台岗位不在客户页面切换。
 - 业务入口绑定数字员工池，聊天会话由入口进入并在绑定员工中自动分派。
+- 员工保留一份能力配置，可同时加入多个业务入口；HR 入职员工同时服务企业服务台
+  和内部 HR 入口，员工名单、路由页和快照会标记“跨入口复用”。
+- 员工名单和客服对话里的员工姓名可打开同一份只读能力快照，展示 Skill、知识空间、
+  MCP 授权和所在入口；名单支持 `?employee=<id>` 深链，方便从对话跳到平台配置。
 - 员工路由页面支持维护入口的默认、专业和兜底员工，再配置意图派单规则。
 - 电商运营入口绑定商品上架、视觉内容和运营主管数字员工；上架任务与素材显示负责员工。
 - 页头不再常驻五角色切换，买家页固定买家视角；业务、管理和平台视角统一切换入口
@@ -243,7 +249,8 @@ flowchart LR
 - 生产环境手工创建员工必须从 TRIAL 开始。
 - 前端改为路径路由和路由级懒加载，各主页面独立加载；旧 `?page=...` 地址自动兼容。
 - 主入口只有“Agent 演示”和“平台管理”两个分组：
-  研发支持 Agent 是主演示；电商、内容和工单属于复用案例；员工、知识、模型和审计
+  企业服务台 Agent 是主演示，同一入口按问题自动分派研发支持、HR 和企业服务台
+  数字员工；电商、内容和工单属于复用案例；员工、知识、模型和审计
   属于平台管理。技术主线不再单独占一个首页，改在页头“5 步技术演示”的第一步里
   直接说明，验收指标和演示数据恢复按钮收进运行与审计。
 - 员工页面内部提供员工、模板、规程、连接、路由、主管编排和发布导航；
@@ -260,8 +267,11 @@ flowchart LR
 - 客服日常处理界面随场景切换文案：企业服务台使用制度、账号、IT、内部流程和敏感
   操作术语；电商客服使用商品、物流、售后和退款审批术语。平台管理页面则明确显示
   `Skill（岗位规程）` 和 `MCP（业务连接）`，并提供员工能力配置直达入口。
-- 企业服务台和电商客服分别从侧边栏“研发支持 Agent”和“电商运营复用”进入，客服
+- 企业服务台和电商客服分别从侧边栏“企业服务台 Agent”和“电商运营复用”进入，客服
   页面内不再提供业务类型切换器；避免把真实坐席渠道误做成手动测试开关。
+- 企业服务台对话提供跨岗位快捷问题（仓库文档、入职材料、账号被锁、权限边界），
+  对话窗口标题显示本次由哪名数字员工处理并可点开能力快照，避免演示被理解成
+  单一研发机器人。
 - 页头身份标签可直接打开角色菜单并切换到对应角色首页，切换后显示“已切换为…”提示；
   业务单元切换收进“5 步演示”的演示设置。正式环境由登录身份和所属业务单元自动确定。
 - 客服聊天明确区分“操作身份、业务场景、对话数字员工”；聊天会话按
@@ -478,7 +488,7 @@ make acceptance-final
 当前基线：
 
 ```text
-327 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
+328 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
 Python 测试覆盖率: 87%
 Ruff: passed
 mypy: passed（171 个源文件）

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,6 +61,7 @@ class DraftService:
         knowledge_hits: list[KnowledgeHit] | None = None,
         skill_instructions: str | None = None,
         external_evidence: list[DraftEvidence] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> DraftResult:
         hits = knowledge_hits or []
         evidence = external_evidence or []
@@ -88,6 +90,7 @@ class DraftService:
             queue_id=routing.queue_id,
             snippets=snippets[:8],
             skill_instructions=skill_instructions,
+            on_text_delta=on_text_delta,
         )
         citations_by_id = {
             str(hit.chunk_id): {

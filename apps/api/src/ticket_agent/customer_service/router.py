@@ -1,5 +1,7 @@
 import asyncio
 import json
+import queue
+import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -7,6 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, status
 from fastapi.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from ticket_agent.api.dependencies import Actor, DbSession, correlation_id
 from ticket_agent.customer_service.business_context import (
@@ -51,7 +54,10 @@ from ticket_agent.customer_service.service import CustomerConversationService
 from ticket_agent.customer_service.suggestions import (
     CustomerReplySuggestionService,
 )
-from ticket_agent.customer_service.turns import process_conversation_turn
+from ticket_agent.customer_service.turns import (
+    process_conversation_turn,
+    process_conversation_turn_stream,
+)
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
     ensure_sync_batch_operator,
@@ -64,6 +70,40 @@ from ticket_agent.shared.rate_limit import rate_limited
 from ticket_agent.shared.settings import get_settings
 
 router = APIRouter()
+
+_STREAM_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+
+class _DurableEventStream(StreamingResponse):
+    """SSE response that lets the turn finish if the browser disconnects.
+
+    Starlette's default implementation races the stream against a disconnect
+    listener and cancels the generator. A conversation turn owns server-side
+    work that must still be persisted, so this response keeps consuming the
+    event queue until the worker reports completion.
+    """
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        del scope, receive
+        try:
+            await self.stream_response(send)
+        except OSError:
+            return
+        if self.background is not None:
+            await self.background()
+
+
+def _sse_event(event: str, payload: dict[str, object]) -> str:
+    data = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event}\ndata: {data}\n\n"
 
 
 def _conversation_for_access(
@@ -559,6 +599,84 @@ def add_customer_message(
             correlation_id(request),
         )
     return service.view(conversation)
+
+
+@router.post(
+    "/customer-service/conversations/{conversation_id}/messages/stream",
+    dependencies=[Depends(rate_limited())],
+)
+def stream_customer_message(
+    conversation_id: UUID,
+    payload: CustomerMessageCreate,
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+) -> StreamingResponse:
+    ensure_ticket_writer(principal)
+    service = CustomerConversationService(db)
+    _conversation_for_access(service, conversation_id, principal)
+    conversation, turn_id = service.append_buyer_message(
+        conversation_id,
+        payload,
+        principal=principal,
+        correlation_id=correlation_id(request),
+    )
+    initial_view = service.view(conversation).model_dump(mode="json")
+    # Release the request's read transaction before the worker writes in its
+    # own session (SQLite tests would otherwise block on a shared lock).
+    db.close()
+    events: queue.Queue[dict[str, object]] = queue.Queue()
+    worker: threading.Thread | None = None
+    if turn_id is not None:
+        worker = threading.Thread(
+            target=process_conversation_turn_stream,
+            args=(
+                turn_id,
+                correlation_id(request),
+                events.put,
+            ),
+            daemon=True,
+            name=f"conversation-turn-{turn_id}",
+        )
+        worker.start()
+
+    async def event_stream() -> AsyncIterator[str]:
+        yield _sse_event(
+            "start",
+            {
+                "type": "start",
+                "turn_id": str(turn_id) if turn_id else None,
+                "conversation": initial_view,
+            },
+        )
+        if turn_id is None or worker is None:
+            yield _sse_event(
+                "done",
+                {
+                    "type": "done",
+                    "turn_id": None,
+                    "conversation": initial_view,
+                },
+            )
+            return
+        while True:
+            try:
+                event = await asyncio.to_thread(events.get, True, 0.5)
+            except queue.Empty:
+                # Starlette cancels this generator on client disconnect;
+                # keep-alives just stop proxy idle timeouts meanwhile.
+                yield ": keep-alive\n\n"
+                continue
+            event_type = str(event.get("type", "message"))
+            yield _sse_event(event_type, event)
+            if event_type in {"done", "error"}:
+                return
+
+    return _DurableEventStream(
+        event_stream(),
+        media_type="text/event-stream",
+        headers=_STREAM_HEADERS,
+    )
 
 
 @router.post(

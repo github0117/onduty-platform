@@ -12,6 +12,7 @@ import {
   Modal,
   Select,
   Space,
+  Statistic,
   Table,
   Tag,
   Timeline,
@@ -38,8 +39,15 @@ import {
   listBusinessServiceEntries,
   listDigitalEmployees,
   listDigitalEmployeeTemplates,
+  createDigitalEmployeeRouteEvaluationCase,
+  deleteDigitalEmployeeRouteEvaluationCase,
   listDigitalEmployeeRouteDecisions,
+  listDigitalEmployeeRouteEvaluationCases,
+  listDigitalEmployeeRouteEvaluationRuns,
+  listDigitalEmployeeRouteIntentConflicts,
   listDigitalEmployeeRouteRules,
+  runDigitalEmployeeRouteEvaluation,
+  updateDigitalEmployeeRouteEvaluationCase,
   listEmployeeDraftRevisions,
   listEmployeeDrafts,
   listEmployeeKnowledgeBindings,
@@ -71,16 +79,26 @@ import {
   updateDigitalEmployeeRouteRule,
   updateMcpConnector,
 } from "./api";
+import EmployeeProfileDrawer from "./EmployeeProfileDrawer";
+import {
+  domainLabels,
+  employeeReadiness,
+  templateLabels,
+  workflowLabels,
+} from "./employeeLabels";
 import type {
   AgentSkill,
   BusinessServiceEntry,
   DigitalEmployee,
   DigitalEmployeeDraft,
   DigitalEmployeeDraftRevision,
-  DigitalEmployeeRouteDecision,
-  DigitalEmployeeTemplate,
   DigitalEmployeeRouteCandidate,
+  DigitalEmployeeRouteDecision,
+  DigitalEmployeeRouteEvaluationCase,
+  DigitalEmployeeRouteEvaluationRun,
+  DigitalEmployeeRouteIntentConflictList,
   DigitalEmployeeRouteRule,
+  DigitalEmployeeTemplate,
   McpConnector,
   ManagedEmployeeTemplateRevision,
   WorkforceTask,
@@ -89,29 +107,6 @@ import { message } from "./feedback";
 
 const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
-
-const workflowLabels: Record<string, string> = {
-  customer_service_ticket_v1: "客服工单处理",
-  hr_onboarding_document_collection_v1: "HR 入职资料收集",
-};
-
-const domainLabels: Record<string, string> = {
-  customer_service: "客户服务",
-  human_resources: "人力资源",
-  finance: "财务",
-  ecommerce_operations: "电商运营",
-  content_media: "内容制作",
-};
-
-const templateLabels: Record<string, string> = {
-  ecommerce_presales: "电商售前客服",
-  ecommerce_aftersales: "电商售后客服",
-  ecommerce_logistics: "物流查询客服",
-  ecommerce_listing_operator: "商品上架数字员工",
-  ecommerce_visual_creator: "视觉内容数字员工",
-  ecommerce_operations_supervisor: "电商运营主管数字员工",
-  hr_onboarding: "HR 入职专员",
-};
 
 const routeReasonLabels: Record<string, string> = {
   INTENT_MATCH: "关键词命中",
@@ -122,6 +117,7 @@ const routeReasonLabels: Record<string, string> = {
   NO_ELIGIBLE_DEFAULT: "没有可派员工，转默认员工",
   NO_MATCH_DEFAULT: "没有匹配员工，转默认员工",
   FALLBACK: "使用兜底员工",
+  NO_DECISION: "没有生成路由结果",
 };
 
 function routeReasonColor(code: string | null | undefined): string {
@@ -231,7 +227,7 @@ function RouteEvidence({
         size="small"
         pagination={{ pageSize: 10, showSizeChanger: true }}
         dataSource={candidates}
-        scroll={{ x: 760 }}
+        scroll={{ x: 1000 }}
         columns={[
           {
             title: "候选员工",
@@ -286,6 +282,51 @@ function RouteEvidence({
             ),
           },
           {
+            title: "意图归属",
+            width: 220,
+            render: (_value, candidate) => {
+              const groups = [
+                {
+                  label: "显式",
+                  color: "blue",
+                  terms: candidate.explicit_intents ?? [],
+                },
+                {
+                  label: "继承",
+                  color: "default",
+                  terms: candidate.inherited_intents ?? [],
+                },
+                {
+                  label: "已让位",
+                  color: "orange",
+                  terms: candidate.suppressed_intents ?? [],
+                },
+              ].filter((group) => group.terms.length > 0);
+              if (groups.length === 0) {
+                return (
+                  <Text type="secondary">未记录意图归属</Text>
+                );
+              }
+              return (
+                <Space direction="vertical" size={4}>
+                  {groups.map((group) => (
+                    <Space wrap size={4} key={group.label}>
+                      <Text type="secondary">{group.label}</Text>
+                      {group.terms.slice(0, 6).map((term) => (
+                        <Tag color={group.color} key={term}>
+                          {term}
+                        </Tag>
+                      ))}
+                      {group.terms.length > 6 && (
+                        <Tag>+{group.terms.length - 6}</Tag>
+                      )}
+                    </Space>
+                  ))}
+                </Space>
+              );
+            },
+          },
+          {
             title: "命中依据",
             render: (_value, candidate) => {
               const evidence = [
@@ -322,6 +363,7 @@ export type EmployeeSection =
   | "skills"
   | "integrations"
   | "routing"
+  | "route-evaluation"
   | "supervisor"
   | "drafts";
 
@@ -351,6 +393,11 @@ const employeeSectionMeta: Record<
     title: "业务入口与员工路由",
     description:
       "先配置业务入口可使用的员工池，再配置问题应派给哪位数字员工。",
+  },
+  "route-evaluation": {
+    title: "路由评测集",
+    description:
+      "用固定问题回归验证员工分派，量化意图识别准确率并定位误派。",
   },
   supervisor: {
     title: "复杂任务处理",
@@ -467,49 +514,6 @@ function draftStatusColor(value: string): string {
   return "blue";
 }
 
-function employeeReadiness(employee: DigitalEmployee): {
-  label: string;
-  color: string;
-  detail: string;
-} {
-  if (employee.status === "DISABLED") {
-    return {
-      label: "已停用",
-      color: "default",
-      detail: "不会参与自动派单；重新启用前需要再次检查。",
-    };
-  }
-  if (employee.status === "TRIAL") {
-    return {
-      label: "待上岗检查",
-      color: "orange",
-      detail: "先补齐知识、规程和工具，再点击“评估并激活”。",
-    };
-  }
-  if (employee.status === "EVALUATION_FAILED") {
-    const failed = employee.activation_evaluation.checks?.find(
-      (check) => check.status === "FAILED",
-    );
-    return {
-      label: "检查未通过",
-      color: "red",
-      detail: failed?.detail ?? "请补齐缺失资源后重新检查。",
-    };
-  }
-  if (employee.activation_evaluation.passed === true) {
-    return {
-      label: "可以上岗",
-      color: "green",
-      detail: "最近一次能力检查已通过。",
-    };
-  }
-  return {
-    label: "已启用",
-    color: "cyan",
-    detail: "尚未执行完整上岗检查，建议先做一次能力评估。",
-  };
-}
-
 function templateStatus(value: string): string {
   return (
     {
@@ -543,16 +547,36 @@ export default function EmployeesPage({
   const [createOpen, setCreateOpen] = useState(false);
   const [templateCode, setTemplateCode] = useState<string | null>(null);
   const [editing, setEditing] = useState<DigitalEmployee | null>(null);
+  const [profileEmployee, setProfileEmployee] =
+    useState<DigitalEmployee | null>(null);
   const employees = useQuery({
     queryKey: ["digital-employees"],
     queryFn: listDigitalEmployees,
-    enabled: ["roster", "routing", "drafts"].includes(section),
+    enabled: ["roster", "routing", "route-evaluation", "drafts"].includes(
+      section,
+    ),
+  });
+  const businessEntries = useQuery({
+    queryKey: ["business-service-entries"],
+    queryFn: listBusinessServiceEntries,
+    enabled: ["roster", "routing", "route-evaluation"].includes(section),
   });
   const templates = useQuery({
     queryKey: ["digital-employee-templates"],
     queryFn: listDigitalEmployeeTemplates,
     enabled: ["roster", "templates"].includes(section),
   });
+
+  useEffect(() => {
+    const employeeId = new URLSearchParams(
+      window.location.search,
+    ).get("employee");
+    if (!employeeId || !employees.data) return;
+    const linked = employees.data.find(
+      (employee) => employee.id === employeeId,
+    );
+    if (linked) setProfileEmployee(linked);
+  }, [employees.data]);
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["digital-employees"] });
@@ -575,16 +599,61 @@ export default function EmployeesPage({
     {
       title: "数字员工",
       dataIndex: "name",
+      width: 170,
       render: (value: string, employee) => (
         <Space direction="vertical" size={0}>
-          <Text strong>{value}</Text>
+          <Button
+            type="link"
+            className="employee-profile-link"
+            onClick={() => setProfileEmployee(employee)}
+          >
+            {value}
+          </Button>
           <Text type="secondary">{employee.employee_key}</Text>
         </Space>
       ),
     },
     {
+      title: "服务入口",
+      dataIndex: "id",
+      width: 210,
+      render: (_value: string, employee) => {
+        if (businessEntries.isLoading) {
+          return <Text type="secondary">加载中</Text>;
+        }
+        const employeeEntries = (businessEntries.data ?? []).filter(
+          (entry) =>
+            entry.employees.some(
+              (item) =>
+                item.employee_id === employee.id && item.enabled,
+            ),
+        );
+        if (employeeEntries.length === 0) {
+          return <Text type="secondary">未加入入口</Text>;
+        }
+        return (
+          <Space direction="vertical" size={2}>
+            <Space wrap size={4}>
+              {employeeEntries.map((entry) => (
+                <Tag
+                  key={entry.id}
+                  color={employeeEntries.length > 1 ? "gold" : "default"}
+                >
+                  {entry.name}
+                </Tag>
+              ))}
+            </Space>
+            {employeeEntries.length > 1 && (
+              <Text type="secondary">跨入口复用</Text>
+            )}
+          </Space>
+        );
+      },
+    },
+    {
       title: "岗位",
       dataIndex: "template_code",
+      width: 150,
       render: (value: string | null, employee) => (
         <Space direction="vertical" size={0}>
           <Text>
@@ -602,7 +671,7 @@ export default function EmployeesPage({
     {
       title: "状态",
       dataIndex: "status",
-      width: 100,
+      width: 90,
       render: (value: string) => (
         <Tag
           color={
@@ -628,7 +697,7 @@ export default function EmployeesPage({
     {
       title: "上岗检查",
       dataIndex: "status",
-      width: 250,
+      width: 210,
       render: (_value: string, employee) => {
         const readiness = employeeReadiness(employee);
         return (
@@ -644,13 +713,13 @@ export default function EmployeesPage({
           {
             title: "配置版本",
             dataIndex: "config_revision",
-            width: 100,
+            width: 90,
           },
         ]
       : []),
     {
       title: "操作",
-      width: 230,
+      width: 170,
       render: (_, employee) => (
         <Space>
           <Button type="link" onClick={() => setEditing(employee)}>
@@ -799,7 +868,16 @@ export default function EmployeesPage({
       {section === "skills" && <AgentSkillsCard />}
       {section === "integrations" && <McpConnectorsCard />}
       {section === "routing" && (
-        <DigitalEmployeeRoutingCard employees={employees.data ?? []} />
+        <DigitalEmployeeRoutingCard
+          employees={employees.data ?? []}
+          onNavigate={onNavigate}
+        />
+      )}
+      {section === "route-evaluation" && (
+        <RouteEvaluationCard
+          employees={employees.data ?? []}
+          entries={businessEntries.data ?? []}
+        />
       )}
       {section === "supervisor" && <SupervisorTaskCard />}
       {section === "drafts" && (
@@ -845,6 +923,11 @@ export default function EmployeesPage({
           ]);
           setEditing(null);
         }}
+      />
+      <EmployeeProfileDrawer
+        employee={profileEmployee}
+        open={Boolean(profileEmployee)}
+        onClose={() => setProfileEmployee(null)}
       />
     </Space>
   );
@@ -1438,8 +1521,10 @@ function CreateEmployeeModal({
 
 function DigitalEmployeeRoutingCard({
   employees,
+  onNavigate,
 }: {
   employees: DigitalEmployee[];
+  onNavigate?: (path: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<DigitalEmployeeRouteRule | null>(null);
@@ -1477,6 +1562,16 @@ function DigitalEmployeeRoutingCard({
       )
       .map((employee) => employee.id),
   );
+  const entryMembershipCount = new Map<string, number>();
+  for (const entry of businessEntries.data ?? []) {
+    for (const employee of entry.employees) {
+      if (!employee.enabled) continue;
+      entryMembershipCount.set(
+        employee.employee_id,
+        (entryMembershipCount.get(employee.employee_id) ?? 0) + 1,
+      );
+    }
+  }
   const currentRules = (rules.data ?? []).filter((rule) => {
     const status = employeeStatus(rule.employee_id);
     return (
@@ -1567,62 +1662,98 @@ function DigitalEmployeeRoutingCard({
           员工池中选择处理人员，不再由页面写死某一个员工。
         </Paragraph>
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-          {(businessEntries.data ?? []).map((entry) => (
-            <Card
-              key={entry.id}
-              size="small"
-              type="inner"
-              title={entry.name}
-              extra={
-                <Button
-                  size="small"
-                  onClick={() => openEntryEditor(entry)}
+          {(businessEntries.data ?? []).map((entry) => {
+            const sharedEmployeeCount = entry.employees.filter(
+              (employee) =>
+                (entryMembershipCount.get(employee.employee_id) ?? 0) > 1,
+            ).length;
+            return (
+              <Card
+                key={entry.id}
+                size="small"
+                type="inner"
+                title={entry.name}
+                extra={
+                  <Space wrap size={6}>
+                    {sharedEmployeeCount > 0 && (
+                      <Tag color="gold">
+                        {sharedEmployeeCount} 名员工跨入口复用
+                      </Tag>
+                    )}
+                    <Button
+                      size="small"
+                      onClick={() => openEntryEditor(entry)}
+                    >
+                      配置员工池
+                    </Button>
+                  </Space>
+                }
+              >
+                <Space
+                  direction="vertical"
+                  size={8}
+                  style={{ width: "100%" }}
                 >
-                  配置员工池
-                </Button>
-              }
-            >
-              <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                <Text type="secondary">{entry.description}</Text>
-                <Space wrap size={6}>
-                  <Tag color="cyan">{entry.domain}</Tag>
-                  <Tag>{entry.channel}</Tag>
-                  <Tag color={entry.status === "ACTIVE" ? "green" : "default"}>
-                    {entry.status === "ACTIVE" ? "当前可用" : "已停用"}
-                  </Tag>
-                  <Tag>{entry.employees.length} 名数字员工</Tag>
-                </Space>
-                <Space wrap size={6}>
-                  {entry.employees.map((employee) => (
+                  <Text type="secondary">{entry.description}</Text>
+                  <Space wrap size={6}>
+                    <Tag color="cyan">{entry.domain}</Tag>
+                    <Tag>{entry.channel}</Tag>
                     <Tag
-                      key={employee.employee_id}
                       color={
-                        employee.role_type === "PRIMARY"
-                          ? "blue"
-                          : employee.role_type === "FALLBACK"
-                            ? "gold"
-                            : "default"
+                        entry.status === "ACTIVE" ? "green" : "default"
                       }
                     >
-                      {employee.employee_name}
-                      {employee.role_type === "PRIMARY"
-                        ? " · 默认"
-                        : employee.role_type === "FALLBACK"
-                          ? " · 兜底"
-                          : " · 专业"}
+                      {entry.status === "ACTIVE" ? "当前可用" : "已停用"}
                     </Tag>
-                  ))}
+                    <Tag>{entry.employees.length} 名数字员工</Tag>
+                  </Space>
+                  <Space wrap size={6}>
+                    {entry.employees.map((employee) => {
+                      const membership =
+                        entryMembershipCount.get(
+                          employee.employee_id,
+                        ) ?? 0;
+                      return (
+                        <Tag
+                          key={employee.employee_id}
+                          color={
+                            employee.role_type === "PRIMARY"
+                              ? "blue"
+                              : employee.role_type === "FALLBACK"
+                                ? "gold"
+                                : "default"
+                          }
+                        >
+                          {employee.employee_name}
+                          {employee.role_type === "PRIMARY"
+                            ? " · 默认"
+                            : employee.role_type === "FALLBACK"
+                              ? " · 兜底"
+                              : " · 专业"}
+                          {membership > 1
+                            ? ` · 复用 ${membership} 个入口`
+                            : ""}
+                        </Tag>
+                      );
+                    })}
+                  </Space>
                 </Space>
-              </Space>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </Space>
       </Card>
       <Card
         className="section-card"
         title="意图派单规则"
       extra={
-        <Space>
+        <Space wrap>
+          <Button
+            size="small"
+            onClick={() => onNavigate?.("/employees/route-evaluation")}
+          >
+            打开路由评测
+          </Button>
           <Select
             aria-label="路由规则范围"
             value={showAllRules ? "ALL" : "CURRENT"}
@@ -1841,6 +1972,7 @@ function DigitalEmployeeRoutingCard({
         </Form>
       </Modal>
       </Card>
+      <RouteIntentConflictCard />
       <Modal
         open={Boolean(editingEntry)}
         title={`配置员工池 · ${editingEntry?.name ?? ""}`}
@@ -1875,6 +2007,658 @@ function DigitalEmployeeRoutingCard({
               }))}
           />
         </Space>
+      </Modal>
+    </Space>
+  );
+}
+
+function RouteIntentConflictCard() {
+  const conflicts = useQuery({
+    queryKey: ["digital-employee-route-intent-conflicts"],
+    queryFn: listDigitalEmployeeRouteIntentConflicts,
+  });
+  const data: DigitalEmployeeRouteIntentConflictList | undefined =
+    conflicts.data;
+  const sourceLabels: Record<string, string> = {
+    EXPLICIT: "双方显式配置",
+    INHERITED: "双方继承配置",
+    MIXED: "显式与继承重叠",
+  };
+
+  return (
+    <Card
+      className="section-card"
+      title="意图归属冲突检查"
+      loading={conflicts.isLoading}
+      extra={
+        <Button size="small" onClick={() => conflicts.refetch()}>
+          重新检查
+        </Button>
+      }
+    >
+      <Paragraph type="secondary">
+        显式路由规则优先于岗位模板和员工清单里的继承意图。同一入口员工池中，
+        某个词已被另一名员工显式认领时，继承来的同名意图会自动让位；
+        双方都显式配置时仍会提示冲突，需要人工决定归属。
+      </Paragraph>
+      {conflicts.isError && (
+        <Alert
+          type="error"
+          showIcon
+          message="意图冲突检查失败"
+          description={(conflicts.error as Error).message}
+        />
+      )}
+      {data && (
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <Space wrap size="large">
+            <Statistic
+              title="参与检查的生效员工"
+              value={data.active_employee_count}
+            />
+            <Statistic title="检查意图词" value={data.checked_terms} />
+            <Statistic
+              title="显式冲突"
+              value={data.conflicts.length}
+              valueStyle={{
+                color: data.conflicts.length > 0 ? "#cf1322" : "#3f8600",
+              }}
+            />
+            <Statistic
+              title="继承意图已让位"
+              value={data.suppressed.length}
+              valueStyle={{ color: "#d46b08" }}
+            />
+          </Space>
+          {data.conflicts.length === 0 &&
+            data.suppressed.length === 0 && (
+              <Alert
+                type="success"
+                showIcon
+                message="当前没有意图归属冲突"
+                description="同一业务入口的员工池里，每个生效意图词最多只有一名员工负责。"
+              />
+            )}
+          {data.conflicts.length > 0 && (
+            <>
+              <Title level={5}>需要人工确认的重复意图</Title>
+              <Table
+                rowKey="term"
+                size="small"
+                pagination={{ pageSize: 10, showSizeChanger: true }}
+                dataSource={data.conflicts}
+                columns={[
+                  {
+                    title: "意图词",
+                    dataIndex: "term",
+                    width: 140,
+                    render: (value: string) => (
+                      <Tag color="red">{value}</Tag>
+                    ),
+                  },
+                  {
+                    title: "同时认领的员工",
+                    dataIndex: "employee_names",
+                    render: (value: string[]) => (
+                      <Space wrap size={4}>
+                        {value.map((name) => (
+                          <Tag key={name}>{name}</Tag>
+                        ))}
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: "共同业务入口",
+                    dataIndex: "entry_names",
+                    render: (value: string[]) => value.join("、"),
+                  },
+                  {
+                    title: "冲突来源",
+                    dataIndex: "source",
+                    width: 140,
+                    render: (value: string) => (
+                      <Tag color="orange">
+                        {sourceLabels[value] ?? value}
+                      </Tag>
+                    ),
+                  },
+                ]}
+              />
+            </>
+          )}
+          {data.suppressed.length > 0 && (
+            <>
+              <Title level={5}>已自动让位的继承意图</Title>
+              <Table
+                rowKey="term"
+                size="small"
+                pagination={{ pageSize: 10, showSizeChanger: true }}
+                dataSource={data.suppressed}
+                columns={[
+                  {
+                    title: "意图词",
+                    dataIndex: "term",
+                    width: 140,
+                    render: (value: string) => (
+                      <Tag color="gold">{value}</Tag>
+                    ),
+                  },
+                  {
+                    title: "让位员工（继承来源）",
+                    dataIndex: "affected_employee_names",
+                    render: (value: string[]) => value.join("、"),
+                  },
+                  {
+                    title: "归属员工（显式规则）",
+                    dataIndex: "owner_employee_names",
+                    render: (value: string[]) => (
+                      <Space wrap size={4}>
+                        {value.map((name) => (
+                          <Tag color="green" key={name}>
+                            {name}
+                          </Tag>
+                        ))}
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: "共同业务入口",
+                    dataIndex: "entry_names",
+                    render: (value: string[]) => value.join("、"),
+                  },
+                ]}
+              />
+            </>
+          )}
+        </Space>
+      )}
+    </Card>
+  );
+}
+
+function RouteEvaluationCard({
+  employees,
+  entries,
+}: {
+  employees: DigitalEmployee[];
+  entries: BusinessServiceEntry[];
+}) {
+  const queryClient = useQueryClient();
+  const [entryId, setEntryId] = useState("");
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingCase, setEditingCase] =
+    useState<DigitalEmployeeRouteEvaluationCase | null>(null);
+  const [question, setQuestion] = useState("");
+  const [notes, setNotes] = useState("");
+  const [expectedEmployeeId, setExpectedEmployeeId] = useState("");
+  const [caseEnabled, setCaseEnabled] = useState(true);
+
+  useEffect(() => {
+    if (entryId || entries.length === 0) return;
+    const preferred =
+      entries.find((entry) => entry.code === "enterprise_service_desk") ??
+      entries[0];
+    setEntryId(preferred.id);
+  }, [entries, entryId]);
+
+  const entry = entries.find((item) => item.id === entryId);
+  const poolIds = new Set(
+    (entry?.employees ?? [])
+      .filter((employee) => employee.enabled)
+      .map((employee) => employee.employee_id),
+  );
+  const expectedEmployees = employees.filter(
+    (employee) =>
+      poolIds.has(employee.id) &&
+      employee.status === "ACTIVE" &&
+      employee.business_unit_id === entry?.business_unit_id,
+  );
+  const cases = useQuery({
+    queryKey: ["route-evaluation-cases", entryId],
+    queryFn: () => listDigitalEmployeeRouteEvaluationCases(entryId),
+    enabled: Boolean(entryId),
+  });
+  const runs = useQuery({
+    queryKey: ["route-evaluation-runs", entryId],
+    queryFn: () => listDigitalEmployeeRouteEvaluationRuns(entryId),
+    enabled: Boolean(entryId),
+  });
+  const selectedRun: DigitalEmployeeRouteEvaluationRun | undefined =
+    runs.data?.items.find((item) => item.id === selectedRunId) ??
+    runs.data?.items[0];
+  const saveCase = useMutation({
+    mutationFn: () => {
+      if (!entryId) throw new Error("请选择业务入口");
+      if (!expectedEmployeeId) throw new Error("请选择应处理员工");
+      if (!question.trim()) throw new Error("请填写评测问题");
+      if (editingCase) {
+        return updateDigitalEmployeeRouteEvaluationCase(editingCase.id, {
+          expectedEmployeeId,
+          question: question.trim(),
+          notes: notes.trim(),
+          enabled: caseEnabled,
+        });
+      }
+      return createDigitalEmployeeRouteEvaluationCase({
+        serviceEntryId: entryId,
+        expectedEmployeeId,
+        question: question.trim(),
+        notes: notes.trim(),
+        enabled: caseEnabled,
+      });
+    },
+    onSuccess: async () => {
+      message.success(editingCase ? "评测问题已更新" : "评测问题已添加");
+      setModalOpen(false);
+      setEditingCase(null);
+      await queryClient.invalidateQueries({
+        queryKey: ["route-evaluation-cases", entryId],
+      });
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+  const removeCase = useMutation({
+    mutationFn: (caseId: string) =>
+      deleteDigitalEmployeeRouteEvaluationCase(caseId),
+    onSuccess: async () => {
+      message.success("评测问题已删除");
+      await queryClient.invalidateQueries({
+        queryKey: ["route-evaluation-cases", entryId],
+      });
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+  const runEvaluation = useMutation({
+    mutationFn: () => {
+      if (!entryId) throw new Error("请选择业务入口");
+      return runDigitalEmployeeRouteEvaluation(entryId);
+    },
+    onSuccess: async (run) => {
+      message.success(
+        `路由评测完成：准确率 ${(run.accuracy * 100).toFixed(0)}%`,
+      );
+      setSelectedRunId(run.id);
+      await queryClient.invalidateQueries({
+        queryKey: ["route-evaluation-runs", entryId],
+      });
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+  const openCreate = () => {
+    setEditingCase(null);
+    setQuestion("");
+    setNotes("");
+    setCaseEnabled(true);
+    setExpectedEmployeeId(
+      expectedEmployees.find(
+        (employee) => employee.id === entry?.default_employee_id,
+      )?.id ??
+        expectedEmployees[0]?.id ??
+        "",
+    );
+    setModalOpen(true);
+  };
+  const openEdit = (item: DigitalEmployeeRouteEvaluationCase) => {
+    setEditingCase(item);
+    setQuestion(item.question);
+    setNotes(item.notes);
+    setCaseEnabled(item.enabled);
+    setExpectedEmployeeId(item.expected_employee_id);
+    setModalOpen(true);
+  };
+  const accuracyRate = selectedRun
+    ? Math.round(selectedRun.accuracy * 100)
+    : 0;
+
+  return (
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Card
+        className="section-card"
+        title="路由评测集"
+        loading={runs.isLoading && Boolean(entryId)}
+        extra={
+          <Space wrap>
+            <Select
+              aria-label="评测业务入口"
+              value={entryId || undefined}
+              onChange={(value) => {
+                setEntryId(value);
+                setSelectedRunId("");
+              }}
+              placeholder="选择业务入口"
+              style={{ width: 240 }}
+              options={entries.map((item) => ({
+                value: item.id,
+                label: `${item.name} · ${item.employees.length} 名员工`,
+              }))}
+            />
+            <Button
+              type="primary"
+              loading={runEvaluation.isPending}
+              disabled={!entryId || (cases.data?.length ?? 0) === 0}
+              onClick={() => runEvaluation.mutate()}
+            >
+              运行评测
+            </Button>
+          </Space>
+        }
+      >
+        <Paragraph type="secondary">
+          每条问题都固定期望员工。运行时会复用真实路由逻辑，但不会写入最近路由记录，
+          因此可以反复回归。准确率下降时，先看误派问题命中了谁，再调整意图或员工池。
+        </Paragraph>
+        <div
+          style={{
+            display: "grid",
+            gap: 12,
+            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+            marginBottom: 16,
+          }}
+        >
+          <Card size="small">
+            <Statistic
+              title="启用的问题"
+              value={(cases.data ?? []).filter((item) => item.enabled).length}
+              suffix={`/ ${cases.data?.length ?? 0}`}
+            />
+          </Card>
+          <Card size="small">
+            <Statistic
+              title="最近准确率"
+              value={accuracyRate}
+              suffix="%"
+              valueStyle={{
+                color:
+                  accuracyRate >= 90
+                    ? "#3f8600"
+                    : accuracyRate >= 75
+                      ? "#d46b08"
+                      : "#cf1322",
+              }}
+            />
+          </Card>
+          <Card size="small">
+            <Statistic
+              title="最近命中"
+              value={selectedRun?.passed ?? 0}
+              suffix={`/ ${selectedRun?.total ?? 0}`}
+            />
+          </Card>
+          <Card size="small">
+            <Statistic
+              title="历史评测"
+              value={runs.data?.total ?? 0}
+              suffix="次"
+            />
+          </Card>
+        </div>
+        {selectedRun ? (
+          <Alert
+            type={
+              selectedRun.failed === 0
+                ? "success"
+                : selectedRun.accuracy >= 0.75
+                  ? "warning"
+                  : "error"
+            }
+            showIcon
+            message={`最近一次评测：${selectedRun.passed}/${selectedRun.total} 命中`}
+            description={`准确率 ${(selectedRun.accuracy * 100).toFixed(1)}%，由 ${
+              selectedRun.created_by
+            } 于 ${new Date(selectedRun.created_at).toLocaleString(
+              "zh-CN",
+            )} 运行。`}
+          />
+        ) : (
+          <Alert
+            type="info"
+            showIcon
+            message="还没有评测记录"
+            description="添加 10–20 条贴近真实提问的问题，然后运行一次评测建立基线。"
+          />
+        )}
+      </Card>
+
+      <Card
+        className="section-card"
+        title="评测问题"
+        extra={
+          <Button onClick={openCreate} disabled={!entryId}>
+            添加问题
+          </Button>
+        }
+      >
+        <Table
+          rowKey="id"
+          size="small"
+          loading={cases.isLoading}
+          dataSource={cases.data ?? []}
+          pagination={{ pageSize: 12, showSizeChanger: true }}
+          columns={[
+            {
+              title: "问题",
+              dataIndex: "question",
+              render: (value: string, item) => (
+                <Space direction="vertical" size={0}>
+                  <Text>{value}</Text>
+                  {item.notes && (
+                    <Text type="secondary">{item.notes}</Text>
+                  )}
+                </Space>
+              ),
+            },
+            {
+              title: "期望员工",
+              dataIndex: "expected_employee_name",
+              width: 180,
+            },
+            {
+              title: "启用",
+              dataIndex: "enabled",
+              width: 80,
+              render: (value: boolean) => (
+                <Tag color={value ? "green" : "default"}>
+                  {value ? "参与" : "暂停"}
+                </Tag>
+              ),
+            },
+            {
+              title: "操作",
+              width: 140,
+              render: (_value, item) => (
+                <Space size={4}>
+                  <Button type="link" onClick={() => openEdit(item)}>
+                    编辑
+                  </Button>
+                  <Button
+                    type="link"
+                    danger
+                    onClick={() =>
+                      Modal.confirm({
+                        title: "删除这条评测问题？",
+                        content: item.question,
+                        okText: "删除",
+                        cancelText: "取消",
+                        onOk: () => removeCase.mutateAsync(item.id),
+                      })
+                    }
+                  >
+                    删除
+                  </Button>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      {selectedRun && (
+        <Card className="section-card" title="最近评测结果">
+          <Table
+            rowKey="case_id"
+            size="small"
+            dataSource={selectedRun.results}
+            pagination={{ pageSize: 10, showSizeChanger: true }}
+            expandable={{
+              expandedRowRender: (row) => (
+                <RouteEvidence candidates={row.candidates} />
+              ),
+              rowExpandable: (row) => row.candidates.length > 0,
+            }}
+            columns={[
+              { title: "问题", dataIndex: "question" },
+              {
+                title: "期望员工",
+                dataIndex: "expected_employee_name",
+                width: 170,
+              },
+              {
+                title: "实际员工",
+                dataIndex: "predicted_employee_name",
+                width: 170,
+                render: (value: string, row) => (
+                  <Tag color={row.matched ? "green" : "red"}>{value}</Tag>
+                ),
+              },
+              {
+                title: "结果",
+                dataIndex: "matched",
+                width: 90,
+                render: (value: boolean) =>
+                  value ? (
+                    <Tag color="green">命中</Tag>
+                  ) : (
+                    <Tag color="red">误派</Tag>
+                  ),
+              },
+              {
+                title: "判断方式",
+                dataIndex: "reason_code",
+                width: 160,
+                render: (value: string) =>
+                  routeReasonLabels[value] ?? value,
+              },
+              {
+                title: "置信度",
+                dataIndex: "confidence",
+                width: 100,
+                render: (value: number) => (
+                  <Tag color={routeConfidenceColor(value)}>
+                    {(value * 100).toFixed(0)}%
+                  </Tag>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      )}
+
+      <Card className="section-card" title="历史评测">
+        <Table
+          rowKey="id"
+          size="small"
+          loading={runs.isLoading}
+          dataSource={runs.data?.items ?? []}
+          pagination={{ pageSize: 10, showSizeChanger: true }}
+          columns={[
+            {
+              title: "运行时间",
+              dataIndex: "created_at",
+              render: (value: string) =>
+                new Date(value).toLocaleString("zh-CN"),
+            },
+            {
+              title: "准确率",
+              dataIndex: "accuracy",
+              width: 110,
+              render: (value: number) => (
+                <Tag
+                  color={
+                    value >= 0.9 ? "green" : value >= 0.75 ? "gold" : "red"
+                  }
+                >
+                  {(value * 100).toFixed(0)}%
+                </Tag>
+              ),
+            },
+            {
+              title: "命中 / 总数",
+              width: 130,
+              render: (_value, row) => `${row.passed} / ${row.total}`,
+            },
+            { title: "运行人", dataIndex: "created_by", width: 180 },
+            {
+              title: "操作",
+              width: 100,
+              render: (_value, row) => (
+                <Button
+                  type="link"
+                  onClick={() => setSelectedRunId(row.id)}
+                >
+                  查看结果
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      <Modal
+        open={modalOpen}
+        title={editingCase ? "编辑评测问题" : "添加评测问题"}
+        okText={editingCase ? "保存问题" : "添加问题"}
+        confirmLoading={saveCase.isPending}
+        onOk={() => saveCase.mutate()}
+        onCancel={() => {
+          setModalOpen(false);
+          setEditingCase(null);
+        }}
+      >
+        <Form layout="vertical">
+          <Form.Item label="业务入口">
+            <Text strong>{entry?.name ?? "未选择"}</Text>
+          </Form.Item>
+          <Form.Item
+            label="评测问题"
+            extra="用员工真实会问的说法，例如：办公室 VPN 连不上怎么办？"
+          >
+            <TextArea
+              aria-label="评测问题"
+              rows={3}
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+            />
+          </Form.Item>
+          <Form.Item label="应处理员工">
+            <Select
+              aria-label="应处理员工"
+              value={expectedEmployeeId || undefined}
+              onChange={setExpectedEmployeeId}
+              placeholder="选择员工池中的在岗员工"
+              options={expectedEmployees.map((employee) => ({
+                value: employee.id,
+                label: employee.name,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="备注（可选）">
+            <Input
+              aria-label="评测备注"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="例如：财务与费用"
+            />
+          </Form.Item>
+          <Form.Item>
+            <Checkbox
+              checked={caseEnabled}
+              onChange={(event) => setCaseEnabled(event.target.checked)}
+            >
+              参与评测
+            </Checkbox>
+          </Form.Item>
+        </Form>
       </Modal>
     </Space>
   );

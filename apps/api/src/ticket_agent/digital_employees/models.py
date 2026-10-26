@@ -562,3 +562,86 @@ class DigitalEmployeeRouteDecision(Base):
         nullable=False,
     )
 
+
+
+class DigitalEmployeeRouteEvaluationCase(Base):
+    __tablename__ = "digital_employee_route_evaluation_cases"
+    __table_args__ = (
+        UniqueConstraint(
+            "business_unit_id",
+            "service_entry_id",
+            "question",
+            name="uq_route_evaluation_case_question",
+        ),
+        Index(
+            "ix_route_evaluation_cases_entry_enabled",
+            "service_entry_id",
+            "enabled",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    service_entry_id: Mapped[UUID] = mapped_column(
+        ForeignKey("business_service_entries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    expected_employee_id: Mapped[UUID] = mapped_column(
+        ForeignKey("digital_employees.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class DigitalEmployeeRouteEvaluationRun(Base):
+    __tablename__ = "digital_employee_route_evaluation_runs"
+    __table_args__ = (
+        Index(
+            "ix_route_evaluation_runs_unit_time",
+            "business_unit_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    service_entry_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("business_service_entries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    passed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    accuracy: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    results_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(128),
+        default="system",
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )

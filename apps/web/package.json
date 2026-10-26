@@ -10,6 +10,7 @@
     "test:e2e:install": "PLAYWRIGHT_BROWSERS_PATH=../../.cache/ms-playwright PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright playwright install chromium",
     "test:e2e": "playwright test",
     "test:e2e:list": "playwright test --list",
+    "demo:video": "node scripts/record-demo-video.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -2,6 +2,14 @@ from fastapi.testclient import TestClient
 
 ADMIN = {"X-Actor-Id": "business-entry-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "business-entry-agent", "X-Actor-Role": "agent"}
+KNOWLEDGE_OPERATOR = {
+    "X-Actor-Id": "business-entry-knowledge-operator",
+    "X-Actor-Role": "knowledge_operator",
+}
+BUSINESS_MANAGER = {
+    "X-Actor-Id": "business-entry-manager",
+    "X-Actor-Role": "business_manager",
+}
 
 
 def _create_employee(
@@ -142,3 +150,45 @@ def test_business_entry_rejects_duplicate_employee_binding(
         response.json()["code"]
         == "BUSINESS_SERVICE_ENTRY_DUPLICATE_EMPLOYEE"
     )
+
+
+def test_business_entry_read_and_write_roles_stay_separate(
+    client: TestClient,
+) -> None:
+    employee = _create_employee(
+        client,
+        template_code="ecommerce_presales",
+        name="权限矩阵测试员工",
+    )
+    created = client.post(
+        "/api/v1/business-service-entries",
+        headers=ADMIN,
+        json={
+            "business_unit_id": "bu_demo",
+            "code": "business_entry_role_matrix",
+            "name": "权限矩阵测试入口",
+            "domain": "ecommerce",
+            "channel": "web_form",
+            "default_employee_id": employee["id"],
+            "fallback_employee_id": employee["id"],
+            "employees": [{"employee_id": employee["id"]}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    entry = created.json()
+
+    for headers in (KNOWLEDGE_OPERATOR, BUSINESS_MANAGER):
+        listed = client.get(
+            "/api/v1/business-service-entries?business_unit_id=bu_demo",
+            headers=headers,
+        )
+        assert listed.status_code == 200, listed.text
+        assert any(item["id"] == entry["id"] for item in listed.json())
+
+    denied = client.patch(
+        f"/api/v1/business-service-entries/{entry['id']}",
+        headers=BUSINESS_MANAGER,
+        json={"expected_version": entry["version"], "name": "越权修改"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "FORBIDDEN"

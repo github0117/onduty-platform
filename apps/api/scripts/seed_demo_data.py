@@ -16,6 +16,85 @@ DEMO_CUSTOMER_EMPLOYEE_KEY = "demo_vacuum_cup_customer_service"
 DEMO_HR_EMPLOYEE_KEY = "demo_hr_onboarding"
 DEMO_DEVELOPER_EMPLOYEE_KEY = "demo_developer_support"
 ENTERPRISE_TEMPLATE_CODE = "enterprise_service_desk"
+ENTERPRISE_ROUTE_INTENTS = [
+    "企业服务",
+    "制度",
+    "流程",
+    "通知",
+    "账号",
+    "登录",
+    "密码",
+    "权限",
+    "IT",
+    "邮箱",
+    "报销",
+    "发票",
+    "费用",
+    "财务",
+    "会议室",
+    "门禁",
+    "工位",
+    "办公用品",
+    "VPN",
+    "故障",
+    "报错",
+    "连不上",
+]
+HR_ROUTE_INTENTS = [
+    "入职",
+    "转正",
+    "离职",
+    "假期",
+    "年假",
+    "请假",
+    "考勤",
+    "人事",
+    "HR",
+]
+ENTERPRISE_ROUTE_EVALUATION_CASES = {
+    "enterprise": [
+        ("报销需要准备哪些发票？", "财务与费用"),
+        ("发票抬头在哪里修改？", "财务与费用"),
+        ("办公室 VPN 连不上怎么办？", "IT 与账号"),
+        ("企业邮箱密码怎么重置？", "IT 与账号"),
+        ("财务系统权限怎么申请？", "IT 与账号"),
+        ("会议室怎么预订？", "行政与设施"),
+        ("门禁卡丢了怎么补办？", "行政与设施"),
+        ("工位调整需要找谁？", "行政与设施"),
+        ("办公用品在哪里申领？", "行政与设施"),
+        ("报销费用提交后多久到账？", "财务与费用"),
+        ("系统登录报错提示无权限怎么办？", "IT 与账号"),
+        ("公司通知在哪里查看？", "制度与通知"),
+    ],
+    "developer": [
+        ("GitHub 公开仓库怎么查？", "仓库与文档"),
+        ("项目文档在哪里看？", "仓库与文档"),
+        ("这个模块的依赖关系怎么查？", "代码与依赖"),
+        ("代码结构说明在哪里？", "代码与依赖"),
+        ("SDK 的接入文档怎么找？", "仓库与文档"),
+        ("MCP 连接器如何配置？", "代码与依赖"),
+        ("研发支持能查私有仓库吗？", "安全边界"),
+        ("请帮我找 GitHub 上的项目文档", "仓库与文档"),
+        ("仓库的模块划分是怎样的？", "代码与依赖"),
+        ("SDK 版本和依赖关系在哪查？", "代码与依赖"),
+        ("代码结构文档能直接引用吗？", "安全边界"),
+        ("研发问题应该找谁支持？", "研发支持"),
+    ],
+    "hr": [
+        ("入职材料需要准备什么？", "入职"),
+        ("入职当天需要带哪些证件？", "入职"),
+        ("转正申请什么时候提交？", "转正"),
+        ("年假余额在哪里查询？", "假期"),
+        ("请假需要提前几天申请？", "假期"),
+        ("考勤记录有误怎么更正？", "考勤"),
+        ("人事证明怎么开具？", "人事"),
+        ("HR 的联系方式在哪里查？", "人事"),
+        ("入职资料可以线上提交吗？", "入职"),
+        ("年假可以跨年使用吗？", "假期"),
+        ("转正需要哪些材料？", "转正"),
+        ("离职手续需要提前多久办理？", "离职"),
+    ],
+}
 BUSINESS_SANDBOX_CONNECTOR_CODE = "demo-business-sandbox"
 DEEPWIKI_CONNECTOR_CODE = "deepwiki-public"
 CUSTOMER_SERVICE_ENTRY_CODE = "ecommerce_customer_service"
@@ -520,6 +599,12 @@ def main() -> None:
             enterprise_employee,
             DEMO_EMPLOYEE_INSTRUCTIONS["enterprise"],
         )
+        _ensure_route_rule(
+            client,
+            enterprise_employee,
+            intents=ENTERPRISE_ROUTE_INTENTS,
+            priority=100,
+        )
         _ensure_employee_knowledge_spaces(
             client,
             customer_employee,
@@ -562,6 +647,12 @@ def main() -> None:
             client,
             hr_employee,
             DEMO_EMPLOYEE_INSTRUCTIONS["hr"],
+        )
+        _ensure_route_rule(
+            client,
+            hr_employee,
+            intents=HR_ROUTE_INTENTS,
+            priority=20,
         )
         logistics_employee = _ensure_template_business_employee(
             client,
@@ -636,7 +727,20 @@ def main() -> None:
                 employee_ids=[
                     enterprise_employee["id"],
                     developer_employee["id"],
+                    hr_employee["id"],
                 ],
+            ),
+            _ensure_business_service_entry(
+                client,
+                code="internal_hr_service",
+                name="内部 HR 服务入口",
+                description="承接入职、转正、离职、假期和人事资料请求。",
+                domain="enterprise_service",
+                channel="enterprise_service",
+                default_employee_id=hr_employee["id"],
+                fallback_employee_id=hr_employee["id"],
+                human_queue_id="HR_SERVICE_DESK",
+                employee_ids=[hr_employee["id"]],
             ),
             _ensure_business_service_entry(
                 client,
@@ -656,6 +760,20 @@ def main() -> None:
             ),
         ]
 
+        enterprise_entry = next(
+            item for item in business_entries if item["code"] == ENTERPRISE_SERVICE_ENTRY_CODE
+        )
+        evaluation_cases_by_employee = {
+            enterprise_employee["id"]: ENTERPRISE_ROUTE_EVALUATION_CASES["enterprise"],
+            developer_employee["id"]: ENTERPRISE_ROUTE_EVALUATION_CASES["developer"],
+            hr_employee["id"]: ENTERPRISE_ROUTE_EVALUATION_CASES["hr"],
+        }
+        _ensure_route_evaluation_cases(
+            client,
+            service_entry_id=enterprise_entry["id"],
+            cases_by_employee=evaluation_cases_by_employee,
+        )
+
         pending = _ensure_ticket(
             client,
             idempotency_key="seed:cs:pending:001",
@@ -669,8 +787,7 @@ def main() -> None:
         pending = _wait_for_ticket(
             client,
             pending["id"],
-            lambda item: item["workflow_state"]
-            in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
+            lambda item: item["workflow_state"] in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
         )
 
         observable = _ensure_ticket(
@@ -686,8 +803,7 @@ def main() -> None:
         observable = _wait_for_ticket(
             client,
             observable["id"],
-            lambda item: item["workflow_state"]
-            in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
+            lambda item: item["workflow_state"] in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
         )
 
         high_risk = _ensure_ticket(
@@ -697,17 +813,13 @@ def main() -> None:
             external_ticket_id="SEED-CS-RISK-001",
             requester_ref="seed-customer-002",
             subject="客户身份信息疑似泄露，请立即冻结账户",
-            body=(
-                "客户反馈身份证号和银行卡信息被他人看到，"
-                "要求立即冻结账户并排查数据访问记录。"
-            ),
+            body=("客户反馈身份证号和银行卡信息被他人看到，要求立即冻结账户并排查数据访问记录。"),
             metadata={"product": "admin_portal", "seed": True},
         )
         high_risk = _wait_for_ticket(
             client,
             high_risk["id"],
-            lambda item: item["workflow_state"]
-            in {"NEEDS_HUMAN", "PENDING_REVIEW", "COMPLETED"},
+            lambda item: item["workflow_state"] in {"NEEDS_HUMAN", "PENDING_REVIEW", "COMPLETED"},
         )
 
         completed = _ensure_ticket(
@@ -723,8 +835,7 @@ def main() -> None:
         completed = _wait_for_ticket(
             client,
             completed["id"],
-            lambda item: item["workflow_state"]
-            in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
+            lambda item: item["workflow_state"] in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
         )
         if completed["workflow_state"] == "PENDING_REVIEW":
             client.post(
@@ -756,8 +867,7 @@ def main() -> None:
         hr_ticket = _wait_for_ticket(
             client,
             hr_ticket["id"],
-            lambda item: item["workflow_state"]
-            in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
+            lambda item: item["workflow_state"] in {"PENDING_REVIEW", "NEEDS_HUMAN", "COMPLETED"},
         )
 
         ecommerce_products = [
@@ -814,10 +924,7 @@ def main() -> None:
         )
         if published_listing["status"] in {"PENDING_REVIEW", "NEEDS_HUMAN"}:
             response = client.post(
-                (
-                    f"/api/v1/ecommerce/listing-tasks/"
-                    f"{published_listing['id']}/reviews"
-                ),
+                (f"/api/v1/ecommerce/listing-tasks/{published_listing['id']}/reviews"),
                 headers=AGENT,
                 json={
                     "expected_version": published_listing["version"],
@@ -913,18 +1020,14 @@ def main() -> None:
                         "assets": len(ecommerce_assets) + 1,
                         "generated_asset": {
                             "id": generated_asset["id"],
-                            "provider": generated_asset["metadata"].get(
-                                "generator_provider"
-                            ),
+                            "provider": generated_asset["metadata"].get("generator_provider"),
                             "width": generated_asset["metadata"].get("width"),
                             "height": generated_asset["metadata"].get("height"),
                         },
                         "published_listing": {
                             "id": published_listing["id"],
                             "status": published_listing["status"],
-                            "external_listing_id": published_listing[
-                                "external_listing_id"
-                            ],
+                            "external_listing_id": published_listing["external_listing_id"],
                         },
                         "pending_listing": {
                             "id": pending_listing["id"],
@@ -964,9 +1067,7 @@ def _ensure_customer_employee(client: httpx.Client) -> dict[str, Any]:
             "scenario_type": "customer_service_ticket",
             "workflow_key": "customer_service_ticket_v1",
             "business_unit_id": BUSINESS_UNIT,
-            "service_identity": (
-                f"digital_employee.{DEMO_CUSTOMER_EMPLOYEE_KEY}"
-            ),
+            "service_identity": (f"digital_employee.{DEMO_CUSTOMER_EMPLOYEE_KEY}"),
             "handoff_queue": "ECOMMERCE_SERVICE_HUMAN",
             "knowledge_policy": {
                 "default_scope": {
@@ -1054,9 +1155,7 @@ def _ensure_developer_employee(client: httpx.Client) -> dict[str, Any]:
             "scenario_type": "enterprise_service",
             "workflow_key": "customer_service_ticket_v1",
             "business_unit_id": BUSINESS_UNIT,
-            "service_identity": (
-                f"digital_employee.{DEMO_DEVELOPER_EMPLOYEE_KEY}"
-            ),
+            "service_identity": (f"digital_employee.{DEMO_DEVELOPER_EMPLOYEE_KEY}"),
             "handoff_queue": "ENTERPRISE_SERVICE_DESK",
             "knowledge_policy": {
                 "default_scope": {"audience": "support_agent"},
@@ -1128,11 +1227,7 @@ def _ensure_template_business_employee(
     )
     employees.raise_for_status()
     employee = next(
-        (
-            item
-            for item in employees.json()
-            if item.get("template_code") == template_code
-        ),
+        (item for item in employees.json() if item.get("template_code") == template_code),
         None,
     )
     if employee is None:
@@ -1178,11 +1273,7 @@ def _ensure_employee_active(
         params={"business_unit_id": BUSINESS_UNIT},
     )
     employees.raise_for_status()
-    employee = next(
-        item
-        for item in employees.json()
-        if item["id"] == employee["id"]
-    )
+    employee = next(item for item in employees.json() if item["id"] == employee["id"])
     if employee["status"] == "ACTIVE":
         return employee
     if employee["status"] in {"TRIAL", "EVALUATION_FAILED"}:
@@ -1223,6 +1314,41 @@ def _ensure_route_rule(
     response.raise_for_status()
 
 
+def _ensure_route_evaluation_cases(
+    client: httpx.Client,
+    *,
+    service_entry_id: str,
+    cases_by_employee: dict[str, list[tuple[str, str]]],
+) -> None:
+    response = client.get(
+        "/api/v1/digital-employee-route-evaluation-cases",
+        headers=ADMIN,
+        params={
+            "business_unit_id": BUSINESS_UNIT,
+            "service_entry_id": service_entry_id,
+        },
+    )
+    response.raise_for_status()
+    existing = {item["question"] for item in response.json()}
+    for employee_id, cases in cases_by_employee.items():
+        for question, notes in cases:
+            if question in existing:
+                continue
+            created = client.post(
+                "/api/v1/digital-employee-route-evaluation-cases",
+                headers=ADMIN,
+                params={"business_unit_id": BUSINESS_UNIT},
+                json={
+                    "service_entry_id": service_entry_id,
+                    "expected_employee_id": employee_id,
+                    "question": question,
+                    "notes": notes,
+                },
+            )
+            created.raise_for_status()
+            existing.add(question)
+
+
 def _ensure_deepwiki_binding(
     client: httpx.Client,
     employee: dict[str, Any],
@@ -1234,11 +1360,7 @@ def _ensure_deepwiki_binding(
     )
     connectors.raise_for_status()
     connector = next(
-        (
-            item
-            for item in connectors.json()
-            if item["code"] == DEEPWIKI_CONNECTOR_CODE
-        ),
+        (item for item in connectors.json() if item["code"] == DEEPWIKI_CONNECTOR_CODE),
         None,
     )
     connector_url = "https://mcp.deepwiki.com/mcp"
@@ -1295,11 +1417,7 @@ def _ensure_deepwiki_binding(
             file=sys.stderr,
         )
         return
-    allowed_tools = [
-        str(tool["name"])
-        for tool in tools
-        if not bool(tool.get("is_write"))
-    ]
+    allowed_tools = [str(tool["name"]) for tool in tools if not bool(tool.get("is_write"))]
     if not allowed_tools:
         return
     bindings = client.get(
@@ -1346,11 +1464,7 @@ def _ensure_business_sandbox_binding(
     )
     connectors.raise_for_status()
     connector = next(
-        (
-            item
-            for item in connectors.json()
-            if item["code"] == BUSINESS_SANDBOX_CONNECTOR_CODE
-        ),
+        (item for item in connectors.json() if item["code"] == BUSINESS_SANDBOX_CONNECTOR_CODE),
         None,
     )
     connector_url = "http://mock-business-mcp:8091/mcp"
@@ -1362,9 +1476,7 @@ def _ensure_business_sandbox_binding(
                 "business_unit_id": BUSINESS_UNIT,
                 "code": BUSINESS_SANDBOX_CONNECTOR_CODE,
                 "name": "演示业务沙箱",
-                "description": (
-                    "提供客户、订单、物流和改址能力；所有写操作必须经过审批。"
-                ),
+                "description": ("提供客户、订单、物流和改址能力；所有写操作必须经过审批。"),
                 "url": connector_url,
                 "timeout_seconds": 2,
             },
@@ -1394,14 +1506,10 @@ def _ensure_business_sandbox_binding(
     discovered.raise_for_status()
     if not discovered.json().get("healthy"):
         raise RuntimeError(
-            "Business sandbox MCP discovery failed: "
-            f"{discovered.json().get('error')}"
+            f"Business sandbox MCP discovery failed: {discovered.json().get('error')}"
         )
     bindings = client.get(
-        (
-            "/api/v1/digital-employees/"
-            f"{employee['id']}/mcp-connectors"
-        ),
+        (f"/api/v1/digital-employees/{employee['id']}/mcp-connectors"),
         headers=ADMIN,
     )
     bindings.raise_for_status()
@@ -1416,10 +1524,7 @@ def _ensure_business_sandbox_binding(
         if item["connector_id"] != connector["id"]
     ]
     replaced = client.put(
-        (
-            "/api/v1/digital-employees/"
-            f"{employee['id']}/mcp-connectors"
-        ),
+        (f"/api/v1/digital-employees/{employee['id']}/mcp-connectors"),
         headers=ADMIN,
         json={
             "bindings": [
@@ -1456,8 +1561,7 @@ def _ecommerce_entry_employee_ids(
     employee_ids = [
         item["id"]
         for item in response.json()
-        if item["status"] == "ACTIVE"
-        and item.get("template_code") in allowed_templates
+        if item["status"] == "ACTIVE" and item.get("template_code") in allowed_templates
     ]
     return list(
         dict.fromkeys(
@@ -1486,9 +1590,7 @@ def _ensure_business_service_entry(
     bindings = [
         {
             "employee_id": employee_id,
-            "role_type": (
-                "PRIMARY" if employee_id == default_employee_id else "SPECIALIST"
-            ),
+            "role_type": ("PRIMARY" if employee_id == default_employee_id else "SPECIALIST"),
             "priority": index * 10,
             "enabled": True,
         }
@@ -1695,9 +1797,7 @@ def _ensure_employee_knowledge_spaces(
     response.raise_for_status()
     existing = response.json()
     existing_ids = {
-        binding["knowledge_space_id"]
-        for binding in existing
-        if binding.get("enabled", True)
+        binding["knowledge_space_id"] for binding in existing if binding.get("enabled", True)
     }
     requested_ids = {space["id"] for space in spaces}
     if requested_ids.issubset(existing_ids):
@@ -1793,11 +1893,7 @@ def _ensure_employee_skills(
     )
     response.raise_for_status()
     existing = response.json()
-    existing_ids = {
-        binding["skill_id"]
-        for binding in existing
-        if binding.get("enabled", True)
-    }
+    existing_ids = {binding["skill_id"] for binding in existing if binding.get("enabled", True)}
     requested_ids = {skill["id"] for skill in skills}
     if requested_ids.issubset(existing_ids):
         return
@@ -1838,10 +1934,7 @@ def _disable_test_knowledge_spaces(client: httpx.Client) -> None:
         is_test_space = (
             space.get("domain") == "e2e"
             or code.startswith("e2e_")
-            or (
-                code.startswith("acceptance_refund_")
-                and space.get("document_count", 0) == 0
-            )
+            or (code.startswith("acceptance_refund_") and space.get("document_count", 0) == 0)
         )
         if space.get("status") == "ACTIVE" and is_test_space:
             disabled = client.patch(
@@ -1859,10 +1952,7 @@ def _disable_test_evaluation_cases(client: httpx.Client) -> None:
         params={"business_unit_id": BUSINESS_UNIT},
     )
     spaces_response.raise_for_status()
-    spaces = {
-        space["id"]: space
-        for space in spaces_response.json()
-    }
+    spaces = {space["id"]: space for space in spaces_response.json()}
     cases_response = client.get(
         "/api/v1/knowledge/evaluation-cases",
         headers=ADMIN,
@@ -1890,10 +1980,7 @@ def _disable_test_evaluation_cases(client: httpx.Client) -> None:
         is_test_case = (
             str(case.get("name", "")).startswith("真实修复回归")
             or (space is not None and space.get("domain") == "e2e")
-            or (
-                space is not None
-                and space.get("status") == "DISABLED"
-            )
+            or (space is not None and space.get("status") == "DISABLED")
         )
         if case.get("enabled") and is_test_case:
             disabled = client.patch(
@@ -1942,10 +2029,7 @@ def _ensure_knowledge(
         )
         response.raise_for_status()
         document = response.json()
-    elif (
-        document.get("space_id") != space_id
-        or document.get("scope") != scope
-    ):
+    elif document.get("space_id") != space_id or document.get("scope") != scope:
         response = client.patch(
             f"/api/v1/knowledge-documents/{document['id']}",
             headers=ADMIN,
@@ -1965,11 +2049,7 @@ def _ensure_knowledge(
         return {"title": title, "version": active["version_label"], "status": "ACTIVE"}
 
     draft = next(
-        (
-            item
-            for item in version_items
-            if item["status"] == "DRAFT" and item["chunk_count"] > 0
-        ),
+        (item for item in version_items if item["status"] == "DRAFT" and item["chunk_count"] > 0),
         None,
     )
     if draft is None:
@@ -1985,10 +2065,7 @@ def _ensure_knowledge(
         draft = response.json()
 
     published = client.post(
-        (
-            f"/api/v1/knowledge-documents/{document['id']}/versions/"
-            f"{draft['id']}/publish"
-        ),
+        (f"/api/v1/knowledge-documents/{document['id']}/versions/{draft['id']}/publish"),
         headers=ADMIN,
         json={"release_note": "测试数据初始化"},
     )

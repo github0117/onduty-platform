@@ -227,12 +227,12 @@ test("根路径按测试身份进入角色首页", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("研发支持 Agent 主演示可直接访问", async ({ page }) => {
+test("企业服务台 Agent 主演示可直接访问", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
   await page.goto("/customer-service?scenario=enterprise");
   await expect(
     page.getByRole("heading", {
-      name: "像研发同事一样问，像 Agent 一样执行",
+      name: "像员工一样问，自动分派给对的人",
     }),
   ).toBeVisible();
   await expect(page).toHaveURL(
@@ -305,22 +305,18 @@ test("5 步引导可从第一步推进并进入对应页面", async ({ page }) =
   await page.goto("/operations");
   await page.getByRole("button", { name: "5 步技术演示" }).click();
   const drawer = page.getByRole("dialog", {
-    name: "研发支持 Agent · 5 步技术演示",
+    name: "企业服务台 Agent · 5 步技术演示",
   });
   await expect(drawer).toBeVisible();
   await expect(
     drawer.getByText("看清技术主线", { exact: true }).first(),
   ).toBeVisible();
   await expect(
-    drawer.getByText(
-      "在员工名单中找到“研发支持数字员工”，查看 Skill、知识、MCP 和上岗检查结果。",
-      { exact: true },
-    ),
+    drawer.getByText(/在员工名单中找到“研发支持数字员工”或“HR 入职资料数字员工”/),
   ).toBeVisible();
   await expect(
     drawer.getByText(
-      "进入企业服务台，询问 modelcontextprotocol/python-sdk 的模块职责和项目文档结构。",
-      { exact: true },
+      /依次试“仓库文档”“入职材料”“账号被锁”/,
     ),
   ).toBeVisible();
   await drawer.getByRole("button", { name: "直接进入下一步" }).click();

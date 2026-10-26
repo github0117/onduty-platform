@@ -239,3 +239,97 @@ class DigitalEmployeeRouteDecisionList(BaseModel):
     items: list[DigitalEmployeeRouteDecisionView]
     total: int
 
+
+class DigitalEmployeeRouteIntentConflict(BaseModel):
+    term: str
+    employee_ids: list[UUID]
+    employee_names: list[str]
+    entry_ids: list[UUID]
+    entry_names: list[str]
+    source: Literal["EXPLICIT", "INHERITED", "MIXED"]
+
+
+class DigitalEmployeeRouteIntentSuppression(BaseModel):
+    term: str
+    affected_employee_ids: list[UUID]
+    affected_employee_names: list[str]
+    owner_employee_ids: list[UUID]
+    owner_employee_names: list[str]
+    entry_ids: list[UUID]
+    entry_names: list[str]
+
+
+class DigitalEmployeeRouteIntentConflictList(BaseModel):
+    business_unit_id: str
+    active_employee_count: int
+    checked_terms: int
+    conflicts: list[DigitalEmployeeRouteIntentConflict]
+    suppressed: list[DigitalEmployeeRouteIntentSuppression]
+
+
+class DigitalEmployeeRouteEvaluationCaseCreate(BaseModel):
+    service_entry_id: UUID
+    expected_employee_id: UUID
+    question: str = Field(min_length=2, max_length=1000)
+    notes: str = Field(default="", max_length=1000)
+    enabled: bool = True
+
+
+class DigitalEmployeeRouteEvaluationCaseUpdate(BaseModel):
+    expected_employee_id: UUID | None = None
+    question: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=1000,
+    )
+    notes: str | None = Field(default=None, max_length=1000)
+    enabled: bool | None = None
+
+
+class DigitalEmployeeRouteEvaluationCaseView(BaseModel):
+    id: UUID
+    business_unit_id: str
+    service_entry_id: UUID
+    expected_employee_id: UUID
+    expected_employee_name: str
+    question: str
+    notes: str
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class DigitalEmployeeRouteEvaluationResultView(BaseModel):
+    case_id: UUID
+    question: str
+    expected_employee_id: UUID
+    expected_employee_name: str
+    predicted_employee_id: UUID
+    predicted_employee_name: str
+    matched: bool
+    reason_code: str
+    confidence: float
+    candidates: list[dict[str, Any]]
+
+
+class DigitalEmployeeRouteEvaluationRunRequest(BaseModel):
+    service_entry_id: UUID
+
+
+class DigitalEmployeeRouteEvaluationRunView(BaseModel):
+    id: UUID
+    business_unit_id: str
+    service_entry_id: UUID | None
+    total: int
+    passed: int
+    failed: int
+    accuracy: float
+    results: list[DigitalEmployeeRouteEvaluationResultView]
+    created_by: str
+    created_at: datetime
+
+
+class DigitalEmployeeRouteEvaluationRunList(BaseModel):
+    items: list[DigitalEmployeeRouteEvaluationRunView]
+    total: int
+

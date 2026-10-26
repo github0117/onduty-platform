@@ -15,7 +15,7 @@ from ticket_agent.business_entries.service import BusinessServiceEntryService
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
     ensure_knowledge_admin,
-    ensure_ticket_writer,
+    ensure_workspace_viewer,
     resolve_business_unit,
 )
 
@@ -31,7 +31,7 @@ def list_business_service_entries(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> list[BusinessServiceEntryView]:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return BusinessServiceEntryService(db).list(business_unit_id)
 
@@ -45,7 +45,7 @@ def get_business_service_entry(
     db: DbSession,
     principal: Actor,
 ) -> BusinessServiceEntryView:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     service = BusinessServiceEntryService(db)
     entry = service.get(entry_id)
     ensure_business_unit_access(principal, entry.business_unit_id)

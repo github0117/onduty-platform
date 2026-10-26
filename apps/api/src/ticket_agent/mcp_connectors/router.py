@@ -11,6 +11,7 @@ from ticket_agent.identity.dependencies import (
     ensure_knowledge_admin,
     ensure_mcp_approver,
     ensure_ticket_writer,
+    ensure_workspace_viewer,
     resolve_business_unit,
 )
 from ticket_agent.mcp_connectors.approvals import McpToolApprovalService
@@ -44,7 +45,7 @@ def list_mcp_connectors(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> list[McpConnectorView]:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -168,7 +169,7 @@ def list_employee_mcp_connectors(
     db: DbSession,
     principal: Actor,
 ) -> list[EmployeeMcpBindingView]:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     ensure_business_unit_access(
         principal,
         DigitalEmployeeService(db).get(employee_id).business_unit_id,

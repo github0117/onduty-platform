@@ -1,15 +1,35 @@
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, status
 
 from ticket_agent.api.dependencies import Actor, DbSession, correlation_id
 from ticket_agent.audit.service import record_audit
+from ticket_agent.digital_employees.intent_governance import (
+    list_route_intent_conflicts,
+)
+from ticket_agent.digital_employees.route_evaluation import (
+    create_route_evaluation_case,
+    delete_route_evaluation_case,
+    get_route_evaluation_case,
+    list_route_evaluation_cases,
+    list_route_evaluation_runs,
+    run_route_evaluation,
+    update_route_evaluation_case,
+)
 from ticket_agent.digital_employees.schemas import (
     DigitalEmployeeConfigurationUpdate,
     DigitalEmployeeCreate,
     DigitalEmployeeFromTemplateCreate,
     DigitalEmployeeRevisionView,
     DigitalEmployeeRouteDecisionList,
+    DigitalEmployeeRouteEvaluationCaseCreate,
+    DigitalEmployeeRouteEvaluationCaseUpdate,
+    DigitalEmployeeRouteEvaluationCaseView,
+    DigitalEmployeeRouteEvaluationRunList,
+    DigitalEmployeeRouteEvaluationRunRequest,
+    DigitalEmployeeRouteEvaluationRunView,
+    DigitalEmployeeRouteIntentConflictList,
     DigitalEmployeeRouteRuleUpdate,
     DigitalEmployeeRouteRuleView,
     DigitalEmployeeTemplateView,
@@ -20,7 +40,6 @@ from ticket_agent.digital_employees.service import DigitalEmployeeService
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
     ensure_knowledge_admin,
-    ensure_ticket_writer,
     ensure_workspace_viewer,
     resolve_business_unit,
 )
@@ -57,10 +76,7 @@ def list_digital_employees(
         business_unit_id,
     )
     service = DigitalEmployeeService(db)
-    return [
-        service.view(employee)
-        for employee in service.list_employees(business_unit_id)
-    ]
+    return [service.view(employee) for employee in service.list_employees(business_unit_id)]
 
 
 @router.post(
@@ -219,19 +235,13 @@ def update_digital_employee_configuration(
             "config_revision": employee.config_revision,
             "instruction_length": len(employee.instruction_text),
             "knowledge_binding_count": (
-                len(payload.knowledge_bindings)
-                if payload.knowledge_bindings is not None
-                else None
+                len(payload.knowledge_bindings) if payload.knowledge_bindings is not None else None
             ),
             "skill_binding_count": (
-                len(payload.skill_bindings)
-                if payload.skill_bindings is not None
-                else None
+                len(payload.skill_bindings) if payload.skill_bindings is not None else None
             ),
             "mcp_binding_count": (
-                len(payload.mcp_bindings)
-                if payload.mcp_bindings is not None
-                else None
+                len(payload.mcp_bindings) if payload.mcp_bindings is not None else None
             ),
         },
     )
@@ -268,11 +278,7 @@ def activate_digital_employee_trial(
         resource_type="digital_employee",
         resource_id=employee.id,
         action="activate",
-        decision=(
-            "EXECUTED"
-            if employee.status == "ACTIVE"
-            else "REJECTED"
-        ),
+        decision=("EXECUTED" if employee.status == "ACTIVE" else "REJECTED"),
         payload={
             "status": employee.status,
             "evaluation": employee.activation_evaluation_json,
@@ -291,7 +297,7 @@ def list_digital_employee_revisions(
     db: DbSession,
     principal: Actor,
 ) -> list[DigitalEmployeeRevisionView]:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -309,7 +315,7 @@ def get_digital_employee_route_rule(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeRouteRuleView:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -327,7 +333,7 @@ def list_digital_employee_route_rules(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
 ) -> list[DigitalEmployeeRouteRuleView]:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -378,6 +384,222 @@ def update_digital_employee_route_rule(
 
 
 @router.get(
+    "/digital-employee-route-intent-conflicts",
+    response_model=DigitalEmployeeRouteIntentConflictList,
+)
+def list_digital_employee_route_intent_conflicts(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: str | None = Query(default=None),
+) -> DigitalEmployeeRouteIntentConflictList:
+    ensure_workspace_viewer(principal)
+    business_unit_id = resolve_business_unit(
+        principal,
+        business_unit_id,
+    )
+    return list_route_intent_conflicts(
+        db,
+        business_unit_id=business_unit_id,
+    )
+
+
+@router.get(
+    "/digital-employee-route-evaluation-cases",
+    response_model=list[DigitalEmployeeRouteEvaluationCaseView],
+)
+def list_digital_employee_route_evaluation_cases(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: str | None = Query(default=None),
+    service_entry_id: Annotated[UUID | None, Query()] = None,
+) -> list[DigitalEmployeeRouteEvaluationCaseView]:
+    ensure_workspace_viewer(principal)
+    business_unit_id = resolve_business_unit(
+        principal,
+        business_unit_id,
+    )
+    return list_route_evaluation_cases(
+        db,
+        business_unit_id=business_unit_id,
+        service_entry_id=service_entry_id,
+    )
+
+
+@router.post(
+    "/digital-employee-route-evaluation-cases",
+    response_model=DigitalEmployeeRouteEvaluationCaseView,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_digital_employee_route_evaluation_case(
+    payload: DigitalEmployeeRouteEvaluationCaseCreate,
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: str | None = Query(default=None),
+) -> DigitalEmployeeRouteEvaluationCaseView:
+    ensure_knowledge_admin(principal)
+    business_unit_id = resolve_business_unit(
+        principal,
+        business_unit_id,
+    )
+    case = create_route_evaluation_case(
+        db,
+        business_unit_id=business_unit_id,
+        payload=payload,
+    )
+    record_audit(
+        db,
+        correlation_id=correlation_id(request),
+        event_type="digital_employee.route_evaluation_case.created",
+        actor_type="USER",
+        actor_id=principal.actor_id,
+        resource_type="digital_employee_route_evaluation_case",
+        resource_id=case.id,
+        action="create",
+        decision="EXECUTED",
+        payload={
+            "service_entry_id": str(case.service_entry_id),
+            "expected_employee_id": str(case.expected_employee_id),
+        },
+    )
+    db.commit()
+    return case
+
+
+@router.patch(
+    "/digital-employee-route-evaluation-cases/{case_id}",
+    response_model=DigitalEmployeeRouteEvaluationCaseView,
+)
+def update_digital_employee_route_evaluation_case(
+    case_id: UUID,
+    payload: DigitalEmployeeRouteEvaluationCaseUpdate,
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+) -> DigitalEmployeeRouteEvaluationCaseView:
+    ensure_knowledge_admin(principal)
+    existing = get_route_evaluation_case(db, case_id)
+    ensure_business_unit_access(principal, existing.business_unit_id)
+    case = update_route_evaluation_case(
+        db,
+        case_id=case_id,
+        payload=payload,
+    )
+    record_audit(
+        db,
+        correlation_id=correlation_id(request),
+        event_type="digital_employee.route_evaluation_case.updated",
+        actor_type="USER",
+        actor_id=principal.actor_id,
+        resource_type="digital_employee_route_evaluation_case",
+        resource_id=case.id,
+        action="update",
+        decision="EXECUTED",
+        payload=payload.model_dump(exclude_none=True, mode="json"),
+    )
+    db.commit()
+    return case
+
+
+@router.delete(
+    "/digital-employee-route-evaluation-cases/{case_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_digital_employee_route_evaluation_case(
+    case_id: UUID,
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+) -> None:
+    ensure_knowledge_admin(principal)
+    existing = get_route_evaluation_case(db, case_id)
+    ensure_business_unit_access(principal, existing.business_unit_id)
+    delete_route_evaluation_case(db, case_id=case_id)
+    record_audit(
+        db,
+        correlation_id=correlation_id(request),
+        event_type="digital_employee.route_evaluation_case.deleted",
+        actor_type="USER",
+        actor_id=principal.actor_id,
+        resource_type="digital_employee_route_evaluation_case",
+        resource_id=case_id,
+        action="delete",
+        decision="EXECUTED",
+        payload={},
+    )
+    db.commit()
+
+
+@router.post(
+    "/digital-employee-route-evaluation-runs",
+    response_model=DigitalEmployeeRouteEvaluationRunView,
+    status_code=status.HTTP_201_CREATED,
+)
+def run_digital_employee_route_evaluation(
+    payload: DigitalEmployeeRouteEvaluationRunRequest,
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: str | None = Query(default=None),
+) -> DigitalEmployeeRouteEvaluationRunView:
+    ensure_knowledge_admin(principal)
+    business_unit_id = resolve_business_unit(
+        principal,
+        business_unit_id,
+    )
+    run = run_route_evaluation(
+        db,
+        business_unit_id=business_unit_id,
+        service_entry_id=payload.service_entry_id,
+        actor_id=principal.actor_id,
+    )
+    record_audit(
+        db,
+        correlation_id=correlation_id(request),
+        event_type="digital_employee.route_evaluation.completed",
+        actor_type="USER",
+        actor_id=principal.actor_id,
+        resource_type="digital_employee_route_evaluation_run",
+        resource_id=run.id,
+        action="run",
+        decision="EXECUTED",
+        payload={
+            "service_entry_id": str(run.service_entry_id),
+            "total": run.total,
+            "passed": run.passed,
+            "failed": run.failed,
+            "accuracy": run.accuracy,
+        },
+    )
+    db.commit()
+    return run
+
+
+@router.get(
+    "/digital-employee-route-evaluation-runs",
+    response_model=DigitalEmployeeRouteEvaluationRunList,
+)
+def list_digital_employee_route_evaluation_runs(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: str | None = Query(default=None),
+    service_entry_id: Annotated[UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> DigitalEmployeeRouteEvaluationRunList:
+    ensure_workspace_viewer(principal)
+    business_unit_id = resolve_business_unit(
+        principal,
+        business_unit_id,
+    )
+    return list_route_evaluation_runs(
+        db,
+        business_unit_id=business_unit_id,
+        service_entry_id=service_entry_id,
+        limit=limit,
+    )
+
+
+@router.get(
     "/digital-employee-route-decisions",
     response_model=DigitalEmployeeRouteDecisionList,
 )
@@ -387,7 +609,7 @@ def list_digital_employee_route_decisions(
     business_unit_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> DigitalEmployeeRouteDecisionList:
-    ensure_ticket_writer(principal)
+    ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -396,4 +618,3 @@ def list_digital_employee_route_decisions(
         business_unit_id=business_unit_id,
         limit=limit,
     )
-

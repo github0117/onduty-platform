@@ -45,7 +45,7 @@ def test_fresh_sqlite_migrations_normalize_employee_ids(
             "PRAGMA foreign_key_check"
         ).fetchall()
 
-    assert revision == ("b1f7a2c9e4d6",)
+    assert revision == ("c7d4e1a9b352",)
     assert default_employee == (
         "00000000000000000000000000000101",
     )

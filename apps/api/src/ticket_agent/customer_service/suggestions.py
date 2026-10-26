@@ -1,5 +1,6 @@
 import json
 import re
+from collections.abc import Callable
 from typing import Any, Literal, TypedDict
 from uuid import UUID
 
@@ -68,11 +69,23 @@ class CustomerSuggestionState(TypedDict, total=False):
 
 
 class CustomerReplySuggestionService:
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        on_stage: Callable[[str], None] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+    ) -> None:
         self.session = session
         self.tool_execution = ToolExecutionService(session)
         self.mcp_runtime = McpToolRuntime(session)
+        self._on_stage = on_stage
+        self._on_text_delta = on_text_delta
         self.graph = self._build_graph()
+
+    def _emit_stage(self, label: str) -> None:
+        if self._on_stage is not None:
+            self._on_stage(label)
 
     def _build_graph(self) -> Any:
         graph = StateGraph(CustomerSuggestionState)
@@ -368,6 +381,7 @@ class CustomerReplySuggestionService:
         )
 
     def _route_skill(self, state: CustomerSuggestionState) -> dict[str, Any]:
+        self._emit_stage("正在匹配岗位 Skill")
         query = _latest_buyer_question(state["query"]).lower()
         ticket = state["ticket"]
         employee = state["employee"]
@@ -448,6 +462,7 @@ class CustomerReplySuggestionService:
         self,
         state: CustomerSuggestionState,
     ) -> dict[str, Any]:
+        self._emit_stage("正在检索知识与业务资料")
         employee = state["employee"]
         ticket = state["ticket"]
         usage_guard = state["usage_guard"]
@@ -535,6 +550,7 @@ class CustomerReplySuggestionService:
         self,
         state: CustomerSuggestionState,
     ) -> dict[str, Any]:
+        self._emit_stage("正在规划业务工具")
         employee = state["employee"]
         available = self.mcp_runtime.available_tools(employee)
         trace = list(state.get("trace", []))
@@ -612,6 +628,7 @@ class CustomerReplySuggestionService:
         plan = state.get("mcp_plan")
         if plan is None or plan.tool_id is None:
             return {}
+        self._emit_stage("正在调用业务工具获取实时结果")
         employee = state["employee"]
         ticket = state["ticket"]
         try:
@@ -678,6 +695,7 @@ class CustomerReplySuggestionService:
         self,
         state: CustomerSuggestionState,
     ) -> dict[str, Any]:
+        self._emit_stage("正在组织回复")
         employee = state["employee"]
         ticket = state["ticket"]
         hits = state.get("knowledge_hits", [])
@@ -731,6 +749,7 @@ class CustomerReplySuggestionService:
             knowledge_hits=hits,
             skill_instructions=state.get("skill_instructions"),
             external_evidence=state.get("mcp_evidence", []),
+            on_text_delta=self._on_text_delta,
         )
         self.tool_execution.succeed(
             call,

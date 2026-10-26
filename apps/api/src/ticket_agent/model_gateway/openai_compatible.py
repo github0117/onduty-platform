@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -13,6 +14,9 @@ from ticket_agent.knowledge.claim_verifier import (
 )
 from ticket_agent.knowledge.grounding import validate_numeric_claims
 from ticket_agent.model_gateway.local import LocalModelGateway
+from ticket_agent.model_gateway.streaming_json import (
+    JsonStringFieldExtractor,
+)
 from ticket_agent.model_gateway.types import (
     AgentToolSpec,
     ClaimVerification,
@@ -95,6 +99,7 @@ class OpenAICompatibleGateway:
         queue_id: str,
         snippets: list[DraftSnippet],
         skill_instructions: str | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> DraftGenerationResponse:
         try:
             if not snippets:
@@ -106,6 +111,7 @@ class OpenAICompatibleGateway:
                 queue_id=queue_id,
                 snippets=snippets,
                 skill_instructions=skill_instructions,
+                on_text_delta=on_text_delta,
             )
         except (httpx.HTTPError, ModelGatewayError, ValidationError, ValueError) as exc:
             if not self.settings.model_fallback_to_local:
@@ -114,6 +120,9 @@ class OpenAICompatibleGateway:
                 raise ModelGatewayError(
                     f"Draft generation failed: {type(exc).__name__}"
                 ) from exc
+            # Local fallback is not token-streamed. The conversation turn
+            # paces the validated final text (or sends a replacement event if
+            # part of a failed remote answer already streamed).
             fallback = self._local.generate_draft(
                 subject=subject,
                 body=body,
@@ -447,6 +456,7 @@ class OpenAICompatibleGateway:
         queue_id: str,
         snippets: list[DraftSnippet],
         skill_instructions: str | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> tuple[GeneratedDraft, list[ClaimVerification]]:
         sources = "\n\n".join(
             (
@@ -487,6 +497,7 @@ class OpenAICompatibleGateway:
             schema=GeneratedDraft.model_json_schema(),
             schema_name="ticket_draft",
             purpose="generation",
+            on_text_delta=on_text_delta,
         )
         generated = GeneratedDraft.model_validate_json(content)
         allowed_ids = {snippet.chunk_id for snippet in snippets}
@@ -594,6 +605,7 @@ class OpenAICompatibleGateway:
         schema: dict[str, Any],
         schema_name: str,
         purpose: str,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> str:
         if not self.settings.model_base_url or not self.settings.model_name:
             raise ModelGatewayError("MODEL_BASE_URL and MODEL_NAME are required")
@@ -618,8 +630,41 @@ class OpenAICompatibleGateway:
         headers = {"Content-Type": "application/json"}
         if self.settings.model_api_key:
             headers["Authorization"] = f"Bearer {self.settings.model_api_key}"
+        endpoint = (
+            f"{self.settings.model_base_url.rstrip('/')}/chat/completions"
+        )
 
-        endpoint = f"{self.settings.model_base_url.rstrip('/')}/chat/completions"
+        if on_text_delta is not None:
+            try:
+                return self._call_chat_streaming(
+                    endpoint=endpoint,
+                    payload=payload,
+                    headers=headers,
+                    purpose=purpose,
+                    on_text_delta=on_text_delta,
+                )
+            except (httpx.HTTPError, ModelGatewayError, ValueError):
+                # Some providers reject stream=true or structured streaming.
+                # Fall back to a buffered call. The turn orchestrator paces
+                # the final text, or sends a replacement event if part of the
+                # answer already streamed.
+                pass
+
+        return self._call_chat_buffered(
+            endpoint=endpoint,
+            payload=payload,
+            headers=headers,
+            purpose=purpose,
+        )
+
+    def _call_chat_buffered(
+        self,
+        *,
+        endpoint: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        purpose: str,
+    ) -> str:
         started_monotonic = (
             self._usage_guard.start(purpose=purpose)
             if self._usage_guard
@@ -629,7 +674,11 @@ class OpenAICompatibleGateway:
         try:
             for attempt in range(self.settings.model_max_retries + 1):
                 try:
-                    response = self._client.post(endpoint, headers=headers, json=payload)
+                    response = self._client.post(
+                        endpoint,
+                        headers=headers,
+                        json=payload,
+                    )
                     if response.status_code == 429 or response.status_code >= 500:
                         raise ModelGatewayError(
                             f"Model provider returned HTTP {response.status_code}",
@@ -671,6 +720,115 @@ class OpenAICompatibleGateway:
                     ),
                 )
             raise
+
+    def _call_chat_streaming(
+        self,
+        *,
+        endpoint: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        purpose: str,
+        on_text_delta: Callable[[str], None],
+    ) -> str:
+        started_monotonic = (
+            self._usage_guard.start(purpose=purpose)
+            if self._usage_guard
+            else None
+        )
+        stream_payload = {**payload, "stream": True}
+        extractor = JsonStringFieldExtractor()
+        content_parts: list[str] = []
+        usage = TokenUsage()
+        try:
+            with self._client.stream(
+                "POST",
+                endpoint,
+                headers=headers,
+                json=stream_payload,
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    response.raise_for_status()
+                for raw_line in response.iter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(event, dict):
+                        usage_data = event.get("usage")
+                        if isinstance(usage_data, dict):
+                            usage = self._usage_from_payload(event)
+                        choices = event.get("choices")
+                        if isinstance(choices, list) and choices:
+                            first = choices[0]
+                            delta = (
+                                first.get("delta")
+                                if isinstance(first, dict)
+                                else None
+                            )
+                            part = (
+                                delta.get("content")
+                                if isinstance(delta, dict)
+                                else None
+                            )
+                            if isinstance(part, str) and part:
+                                content_parts.append(part)
+                                emitted = extractor.feed(part)
+                                if emitted:
+                                    on_text_delta(emitted)
+            content = "".join(content_parts).strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```(?:json)?\s*", "", content)
+                content = re.sub(r"\s*```$", "", content)
+            if not content:
+                raise ModelGatewayError(
+                    "Model provider returned an empty stream"
+                )
+            if self._usage_guard and started_monotonic is not None:
+                self._usage_guard.succeed(
+                    purpose=purpose,
+                    provider="openai_compatible",
+                    model_name=self.settings.model_name,
+                    usage=usage,
+                    started_monotonic=started_monotonic,
+                )
+            return content
+        except Exception as exc:
+            if self._usage_guard and started_monotonic is not None:
+                self._usage_guard.fail(
+                    purpose=purpose,
+                    provider="openai_compatible",
+                    model_name=self.settings.model_name,
+                    started_monotonic=started_monotonic,
+                    error_code=(
+                        exc.code if isinstance(exc, ModelGatewayError) else type(exc).__name__
+                    ),
+                )
+            raise
+
+    @staticmethod
+    def _usage_from_payload(payload: dict[str, Any]) -> TokenUsage:
+        usage_data = payload.get("usage")
+        if not isinstance(usage_data, dict):
+            return TokenUsage()
+        prompt_tokens = usage_data.get("prompt_tokens")
+        completion_tokens = usage_data.get("completion_tokens")
+        return TokenUsage(
+            input_tokens=(
+                int(prompt_tokens) if isinstance(prompt_tokens, int) else 0
+            ),
+            output_tokens=(
+                int(completion_tokens)
+                if isinstance(completion_tokens, int)
+                else 0
+            ),
+        )
 
     @staticmethod
     def _parse_content(payload: dict[str, Any]) -> tuple[str, TokenUsage]:

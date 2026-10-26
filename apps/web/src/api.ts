@@ -13,6 +13,10 @@ import type {
   DigitalEmployeeDraftRevision,
   DigitalEmployeeRevision,
   DigitalEmployeeRouteDecisionList,
+  DigitalEmployeeRouteEvaluationCase,
+  DigitalEmployeeRouteEvaluationRun,
+  DigitalEmployeeRouteEvaluationRunList,
+  DigitalEmployeeRouteIntentConflictList,
   DigitalEmployeeRouteRule,
   DigitalEmployeeTemplate,
   CustomerConversation,
@@ -230,6 +234,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       problem?.code ?? null,
       problem?.retryable ?? false,
     );
+  }
+  if (response.status === 204) {
+    return undefined as T;
   }
   return (await response.json()) as T;
 }
@@ -509,6 +516,92 @@ export function addCustomerConversationMessage(
       }),
     },
   );
+}
+
+export type CustomerTurnStreamEvent =
+  | {
+      type: "start";
+      turn_id: string | null;
+      conversation: CustomerConversation;
+    }
+  | { type: "status"; turn_id: string; stage: string }
+  | { type: "delta"; turn_id: string; text: string }
+  | { type: "replace"; turn_id: string; text: string }
+  | {
+      type: "done";
+      turn_id: string | null;
+      conversation: CustomerConversation;
+    }
+  | { type: "error"; turn_id: string; message: string };
+
+export async function streamCustomerConversationMessage(
+  conversationId: string,
+  input: { content: string; productId?: string; sku?: string },
+  onEvent: (event: CustomerTurnStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const authHeaders = await getAuthHeaders();
+  const response = await fetch(
+    `${API_BASE}/api/v1/customer-service/conversations/${conversationId}/messages/stream`,
+    {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...authHeaders,
+      },
+      body: JSON.stringify({
+        content: input.content,
+        product_id: input.productId,
+        sku: input.sku,
+      }),
+    },
+  );
+  if (!response.ok) {
+    const problem = (await response.json().catch(() => null)) as
+      | { detail?: string; code?: string; retryable?: boolean }
+      | null;
+    throw new ApiError(
+      friendlyProblem(response, problem),
+      response.status,
+      problem?.code ?? null,
+      problem?.retryable ?? false,
+    );
+  }
+  if (!response.body) {
+    throw new Error("浏览器不支持流式响应");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) {
+      let eventName = "message";
+      const dataLines: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) {
+          eventName = line.slice(7).trim();
+        } else if (line.startsWith("data: ")) {
+          dataLines.push(line.slice(6));
+        }
+      }
+      if (dataLines.length === 0) continue;
+      const parsed = JSON.parse(dataLines.join("\n")) as Record<
+        string,
+        unknown
+      >;
+      onEvent({
+        ...parsed,
+        type: (parsed.type as string | undefined) ?? eventName,
+      } as CustomerTurnStreamEvent);
+    }
+  }
 }
 
 export function sendManualCustomerReply(
@@ -824,6 +917,102 @@ export function listDigitalEmployeeRouteDecisions(): Promise<
 > {
   return request(
     "/api/v1/digital-employee-route-decisions?business_unit_id=bu_demo&limit=100",
+  );
+}
+
+export function listDigitalEmployeeRouteIntentConflicts(): Promise<DigitalEmployeeRouteIntentConflictList> {
+  return request(
+    "/api/v1/digital-employee-route-intent-conflicts?business_unit_id=bu_demo",
+  );
+}
+
+function routeEvaluationQuery(serviceEntryId?: string): string {
+  const params = new URLSearchParams({
+    business_unit_id: "bu_demo",
+  });
+  if (serviceEntryId) params.set("service_entry_id", serviceEntryId);
+  return params.toString();
+}
+
+export function listDigitalEmployeeRouteEvaluationCases(
+  serviceEntryId?: string,
+): Promise<DigitalEmployeeRouteEvaluationCase[]> {
+  return request(
+    `/api/v1/digital-employee-route-evaluation-cases?${routeEvaluationQuery(serviceEntryId)}`,
+  );
+}
+
+export function createDigitalEmployeeRouteEvaluationCase(input: {
+  serviceEntryId: string;
+  expectedEmployeeId: string;
+  question: string;
+  notes?: string;
+  enabled?: boolean;
+}): Promise<DigitalEmployeeRouteEvaluationCase> {
+  return request(
+    `/api/v1/digital-employee-route-evaluation-cases?${routeEvaluationQuery()}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        service_entry_id: input.serviceEntryId,
+        expected_employee_id: input.expectedEmployeeId,
+        question: input.question,
+        notes: input.notes ?? "",
+        enabled: input.enabled ?? true,
+      }),
+    },
+  );
+}
+
+export function updateDigitalEmployeeRouteEvaluationCase(
+  caseId: string,
+  input: {
+    expectedEmployeeId?: string;
+    question?: string;
+    notes?: string;
+    enabled?: boolean;
+  },
+): Promise<DigitalEmployeeRouteEvaluationCase> {
+  return request(
+    `/api/v1/digital-employee-route-evaluation-cases/${caseId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_employee_id: input.expectedEmployeeId,
+        question: input.question,
+        notes: input.notes,
+        enabled: input.enabled,
+      }),
+    },
+  );
+}
+
+export function deleteDigitalEmployeeRouteEvaluationCase(
+  caseId: string,
+): Promise<void> {
+  return request(
+    `/api/v1/digital-employee-route-evaluation-cases/${caseId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function runDigitalEmployeeRouteEvaluation(
+  serviceEntryId: string,
+): Promise<DigitalEmployeeRouteEvaluationRun> {
+  return request(
+    `/api/v1/digital-employee-route-evaluation-runs?${routeEvaluationQuery()}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ service_entry_id: serviceEntryId }),
+    },
+  );
+}
+
+export function listDigitalEmployeeRouteEvaluationRuns(
+  serviceEntryId?: string,
+): Promise<DigitalEmployeeRouteEvaluationRunList> {
+  return request(
+    `/api/v1/digital-employee-route-evaluation-runs?${routeEvaluationQuery(serviceEntryId)}&limit=10`,
   );
 }
 

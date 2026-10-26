@@ -56,4 +56,22 @@ test("capture curated documentation screenshots", async ({ page }) => {
       path: resolve(screenshotDir, `${item.name}.png`),
     });
   }
+
+  await page.goto("/employees/roster");
+  await page.waitForLoadState("networkidle").catch(() => undefined);
+  await page
+    .getByRole("button", { name: "HR 入职资料数字员工", exact: true })
+    .first()
+    .click();
+  await page.waitForTimeout(1200);
+  await page.screenshot({
+    path: resolve(screenshotDir, "employee-snapshot.png"),
+  });
+
+  await page.goto("/employees/routing");
+  await page.waitForLoadState("networkidle").catch(() => undefined);
+  await page.waitForTimeout(1500);
+  await page.screenshot({
+    path: resolve(screenshotDir, "employee-routing.png"),
+  });
 });
