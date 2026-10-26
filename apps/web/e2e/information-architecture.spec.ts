@@ -1,28 +1,13 @@
 import { expect, test } from "@playwright/test";
 
-test("侧边栏使用扁平一级入口，员工二级页面使用页内导航", async ({
+test("侧边栏只保留 Agent 演示和平台管理，员工二级页面使用页内导航", async ({
   page,
 }) => {
   await page.addInitScript(() => window.localStorage.clear());
   await page.goto("/overview");
-  await expect(
-    page.getByRole("menuitem", { name: "研发支持 Agent", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("menuitem", { name: "数字员工", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("menuitem", { name: "知识库", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("menuitem", { name: "模型与连接", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("menuitem", { name: "数字员工", exact: true })
-    .click();
+  await expect(page.getByText("Agent 演示", { exact: true })).toBeVisible();
+  await expect(page.getByText("平台管理", { exact: true })).toBeVisible();
+  await page.getByText("员工、Skill 与 MCP", { exact: true }).click();
   await expect(page).toHaveURL(/\/employees\/roster$/);
   await expect(
     page.getByText("Skill 与 MCP 属于员工能力配置", {
@@ -169,7 +154,7 @@ test("客服聊天明确区分操作人和对话双方并适配平板与手机",
   ).toBe(true);
 });
 
-test("客服坐席测试身份只显示业务与知识入口", async ({ page }) => {
+test("客服坐席测试身份不显示平台管理菜单", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.clear();
     window.localStorage.setItem(
@@ -182,21 +167,8 @@ test("客服坐席测试身份只显示业务与知识入口", async ({ page }) 
     );
   });
   await page.goto("/overview");
-  await expect(
-    page.getByRole("menuitem", { name: "研发支持 Agent", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("menuitem", { name: "知识库", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("menuitem", { name: "数字员工", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("menuitem", { name: "模型与连接", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
-  ).toHaveCount(0);
+  await expect(page.getByText("Agent 演示", { exact: true })).toBeVisible();
+  await expect(page.getByText("平台管理", { exact: true })).toHaveCount(0);
   await expect(
     page.getByText("当前视角：业务执行者", { exact: true }),
   ).toBeVisible();
@@ -215,17 +187,12 @@ test("业务经理测试身份只看到业务演示和审批审计", async ({ pa
     );
   });
   await page.goto("/overview");
+  await expect(page.getByText("平台管理", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
+    page.getByText("运行与审计", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "数字员工", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("menuitem", { name: "知识库", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("menuitem", { name: "模型与连接", exact: true }),
+    page.getByText("员工、Skill 与 MCP", { exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByText("当前视角：管理者", { exact: true }),

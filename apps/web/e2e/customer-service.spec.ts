@@ -306,19 +306,19 @@ test("业务页面不再显示全局技术视图切换，技术能力进入资�
     page.getByText("业务视图", { exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("menuitem", { name: "研发支持 Agent", exact: true }),
+    page.getByText("平台管理", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "数字员工", exact: true }),
+    page.getByText("员工、Skill 与 MCP", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "知识库", exact: true }),
+    page.getByText("知识与评测", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "模型与连接", exact: true }),
+    page.getByText("模型与连接", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
+    page.getByText("运行与审计", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("岗位操作规程", { exact: true }),

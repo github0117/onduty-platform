@@ -43,10 +43,7 @@ test("客服坐席可从角色首页进入工作台", async ({ page }) => {
     page.getByRole("heading", { name: "人工客服工作台" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "数字员工", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
+    page.getByText("平台管理", { exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "管理员视图" }),
@@ -75,7 +72,7 @@ test("客服主管可从角色首页进入运营看板", async ({ page }) => {
     page.getByText("经营品类", { exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
+    page.getByText("运行与审计", { exact: true }),
   ).toBeVisible();
   await capture(page, "02-service-supervisor");
 });
@@ -92,7 +89,7 @@ test("知识运营可从角色首页进入知识文档", async ({ page }) => {
     page.getByText("已归档", { exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("menuitem", { name: "数字员工", exact: true }),
+    page.getByText("员工、Skill 与 MCP", { exact: true }),
   ).toBeVisible();
   await capture(page, "03-knowledge-operator");
 });
@@ -115,7 +112,7 @@ test("业务经理可从角色首页查看跨场景指标", async ({ page }) => 
     enabledEmployees.locator(".ant-statistic-content-value"),
   ).not.toHaveText("0");
   await expect(
-    page.getByRole("menuitem", { name: "数字员工", exact: true }),
+    page.getByText("员工、Skill 与 MCP", { exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "检查并恢复演示数据" }),
@@ -137,7 +134,7 @@ test("平台管理员可进入完整员工配置", async ({ page }) => {
     page.getByText("Skill（岗位规程）", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("menuitem", { name: "模型与连接", exact: true }),
+    page.getByText("模型与连接", { exact: true }),
   ).toBeVisible();
   await capture(page, "05-platform-admin");
 });

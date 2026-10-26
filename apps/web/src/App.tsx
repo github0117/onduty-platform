@@ -340,6 +340,21 @@ export default function App() {
   const current = routeMeta[activePath] ?? routeMeta["/overview"];
   const activeIdentity = getActiveTestIdentity();
   const activeBusinessUnit = getActiveBusinessUnitId();
+  const platformKeysByProfile: Record<string, Set<string>> = {
+    "service-agent": new Set(),
+    "service-supervisor": new Set(["/operations", "/knowledge"]),
+    "knowledge-operator": new Set(["/employees/roster", "/knowledge"]),
+    "business-manager": new Set(["/operations"]),
+    "platform-admin": new Set([
+      "/employees/roster",
+      "/knowledge",
+      "/models",
+      "/operations",
+    ]),
+  };
+  const visiblePlatformKeys =
+    platformKeysByProfile[activeIdentity.id] ??
+    platformKeysByProfile["platform-admin"];
 
   useEffect(() => {
     if (identityCanAccessPath(activeIdentity.id, activePath)) return;
@@ -392,18 +407,30 @@ export default function App() {
   const ecommerceSection = ecommerceSections[activePath];
   const modelSection = modelSections[activePath];
   const customerServiceSection = customerServiceSections[activePath];
+  const scenarioMenu = {
+    key: "demo-scenarios",
+    label: "Agent 演示",
+    children: [
+      { key: "/customer-service", label: "研发支持 Agent" },
+      { key: "/ecommerce", label: "电商运营复用" },
+      { key: "/tickets", label: "内部工单 / HR" },
+    ],
+  };
+  const platformMenu = {
+    key: "platform-management",
+    label: "平台管理",
+    children: [
+      { key: "/employees/roster", label: "员工、Skill 与 MCP" },
+      { key: "/knowledge", label: "知识与评测" },
+      { key: "/models", label: "模型与连接" },
+      { key: "/operations", label: "运行与审计" },
+    ].filter((item) => visiblePlatformKeys.has(item.key)),
+  };
   const menuItems = [
     { key: "/overview", label: "技术演示首页" },
-    { key: "/customer-service", label: "研发支持 Agent" },
-    { key: "/ecommerce", label: "电商运营复用" },
-    { key: "/tickets", label: "内部工单 / HR" },
-    { key: "/employees/roster", label: "数字员工" },
-    { key: "/knowledge", label: "知识库" },
-    { key: "/models", label: "模型与连接" },
-    { key: "/operations", label: "运行与审计" },
-  ].filter((item) =>
-    identityCanAccessPath(activeIdentity.id, item.key),
-  );
+    scenarioMenu,
+    ...(platformMenu.children.length ? [platformMenu] : []),
+  ];
 
   return (
     <Layout className="app-shell">
@@ -431,6 +458,10 @@ export default function App() {
                     : customerServiceSection
                       ? "/customer-service"
                       : activePath,
+          ]}
+          defaultOpenKeys={[
+            "demo-scenarios",
+            "platform-management",
           ]}
           onClick={({ key }) => navigate(key)}
           items={menuItems}
