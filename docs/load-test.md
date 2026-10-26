@@ -15,7 +15,7 @@
 | 项目 | 配置 |
 |---|---|
 | 主机 | Apple M5，16 GiB 内存，macOS |
-| Docker | Docker Compose 5.3.1，10 个可用 CPU |
+| Docker | Docker Compose 5.3.1，10 个 CPU、约 7.8 GiB 内存 |
 | API | `ticket-agent-api:local`，单 uvicorn worker，`APP_AUTH_MODE=dev` |
 | 数据库 | PostgreSQL 容器，连接池 20 + 20 overflow |
 | 缓存/任务 | Redis 容器，Celery worker 和 beat 同时运行 |
