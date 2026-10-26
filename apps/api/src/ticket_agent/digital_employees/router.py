@@ -131,6 +131,7 @@ def create_digital_employee_from_template(
             "template_code": employee.template_code,
             "business_unit_id": employee.business_unit_id,
             "config_revision": employee.config_revision,
+            "instruction_length": len(employee.instruction_text),
         },
     )
     db.commit()

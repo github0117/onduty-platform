@@ -786,6 +786,7 @@ class DigitalEmployeeService:
                 payload.model_profile or template.model_profile
             ),
             tool_allowlist_json=template.tool_allowlist,
+            instruction_text=payload.instruction,
             manifest_json=manifest,
             created_by=actor_id,
         )

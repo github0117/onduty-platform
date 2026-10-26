@@ -3589,6 +3589,7 @@ function TemplateEmployeeModal({
 }) {
   const [name, setName] = useState("");
   const [knowledgeSpaceIds, setKnowledgeSpaceIds] = useState<string[]>([]);
+  const [instruction, setInstruction] = useState("");
   const spaces = useQuery({
     queryKey: ["knowledge", "spaces"],
     queryFn: listKnowledgeSpaces,
@@ -3598,6 +3599,7 @@ function TemplateEmployeeModal({
     if (!template) return;
     setName(template.name);
     setKnowledgeSpaceIds([]);
+    setInstruction("");
   }, [template]);
   const create = useMutation({
     mutationFn: () => {
@@ -3606,6 +3608,7 @@ function TemplateEmployeeModal({
         name: name.trim(),
         templateCode: template.code,
         knowledgeSpaceIds,
+        instruction,
         changeNote: `Created from ${template.code}`,
       });
     },
@@ -3673,6 +3676,19 @@ function TemplateEmployeeModal({
                     label: `${space.name} · ${space.code}`,
                   }))}
                 placeholder="可稍后配置"
+              />
+            </Form.Item>
+            <Form.Item
+              label="角色提示词"
+              extra="可选。模板负责技术配置，这里补充该员工的角色、语气和服务边界；创建后仍可修改。"
+            >
+              <TextArea
+                rows={4}
+                maxLength={4000}
+                showCount
+                value={instruction}
+                onChange={(event) => setInstruction(event.target.value)}
+                placeholder="例如：先确认订单号；涉及退款只能说明流程并转人工。"
               />
             </Form.Item>
           </Form>

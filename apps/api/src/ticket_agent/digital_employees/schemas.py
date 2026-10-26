@@ -122,6 +122,7 @@ class DigitalEmployeeFromTemplateCreate(BaseModel):
     skill_ids: list[UUID] = Field(default_factory=list)
     mcp_connector_ids: list[UUID] = Field(default_factory=list)
     model_profile: dict[str, Any] = Field(default_factory=dict)
+    instruction: str = Field(default="", max_length=4000)
     change_note: str = Field(default="", max_length=500)
 
 

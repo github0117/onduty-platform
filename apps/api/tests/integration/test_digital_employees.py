@@ -208,6 +208,7 @@ def test_create_employee_from_template_with_manifest_and_revision(
             "name": "保温杯售前助手",
             "template_code": "ecommerce_presales",
             "business_unit_id": "bu_demo",
+            "instruction": "先确认用途和容量，再介绍材质与保养方式。",
         },
     )
     assert created.status_code == 201, created.text
@@ -215,6 +216,7 @@ def test_create_employee_from_template_with_manifest_and_revision(
     assert employee["domain"] == "customer_service"
     assert employee["template_code"] == "ecommerce_presales"
     assert employee["config_revision"] == 1
+    assert employee["instruction"] == "先确认用途和容量，再介绍材质与保养方式。"
     assert employee["manifest"]["template_code"] == "ecommerce_presales"
     assert employee["manifest"]["routing"]["deterministic_first"] is True
 
@@ -234,6 +236,10 @@ def test_create_employee_from_template_with_manifest_and_revision(
     assert revisions.status_code == 200
     assert len(revisions.json()) == 1
     assert revisions.json()[0]["status"] == "PUBLISHED"
+    assert (
+        revisions.json()[0]["instruction"]
+        == "先确认用途和容量，再介绍材质与保养方式。"
+    )
 
     updated = client.patch(
         f"/api/v1/digital-employees/{employee['id']}",

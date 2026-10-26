@@ -266,6 +266,9 @@ test("从模板创建员工自动继承资源并提交知识空间", async ({ pa
   await dialog.locator(".ant-input").first().fill("E2E 模板售后员工");
   await dialog.locator(".ant-select").click();
   await page.getByText("E2E 售后知识 · e2e_after_sales", { exact: true }).last().click();
+  await dialog
+    .getByPlaceholder(/例如：先确认订单号/)
+    .fill("E2E 模板提示词");
   await dialog.getByRole("button", { name: "创建员工" }).click();
   const request = await requestPromise;
   expect(request.postDataJSON()).toMatchObject({
@@ -273,6 +276,7 @@ test("从模板创建员工自动继承资源并提交知识空间", async ({ pa
     template_code: "ecommerce_aftersales",
     business_unit_id: "bu_demo",
     knowledge_space_ids: [space.id],
+    instruction: "E2E 模板提示词",
   });
   await expect(
     page.getByText("试用员工已创建，请完成资源检查后评估激活"),

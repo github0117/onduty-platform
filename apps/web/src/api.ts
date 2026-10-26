@@ -765,6 +765,7 @@ export function createDigitalEmployeeFromTemplate(input: {
   knowledgeSpaceIds?: string[];
   skillIds?: string[];
   mcpConnectorIds?: string[];
+  instruction?: string;
   changeNote?: string;
 }): Promise<DigitalEmployee> {
   return request("/api/v1/digital-employees/from-template", {
@@ -777,6 +778,7 @@ export function createDigitalEmployeeFromTemplate(input: {
       skill_ids: input.skillIds ?? [],
       mcp_connector_ids: input.mcpConnectorIds ?? [],
       model_profile: {},
+      instruction: input.instruction ?? "",
       change_note: input.changeNote ?? "",
     }),
   });
