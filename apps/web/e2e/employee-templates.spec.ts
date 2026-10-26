@@ -31,8 +31,9 @@ const template = {
 async function mockManagedTemplate(
   page: Page,
   status = "DRAFT",
+  overrides: Partial<typeof template> = {},
 ): Promise<void> {
-  const current = { ...template, status };
+  const current = { ...template, status, ...overrides };
   await page.route(
     "**/api/v1/knowledge-spaces?business_unit_id=bu_demo",
     async (route) => {
@@ -371,6 +372,81 @@ test("编辑岗位模板草案生成新修订", async ({ page }) => {
     ],
   });
   await expect(page.getByText("模板草案已更新并生成新修订")).toBeVisible();
+});
+
+test("编辑岗位模板可调整知识工作流和 MCP 工具授权", async ({
+  page,
+}) => {
+  await page.addInitScript(() => window.localStorage.clear());
+  await mockManagedTemplate(page, "DRAFT", {
+    knowledge_bindings: [
+      {
+        knowledge_space_id: "e2e-space",
+        workflow_key: "finance_review",
+        scope: {},
+        enabled: true,
+      },
+    ],
+    mcp_bindings: [
+      {
+        connector_id: "e2e-connector",
+        allowed_tools: ["orders.read"],
+        write_approved: false,
+        enabled: true,
+      },
+    ],
+  });
+  const requestPromise = page.waitForRequest(
+    (item) =>
+      item.method() === "POST" &&
+      item.url().endsWith(
+        `/digital-employee-templates/${templateId}/edit`,
+      ),
+  );
+  await page.route(
+    `**/api/v1/digital-employee-templates/${templateId}/edit`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(template),
+      });
+    },
+  );
+  await page.goto("/employees/templates");
+  await page.getByRole("button", { name: "编辑模板" }).click();
+  const dialog = page.getByRole("dialog", { name: "编辑岗位模板草案" });
+  const workflowInput = dialog.getByPlaceholder(/工作流/);
+  await expect(workflowInput).toHaveValue("finance_review");
+  const readTool = dialog.getByRole("checkbox", {
+    name: /orders\.read/,
+  });
+  await expect(readTool).toBeChecked();
+  await expect(
+    dialog.getByRole("checkbox", { name: /orders\.refund/ }),
+  ).toBeDisabled();
+  await workflowInput.fill("refund_review");
+  await dialog.getByText("orders.read", { exact: true }).click();
+  await expect(readTool).not.toBeChecked();
+  await dialog.getByRole("button", { name: "保存新修订" }).click();
+  expect((await requestPromise).postDataJSON()).toMatchObject({
+    knowledge_bindings: [
+      {
+        knowledge_space_id: "e2e-space",
+        workflow_key: "refund_review",
+        scope: {},
+        enabled: true,
+      },
+    ],
+    mcp_bindings: [
+      {
+        connector_id: "e2e-connector",
+        allowed_tools: [],
+        write_approved: false,
+        enabled: true,
+      },
+    ],
+  });
 });
 
 test("已拒绝岗位模板可以重新打开", async ({ page }) => {

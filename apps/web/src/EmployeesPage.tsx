@@ -3400,22 +3400,31 @@ function templateBindingIds(
     .filter((value): value is string => typeof value === "string");
 }
 
+function readOnlyToolNames(connector: McpConnector | undefined): string[] {
+  return (connector?.tools ?? [])
+    .filter((tool) => !tool.is_write)
+    .map((tool) => tool.name);
+}
+
 function templateKnowledgeBindings(
   template: DigitalEmployeeTemplate,
   knowledgeSpaceIds: string[],
+  workflowKeys: Record<string, string>,
 ): Array<Record<string, unknown>> {
   return knowledgeSpaceIds.map((knowledgeSpaceId) => {
     const existing = template.knowledge_bindings.find(
       (binding) => binding.knowledge_space_id === knowledgeSpaceId,
     );
-    return (
-      existing ?? {
+    const workflowKey = (workflowKeys[knowledgeSpaceId] ?? "").trim();
+    return {
+      ...(existing ?? {
         knowledge_space_id: knowledgeSpaceId,
-        workflow_key: null,
         scope: {},
         enabled: true,
-      }
-    );
+      }),
+      knowledge_space_id: knowledgeSpaceId,
+      workflow_key: workflowKey || null,
+    };
   });
 }
 
@@ -3423,22 +3432,24 @@ function templateMcpBindings(
   template: DigitalEmployeeTemplate,
   connectorIds: string[],
   connectors: McpConnector[],
+  allowedTools: Record<string, string[]>,
 ): Array<Record<string, unknown>> {
   return connectorIds.map((connectorId) => {
     const existing = template.mcp_bindings.find(
       (binding) => binding.connector_id === connectorId,
     );
-    if (existing) return existing;
-    const connector = connectors.find(
-      (item) => item.id === connectorId,
-    );
     return {
+      ...(existing ?? {
+        connector_id: connectorId,
+        write_approved: false,
+        enabled: true,
+      }),
       connector_id: connectorId,
-      allowed_tools: (connector?.tools ?? [])
-        .filter((tool) => !tool.is_write)
-        .map((tool) => tool.name),
-      write_approved: false,
-      enabled: true,
+      allowed_tools:
+        allowedTools[connectorId] ??
+        readOnlyToolNames(
+          connectors.find((item) => item.id === connectorId),
+        ),
     };
   });
 }
@@ -3456,9 +3467,14 @@ function ManagedTemplatesCard() {
   const [editKnowledgeSpaceIds, setEditKnowledgeSpaceIds] = useState<
     string[]
   >([]);
+  const [editKnowledgeWorkflowKeys, setEditKnowledgeWorkflowKeys] =
+    useState<Record<string, string>>({});
   const [editConnectorIds, setEditConnectorIds] = useState<string[]>(
     [],
   );
+  const [editMcpTools, setEditMcpTools] = useState<
+    Record<string, string[]>
+  >({});
   const [confirmTarget, setConfirmTarget] = useState<{
     template: DigitalEmployeeTemplate;
     action: TemplateAction;
@@ -3544,11 +3560,13 @@ function ManagedTemplatesCard() {
         knowledgeBindings: templateKnowledgeBindings(
           template,
           editKnowledgeSpaceIds,
+          editKnowledgeWorkflowKeys,
         ),
         mcpBindings: templateMcpBindings(
           template,
           editConnectorIds,
           connectors.data ?? [],
+          editMcpTools,
         ),
       }),
     onSuccess: async () => {
@@ -3649,16 +3667,56 @@ function ManagedTemplatesCard() {
                           setEditTools(
                             template.tool_allowlist.join("\n"),
                           );
-                          setEditKnowledgeSpaceIds(
+                          const knowledgeSpaceIds =
                             templateBindingIds(
                               template.knowledge_bindings,
                               "knowledge_space_id",
+                            );
+                          setEditKnowledgeSpaceIds(knowledgeSpaceIds);
+                          setEditKnowledgeWorkflowKeys(
+                            Object.fromEntries(
+                              knowledgeSpaceIds.map((id) => {
+                                const binding =
+                                  template.knowledge_bindings.find(
+                                    (item) =>
+                                      item.knowledge_space_id === id,
+                                  );
+                                const workflowKey =
+                                  binding?.workflow_key;
+                                return [
+                                  id,
+                                  typeof workflowKey === "string"
+                                    ? workflowKey
+                                    : "",
+                                ];
+                              }),
                             ),
                           );
-                          setEditConnectorIds(
-                            templateBindingIds(
-                              template.mcp_bindings,
-                              "connector_id",
+                          const connectorIds = templateBindingIds(
+                            template.mcp_bindings,
+                            "connector_id",
+                          );
+                          setEditConnectorIds(connectorIds);
+                          setEditMcpTools(
+                            Object.fromEntries(
+                              connectorIds.map((id) => {
+                                const binding =
+                                  template.mcp_bindings.find(
+                                    (item) =>
+                                      item.connector_id === id,
+                                  );
+                                const allowedTools =
+                                  binding?.allowed_tools;
+                                return [
+                                  id,
+                                  Array.isArray(allowedTools)
+                                    ? allowedTools.filter(
+                                        (tool: unknown) =>
+                                          typeof tool === "string",
+                                      )
+                                    : [],
+                                ];
+                              }),
                             ),
                           );
                         }}
@@ -3825,7 +3883,16 @@ function ManagedTemplatesCard() {
               mode="multiple"
               loading={spaces.isLoading}
               value={editKnowledgeSpaceIds}
-              onChange={setEditKnowledgeSpaceIds}
+              onChange={(ids: string[]) => {
+                setEditKnowledgeSpaceIds(ids);
+                setEditKnowledgeWorkflowKeys((previous) => {
+                  const next = { ...previous };
+                  for (const id of ids) {
+                    if (!(id in next)) next[id] = "";
+                  }
+                  return next;
+                });
+              }}
               placeholder="选择知识空间"
               options={(spaces.data ?? []).map((space) => ({
                 value: space.id,
@@ -3834,15 +3901,67 @@ function ManagedTemplatesCard() {
               }))}
             />
           </Form.Item>
+          {editKnowledgeSpaceIds.length > 0 && (
+            <Form.Item
+              label="知识绑定工作流"
+              extra="留空时该知识空间适用于员工的全部工作流。"
+            >
+              <Space
+                direction="vertical"
+                size="small"
+                style={{ width: "100%" }}
+              >
+                {editKnowledgeSpaceIds.map((id) => {
+                  const space = (spaces.data ?? []).find(
+                    (item) => item.id === id,
+                  );
+                  return (
+                    <div key={id}>
+                      <Text type="secondary">
+                        {space
+                          ? `${space.name} · ${space.code}`
+                          : id}
+                      </Text>
+                      <Input
+                        value={editKnowledgeWorkflowKeys[id] ?? ""}
+                        onChange={(event) =>
+                          setEditKnowledgeWorkflowKeys(
+                            (previous) => ({
+                              ...previous,
+                              [id]: event.target.value,
+                            }),
+                          )
+                        }
+                        placeholder="工作流，例如 finance_review（留空=全部）"
+                      />
+                    </div>
+                  );
+                })}
+              </Space>
+            </Form.Item>
+          )}
           <Form.Item
             label="MCP 连接器"
-            extra="新增连接默认只授予只读工具；写工具仍需独立审批。"
+            extra="新增连接默认只授予只读工具；写工具仍需员工级写审批。"
           >
             <Select
               mode="multiple"
               loading={connectors.isLoading}
               value={editConnectorIds}
-              onChange={setEditConnectorIds}
+              onChange={(ids: string[]) => {
+                setEditConnectorIds(ids);
+                setEditMcpTools((previous) => {
+                  const next = { ...previous };
+                  for (const id of ids) {
+                    next[id] ??= readOnlyToolNames(
+                      (connectors.data ?? []).find(
+                        (item) => item.id === id,
+                      ),
+                    );
+                  }
+                  return next;
+                });
+              }}
               placeholder="选择 MCP 连接器"
               options={(connectors.data ?? []).map((connector) => ({
                 value: connector.id,
@@ -3854,6 +3973,61 @@ function ManagedTemplatesCard() {
               }))}
             />
           </Form.Item>
+          {editConnectorIds.length > 0 && (
+            <Form.Item
+              label="MCP 工具授权"
+              extra="写工具在创建员工时不会继承写审批，仍需员工级授权。"
+            >
+              <Space
+                direction="vertical"
+                size="small"
+                style={{ width: "100%" }}
+              >
+                {editConnectorIds.map((id) => {
+                  const connector = (connectors.data ?? []).find(
+                    (item) => item.id === id,
+                  );
+                  const selected = editMcpTools[id] ?? [];
+                  return (
+                    <Card
+                      key={id}
+                      size="small"
+                      title={
+                        connector
+                          ? `${connector.name} · ${connector.code}`
+                          : id
+                      }
+                    >
+                      {connector && connector.tools.length > 0 ? (
+                        <Checkbox.Group
+                          value={selected}
+                          options={connector.tools.map((tool) => ({
+                            label: tool.is_write
+                              ? `${tool.name} · 写工具`
+                              : tool.name,
+                            value: tool.name,
+                            disabled:
+                              tool.is_write &&
+                              !selected.includes(tool.name),
+                          }))}
+                          onChange={(values) =>
+                            setEditMcpTools((previous) => ({
+                              ...previous,
+                              [id]: values.map(String),
+                            }))
+                          }
+                        />
+                      ) : (
+                        <Text type="secondary">
+                          连接器尚未发现工具，请先检查连接。
+                        </Text>
+                      )}
+                    </Card>
+                  );
+                })}
+              </Space>
+            </Form.Item>
+          )}
         </Form>
       </Modal>
     </Card>
