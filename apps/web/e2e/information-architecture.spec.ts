@@ -7,7 +7,7 @@ test("侧边栏只保留 Agent 演示和平台管理，员工二级页面使用�
   await page.goto("/overview");
   await expect(page.getByText("Agent 演示", { exact: true })).toBeVisible();
   await expect(page.getByText("平台管理", { exact: true })).toBeVisible();
-  await page.getByText("员工、Skill 与 MCP", { exact: true }).click();
+  await page.getByRole("menuitem", { name: "数字员工", exact: true }).click();
   await expect(page).toHaveURL(/\/employees\/roster$/);
   await expect(
     page.getByText("Skill 与 MCP 属于员工能力配置", {
@@ -187,7 +187,7 @@ test("业务经理测试身份只看到业务演示和审批审计", async ({ pa
     page.getByText("运行与审计", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("员工、Skill 与 MCP", { exact: true }),
+    page.getByRole("menuitem", { name: "数字员工", exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByText("当前视角：管理者", { exact: true }),

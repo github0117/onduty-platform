@@ -89,7 +89,7 @@ test("知识运营可从角色首页进入知识文档", async ({ page }) => {
     page.getByText("已归档", { exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByText("员工、Skill 与 MCP", { exact: true }),
+    page.getByRole("menuitem", { name: "数字员工", exact: true }),
   ).toBeVisible();
   await capture(page, "03-knowledge-operator");
 });
@@ -112,7 +112,7 @@ test("业务经理可从角色首页查看跨场景指标", async ({ page }) => 
     enabledEmployees.locator(".ant-statistic-content-value"),
   ).not.toHaveText("0");
   await expect(
-    page.getByText("员工、Skill 与 MCP", { exact: true }),
+    page.getByRole("menuitem", { name: "数字员工", exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "检查并恢复演示数据" }),

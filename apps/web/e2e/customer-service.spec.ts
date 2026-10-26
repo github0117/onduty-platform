@@ -309,7 +309,7 @@ test("业务页面不再显示全局技术视图切换，技术能力进入资�
     page.getByText("平台管理", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("员工、Skill 与 MCP", { exact: true }),
+    page.getByRole("menuitem", { name: "数字员工", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("知识与评测", { exact: true }),
