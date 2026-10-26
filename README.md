@@ -416,7 +416,8 @@ uv run pytest tests/integration/test_request_body_limit.py -v
 
 仓库内的结论都由可重复执行的命令支撑：全量 pytest、Ruff、mypy、TypeScript、
 Vite production build 和 Playwright 回归均在 CI 中运行。设计取舍和攻击复现见
-[多租户隔离设计与回归验证](./docs/tenant-isolation.md)。
+[多租户隔离设计与回归验证](./docs/tenant-isolation.md)；只读并发基线的环境、
+结果和局限见[只读并发压测](./docs/load-test.md)。
 
 ## 运行
 
