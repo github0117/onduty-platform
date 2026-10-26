@@ -255,10 +255,27 @@ def main() -> None:
                 "制度",
                 "账号",
                 "登录",
+                "密码",
                 "权限",
                 "IT",
                 "通知",
                 "内部流程",
+                "报销",
+                "发票",
+                "费用",
+                "财务",
+                "年假",
+                "请假",
+                "考勤",
+                "会议室",
+                "门禁",
+                "工位",
+                "办公用品",
+                "VPN",
+                "故障",
+                "报错",
+                "连不上",
+                "打不开",
             ],
             tools=["knowledge.search", "ticket.read", "draft.create"],
         )
@@ -1618,11 +1635,16 @@ def _ensure_skill(
         None,
     )
     if existing is not None:
+        updates: dict[str, Any] = {}
         if existing["status"] != "ACTIVE":
+            updates["status"] = "ACTIVE"
+        if existing.get("triggers") != triggers:
+            updates["triggers"] = triggers
+        if updates:
             response = client.patch(
                 f"/api/v1/skills/{existing['id']}",
                 headers=ADMIN,
-                json={"status": "ACTIVE"},
+                json=updates,
             )
             response.raise_for_status()
             return response.json()

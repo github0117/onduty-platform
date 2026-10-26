@@ -171,6 +171,40 @@ def test_keyword_synonym_and_semantic_routes_explain_candidates(
         )
 
 
+def test_enterprise_template_routes_internal_service_requests(
+    client: TestClient,
+) -> None:
+    enterprise = _create_from_template(
+        client,
+        template_code="enterprise_service_desk",
+        name="内部服务台",
+    )
+    requests = [
+        ("报销流程", "公司报销流程是什么？", "报销"),
+        ("VPN 连不上", "办公室 VPN 连不上，影响远程访问。", "VPN"),
+        ("年假申请", "怎么申请年假？", "年假"),
+        ("财务系统权限", "申请开通财务系统权限。", "财务"),
+        ("会议室预订", "怎么预订会议室？", "会议室"),
+    ]
+
+    for index, (subject, body, term) in enumerate(requests):
+        ticket = _create_ticket(
+            client,
+            external_id=f"ROUTE-ENTERPRISE-{index}",
+            subject=subject,
+            body=body,
+        )
+        assert ticket["employee_id"] == enterprise["id"]
+        decision = _decision_for_ticket(client, ticket["id"])
+        assert decision["reason_code"] == "INTENT_MATCH"
+        selected = next(
+            candidate
+            for candidate in decision["candidates"]
+            if candidate["selected"]
+        )
+        assert term in selected["matched_intents"]
+
+
 def test_negated_refund_does_not_override_logistics(
     client: TestClient,
 ) -> None:
