@@ -173,6 +173,8 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
   （启动 Compose 栈、写入演示数据后运行 129 个用例）。
 - Playwright：129 个页面用例已纳入 CI。
 - Ruff、mypy、TypeScript 和 Vite production build 通过。
+- 本地只读并发基线：50 并发 100% 成功、P95 460.89 ms；100 并发 P95 850.71 ms，
+  复现脚本和边界见 [只读并发压测](load-test.md)。
 - 可重复 Mock Business：成功、幂等和 HTTP 500 故障。
 - 120 条工单、30 份知识、60 条评测问题组成的模拟验收语料。
 - 真实外部 DeepWiki MCP：Streamable HTTP 连接、3 个只读工具发现，并成功查询
@@ -359,10 +361,12 @@ LangGraph 目前主要覆盖回复建议链路，完整员工生命周期仍有�
 1. 40 条独立样本的对照结果和失败分析。
 2. 7 分钟技术录屏，重点讲架构、LangGraph、MCP、幂等和恢复。
 3. 再接一个真实企业业务 Sandbox；公开 DeepWiki MCP 已完成协议和只读工具验证。
-4. 50–100 并发的基础压测和 P95 / 错误率结果。
+4. 生产级并发压测：本地已有 50/100 并发只读基线（见
+   [只读并发压测](load-test.md)），仍缺独立压测机、写操作和模型/MCP 链路。
 5. 在线访问地址和剩余生产项：企业 OIDC、真实消息渠道、订单物流接口和安全评审。
 
 ## 相关材料
 
 设计与验证说明见
-[多租户隔离设计与回归验证](tenant-isolation.md)。
+[多租户隔离设计与回归验证](tenant-isolation.md)，
+并发与延迟基线见[只读并发压测](load-test.md)。

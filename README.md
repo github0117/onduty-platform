@@ -475,6 +475,7 @@ mypy: passed（171 个源文件）
 TypeScript / Vite: passed
 GitHub Actions: backend lint/type/coverage + pgvector + frontend build + Playwright E2E
 Playwright 浏览器点击回归: 129 passed（21 个测试文件，已纳入 CI）
+只读并发基线: 50/100 并发，P95 460.89 / 850.71 ms（docs/load-test.md）
 PostgreSQL migration: b1f7a2c9e4d6 (head)
 全栈 Smoke: passed
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
@@ -516,5 +517,5 @@ PostgreSQL migration: b1f7a2c9e4d6 (head)
   和管理、克隆链路中继承，但尚未提供普通运营专用的图形化资源编辑器。
 - 草案版本历史已展示快照时间线，尚未提供逐字段差异对比和一键回放旧版本。
 - 内置系统模板在开发环境保留快捷 ACTIVE；生产环境仍需从 TRIAL 开始评测。
-- 已完成两路并发创建、并发克隆和完整业务链路验收，尚未进行大规模并发压测、
-  长时间稳定性测试和故障注入。
+- 已完成两路并发创建、并发克隆、完整业务链路验收和本地 50/100 并发只读基线，
+  尚未使用独立压测机覆盖模型、MCP、写操作，也未做长时间稳定性测试和故障注入。
