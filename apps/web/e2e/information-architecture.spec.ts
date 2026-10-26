@@ -35,21 +35,26 @@ test("侧边栏只保留 Agent 演示和平台管理，员工二级页面使用�
   ).toBeVisible();
 });
 
-test("演示视角和业务单元统一收进 5 步演示设置", async ({
+test("页头可直接切换演示视角，业务单元仍在 5 步演示设置", async ({
   page,
 }) => {
-  await page.addInitScript(() => window.localStorage.clear());
   await page.goto("/overview");
 
   await expect(
     page.getByText("当前视角：平台管理员", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("combobox", { name: "切换演示视角" }),
-  ).toHaveCount(0);
-  await expect(
     page.getByRole("combobox", { name: "切换业务单元" }),
   ).toHaveCount(0);
+
+  await page.getByRole("button", { name: "切换视角" }).click();
+  await page
+    .getByText("管理者 · 查看运营指标并处理写操作审批", { exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/customer-service\/admin$/);
+  await expect(
+    page.getByText("当前视角：管理者", { exact: true }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "5 步技术演示" }).click();
   await expect(

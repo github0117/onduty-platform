@@ -1,4 +1,4 @@
-import { Button, Layout, Menu, Space, Spin, Tag, Typography } from "antd";
+import { Button, Dropdown, Layout, Menu, Space, Spin, Tag, Typography } from "antd";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useState } from "react";
 
@@ -13,8 +13,13 @@ import {
   getActiveBusinessUnitId,
   getActiveTestIdentity,
   isTestIdentityMode,
+  switchTestIdentity,
+  testIdentityProfiles,
 } from "./auth";
-import { demoPerspectiveLabels } from "./demoPerspectives";
+import {
+  demoPerspectiveIds,
+  demoPerspectiveLabels,
+} from "./demoPerspectives";
 
 const DemoOverviewPage = lazy(() => import("./DemoOverviewPage"));
 const DemoGuideDrawer = lazy(() => import("./DemoGuideDrawer"));
@@ -488,18 +493,43 @@ export default function App() {
             </Title>
           </div>
           <Space wrap>
-            {isTestIdentityMode() &&
-              activePath !== "/customer-service" && (
-                <Tag color="cyan">
-                  当前视角：
-                  {demoPerspectiveLabels[activeIdentity.id] ??
-                    activeIdentity.label}
-                </Tag>
-              )}
-            {isTestIdentityMode() &&
-              activePath === "/customer-service" && (
-                <Tag color="cyan">演示视角：买家</Tag>
-              )}
+            {isTestIdentityMode() && (
+              <>
+                {activePath === "/customer-service" ? (
+                  <Tag color="cyan">演示视角：买家</Tag>
+                ) : (
+                  <Tag color="cyan">
+                    当前视角：
+                    {demoPerspectiveLabels[activeIdentity.id] ??
+                      activeIdentity.label}
+                  </Tag>
+                )}
+                <Dropdown
+                  trigger={["click"]}
+                  menu={{
+                    selectable: true,
+                    selectedKeys: [activeIdentity.id],
+                    items: testIdentityProfiles
+                      .filter((profile) =>
+                        demoPerspectiveIds.includes(
+                          profile.id as (typeof demoPerspectiveIds)[number],
+                        ),
+                      )
+                      .map((profile) => ({
+                        key: profile.id,
+                        label: `${demoPerspectiveLabels[profile.id] ?? profile.label} · ${profile.description}`,
+                      })),
+                    onClick: ({ key }) => {
+                      window.location.assign(switchTestIdentity(key));
+                    },
+                  }}
+                >
+                  <Button size="small" title="切换演示视角">
+                    切换视角
+                  </Button>
+                </Dropdown>
+              </>
+            )}
             <Button onClick={() => setGuideOpen(true)}>5 步技术演示</Button>
             <Button
               className="header-refresh"
