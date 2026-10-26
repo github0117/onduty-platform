@@ -72,6 +72,40 @@ def test_address_change_requires_human_review() -> None:
     assert "ADDRESS_CHANGE_HARD_RULE" in result.reason_codes
 
 
+def test_internal_service_requests_are_classified_without_manual_triage() -> None:
+    classifier = MockClassifier()
+
+    expense = classifier.classify(
+        subject="报销流程",
+        body="公司报销流程是什么？",
+        customer_tier="enterprise",
+    )
+    vpn = classifier.classify(
+        subject="VPN 连不上",
+        body="办公室 VPN 连不上，影响远程访问。",
+        customer_tier="enterprise",
+    )
+    leave = classifier.classify(
+        subject="年假申请",
+        body="怎么申请年假？",
+        customer_tier="enterprise",
+    )
+    permission = classifier.classify(
+        subject="财务系统权限",
+        body="申请开通财务系统权限。",
+        customer_tier="enterprise",
+    )
+
+    assert expense.category_primary == "billing_invoice"
+    assert expense.needs_human is False
+    assert vpn.category_primary == "service_incident"
+    assert vpn.needs_human is False
+    assert leave.category_primary == "product_howto"
+    assert leave.needs_human is False
+    assert permission.category_primary == "access_identity"
+    assert permission.needs_human is False
+
+
 def test_public_repository_documentation_is_low_risk() -> None:
     result = MockClassifier().classify(
         subject="公开 GitHub 仓库文档查询",

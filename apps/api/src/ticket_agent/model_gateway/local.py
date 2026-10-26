@@ -37,9 +37,41 @@ class LocalModelGateway:
     }
     _complaint_keywords = {"投诉", "曝光", "举报"}
     _transaction_keywords = {"退款", "赔付", "重复扣费", "交易争议"}
-    _billing_keywords = {"发票", "账单", "扣费"}
-    _incident_keywords = {"不可用", "报错", "崩溃", "故障", "超时", "异常"}
-    _howto_keywords = {"怎么", "如何", "配置", "设置", "使用", "开通"}
+    _billing_keywords = {"发票", "账单", "扣费", "报销", "费用"}
+    _incident_keywords = {
+        "不可用",
+        "报错",
+        "崩溃",
+        "故障",
+        "超时",
+        "异常",
+        "蓝屏",
+        "死机",
+        "断网",
+        "vpn",
+        "连不上",
+        "打不开",
+        "无法连接",
+        "收不到邮件",
+    }
+    _howto_keywords = {
+        "怎么",
+        "如何",
+        "配置",
+        "设置",
+        "使用",
+        "开通",
+        "年假",
+        "请假",
+        "考勤",
+        "会议室",
+        "门禁",
+        "工位",
+        "办公用品",
+        "入职",
+        "离职",
+        "转正",
+    }
     _access_keywords = {"登录", "密码", "权限", "账号", "帐号"}
     _ecommerce_presales_keywords = {
         "尺码",
@@ -242,10 +274,10 @@ class LocalModelGateway:
             return "billing_invoice", "billing_question", 0.88
         if self._contains(text, self._incident_keywords):
             return "service_incident", "service_error", 0.86
-        if self._contains(text, self._howto_keywords):
-            return "product_howto", "configuration", 0.93
         if self._contains(text, self._access_keywords):
             return "access_identity", "login_failure", 0.89
+        if self._contains(text, self._howto_keywords):
+            return "product_howto", "configuration", 0.93
         return "other_unclassified", "unknown", 0.42
 
     @staticmethod
