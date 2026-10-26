@@ -468,14 +468,14 @@ make acceptance-final
 当前基线：
 
 ```text
-320 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
+322 passed，1 skipped（未配置独立 PostgreSQL 测试库；CI 中会运行 pgvector 回归）
 Python 测试覆盖率: 87%
 Ruff: passed
 mypy: passed（171 个源文件）
 TypeScript / Vite: passed
 GitHub Actions: backend lint/type/coverage + pgvector + frontend build + Playwright E2E
 Playwright 浏览器点击回归: 129 passed（21 个测试文件，已纳入 CI）
-PostgreSQL migration: a7d3f9c1b642 (head)
+PostgreSQL migration: b1f7a2c9e4d6 (head)
 全栈 Smoke: passed
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
 客户订单与改址沙箱: passed（审批、幂等、超时未知、对账关闭）
