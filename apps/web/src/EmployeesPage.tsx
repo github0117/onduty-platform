@@ -3406,10 +3406,91 @@ function readOnlyToolNames(connector: McpConnector | undefined): string[] {
     .map((tool) => tool.name);
 }
 
+type KnowledgeScopeValues = Record<string, Record<string, string>>;
+
+const KNOWLEDGE_SCOPE_FIELDS = [
+  { key: "audience", label: "受众", placeholder: "例如 support_agent" },
+  { key: "org_unit", label: "组织", placeholder: "例如 finance，支持 *" },
+  { key: "region", label: "区域", placeholder: "例如 cn-east" },
+  { key: "product_id", label: "商品", placeholder: "例如 SKU-1001" },
+] as const;
+
+function knowledgeScopeRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function knowledgeScopeText(
+  scope: Record<string, unknown>,
+  key: string,
+): string {
+  const value = scope[key];
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .join("，");
+  }
+  return "";
+}
+
+function knowledgeScopeValues(
+  scope: Record<string, unknown> | undefined,
+): Record<string, string> {
+  const record = scope ?? {};
+  return Object.fromEntries(
+    KNOWLEDGE_SCOPE_FIELDS.map((field) => [
+      field.key,
+      knowledgeScopeText(record, field.key),
+    ]),
+  );
+}
+
+function splitKnowledgeScopeValues(raw: string): string[] {
+  return Array.from(
+    new Set(
+      raw
+        .split(/[,，\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function buildKnowledgeScope(
+  existing: Record<string, unknown> | undefined,
+  values: Record<string, string> | undefined,
+): Record<string, unknown> {
+  const scope: Record<string, unknown> = { ...(existing ?? {}) };
+  for (const field of KNOWLEDGE_SCOPE_FIELDS) {
+    const items = splitKnowledgeScopeValues(values?.[field.key] ?? "");
+    if (items.length === 0) {
+      delete scope[field.key];
+    } else {
+      scope[field.key] = items.length === 1 ? items[0] : items;
+    }
+  }
+  return scope;
+}
+
+function withKnowledgeScopeValue(
+  previous: KnowledgeScopeValues,
+  spaceId: string,
+  key: string,
+  value: string,
+): KnowledgeScopeValues {
+  return {
+    ...previous,
+    [spaceId]: { ...(previous[spaceId] ?? {}), [key]: value },
+  };
+}
+
 function templateKnowledgeBindings(
   template: DigitalEmployeeTemplate,
   knowledgeSpaceIds: string[],
   workflowKeys: Record<string, string>,
+  scopes: KnowledgeScopeValues,
 ): Array<Record<string, unknown>> {
   return knowledgeSpaceIds.map((knowledgeSpaceId) => {
     const existing = template.knowledge_bindings.find(
@@ -3424,6 +3505,10 @@ function templateKnowledgeBindings(
       }),
       knowledge_space_id: knowledgeSpaceId,
       workflow_key: workflowKey || null,
+      scope: buildKnowledgeScope(
+        knowledgeScopeRecord(existing?.scope),
+        scopes[knowledgeSpaceId],
+      ),
     };
   });
 }
@@ -3469,6 +3554,8 @@ function ManagedTemplatesCard() {
   >([]);
   const [editKnowledgeWorkflowKeys, setEditKnowledgeWorkflowKeys] =
     useState<Record<string, string>>({});
+  const [editKnowledgeScopes, setEditKnowledgeScopes] =
+    useState<KnowledgeScopeValues>({});
   const [editConnectorIds, setEditConnectorIds] = useState<string[]>(
     [],
   );
@@ -3561,6 +3648,7 @@ function ManagedTemplatesCard() {
           template,
           editKnowledgeSpaceIds,
           editKnowledgeWorkflowKeys,
+          editKnowledgeScopes,
         ),
         mcpBindings: templateMcpBindings(
           template,
@@ -3673,6 +3761,23 @@ function ManagedTemplatesCard() {
                               "knowledge_space_id",
                             );
                           setEditKnowledgeSpaceIds(knowledgeSpaceIds);
+                          setEditKnowledgeScopes(
+                            Object.fromEntries(
+                              knowledgeSpaceIds.map((id) => {
+                                const binding =
+                                  template.knowledge_bindings.find(
+                                    (item) =>
+                                      item.knowledge_space_id === id,
+                                  );
+                                return [
+                                  id,
+                                  knowledgeScopeValues(
+                                    knowledgeScopeRecord(binding?.scope),
+                                  ),
+                                ];
+                              }),
+                            ),
+                          );
                           setEditKnowledgeWorkflowKeys(
                             Object.fromEntries(
                               knowledgeSpaceIds.map((id) => {
@@ -3892,6 +3997,13 @@ function ManagedTemplatesCard() {
                   }
                   return next;
                 });
+                setEditKnowledgeScopes((previous) => {
+                  const next = { ...previous };
+                  for (const id of ids) {
+                    next[id] ??= knowledgeScopeValues(undefined);
+                  }
+                  return next;
+                });
               }}
               placeholder="选择知识空间"
               options={(spaces.data ?? []).map((space) => ({
@@ -3904,7 +4016,7 @@ function ManagedTemplatesCard() {
           {editKnowledgeSpaceIds.length > 0 && (
             <Form.Item
               label="知识绑定工作流"
-              extra="留空时该知识空间适用于员工的全部工作流。"
+              extra="留空时该知识空间适用于员工的全部工作流；适用范围按会话上下文过滤，留空表示不限制，多个值用逗号分隔。"
             >
               <Space
                 direction="vertical"
@@ -3934,6 +4046,33 @@ function ManagedTemplatesCard() {
                         }
                         placeholder="工作流，例如 finance_review（留空=全部）"
                       />
+                      <Space
+                        wrap
+                        size={8}
+                        style={{ marginTop: 8, width: "100%" }}
+                      >
+                        {KNOWLEDGE_SCOPE_FIELDS.map((field) => (
+                          <Input
+                            key={field.key}
+                            addonBefore={field.label}
+                            style={{ width: 240 }}
+                            value={
+                              editKnowledgeScopes[id]?.[field.key] ?? ""
+                            }
+                            onChange={(event) =>
+                              setEditKnowledgeScopes((previous) =>
+                                withKnowledgeScopeValue(
+                                  previous,
+                                  id,
+                                  field.key,
+                                  event.target.value,
+                                ),
+                              )
+                            }
+                            placeholder={field.placeholder}
+                          />
+                        ))}
+                      </Space>
                     </div>
                   );
                 })}
@@ -4222,6 +4361,8 @@ function EmployeeConfigDrawer({
   const [knowledgeWorkflowKeys, setKnowledgeWorkflowKeys] = useState<
     Record<string, string>
   >({});
+  const [knowledgeScopes, setKnowledgeScopes] =
+    useState<KnowledgeScopeValues>({});
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [mcpConnectorIds, setMcpConnectorIds] = useState<string[]>([]);
   const [mcpTools, setMcpTools] = useState<Record<string, string[]>>(
@@ -4324,6 +4465,14 @@ function EmployeeConfigDrawer({
         ]),
       ),
     );
+    setKnowledgeScopes(
+      Object.fromEntries(
+        enabled.map((binding) => [
+          binding.knowledge_space_id,
+          knowledgeScopeValues(binding.scope),
+        ]),
+      ),
+    );
   }, [knowledgeBindings.data]);
 
   useEffect(() => {
@@ -4412,7 +4561,10 @@ function EmployeeConfigDrawer({
           return {
             knowledge_space_id: knowledgeSpaceId,
             workflow_key: workflowKey || null,
-            scope: existing?.scope ?? {},
+            scope: buildKnowledgeScope(
+              knowledgeScopeRecord(existing?.scope),
+              knowledgeScopes[knowledgeSpaceId],
+            ),
             enabled: true,
           };
         }),
@@ -4608,6 +4760,13 @@ function EmployeeConfigDrawer({
                     }
                     return next;
                   });
+                  setKnowledgeScopes((previous) => {
+                    const next = { ...previous };
+                    for (const id of ids) {
+                      next[id] ??= knowledgeScopeValues(undefined);
+                    }
+                    return next;
+                  });
                 }}
                 placeholder="选择允许该员工使用的知识空间"
                 loading={spaces.isLoading}
@@ -4622,7 +4781,7 @@ function EmployeeConfigDrawer({
             {advanced && knowledgeSpaceIds.length > 0 && (
               <Form.Item
                 label="知识绑定工作流"
-                extra="留空时该知识空间适用于员工的全部工作流。"
+                extra="留空时该知识空间适用于员工的全部工作流；适用范围按会话上下文过滤，留空表示不限制，多个值用逗号分隔。"
               >
                 <Space
                   direction="vertical"
@@ -4655,6 +4814,33 @@ function EmployeeConfigDrawer({
                           }
                           placeholder="例如 finance_review（留空=全部）"
                         />
+                        <Space
+                          wrap
+                          size={8}
+                          style={{ marginTop: 8, width: "100%" }}
+                        >
+                          {KNOWLEDGE_SCOPE_FIELDS.map((field) => (
+                            <Input
+                              key={field.key}
+                              addonBefore={field.label}
+                              style={{ width: 240 }}
+                              value={
+                                knowledgeScopes[id]?.[field.key] ?? ""
+                              }
+                              onChange={(event) =>
+                                setKnowledgeScopes((previous) =>
+                                  withKnowledgeScopeValue(
+                                    previous,
+                                    id,
+                                    field.key,
+                                    event.target.value,
+                                  ),
+                                )
+                              }
+                              placeholder={field.placeholder}
+                            />
+                          ))}
+                        </Space>
                       </div>
                     );
                   })}

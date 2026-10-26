@@ -383,7 +383,10 @@ test("编辑岗位模板可调整知识工作流和 MCP 工具授权", async ({
       {
         knowledge_space_id: "e2e-space",
         workflow_key: "finance_review",
-        scope: {},
+        scope: {
+          audience: "finance_agent",
+          region: ["cn-east", "cn-north"],
+        },
         enabled: true,
       },
     ],
@@ -418,6 +421,10 @@ test("编辑岗位模板可调整知识工作流和 MCP 工具授权", async ({
   const dialog = page.getByRole("dialog", { name: "编辑岗位模板草案" });
   const workflowInput = dialog.getByPlaceholder(/工作流/);
   await expect(workflowInput).toHaveValue("finance_review");
+  const audienceInput = dialog.getByPlaceholder("例如 support_agent");
+  const regionInput = dialog.getByPlaceholder("例如 cn-east");
+  await expect(audienceInput).toHaveValue("finance_agent");
+  await expect(regionInput).toHaveValue("cn-east，cn-north");
   const readTool = dialog.getByRole("checkbox", {
     name: /orders\.read/,
   });
@@ -426,18 +433,27 @@ test("编辑岗位模板可调整知识工作流和 MCP 工具授权", async ({
     dialog.getByRole("checkbox", { name: /orders\.refund/ }),
   ).toBeDisabled();
   await workflowInput.fill("refund_review");
+  await audienceInput.fill("finance_agent，support_agent");
+  await dialog
+    .getByPlaceholder("例如 finance，支持 *")
+    .fill("finance/team-a");
+  await regionInput.fill("");
   await dialog.getByText("orders.read", { exact: true }).click();
   await expect(readTool).not.toBeChecked();
   await dialog.getByRole("button", { name: "保存新修订" }).click();
-  expect((await requestPromise).postDataJSON()).toMatchObject({
-    knowledge_bindings: [
-      {
-        knowledge_space_id: "e2e-space",
-        workflow_key: "refund_review",
-        scope: {},
-        enabled: true,
+  const payload = (await requestPromise).postDataJSON();
+  expect(payload.knowledge_bindings).toEqual([
+    {
+      knowledge_space_id: "e2e-space",
+      workflow_key: "refund_review",
+      scope: {
+        audience: ["finance_agent", "support_agent"],
+        org_unit: "finance/team-a",
       },
-    ],
+      enabled: true,
+    },
+  ]);
+  expect(payload).toMatchObject({
     mcp_bindings: [
       {
         connector_id: "e2e-connector",

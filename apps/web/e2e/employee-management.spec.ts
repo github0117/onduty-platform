@@ -413,6 +413,13 @@ test("员工配置保存按钮提交知识、Skill、MCP 和预算快照", async
   await drawer
     .getByPlaceholder("例如 finance_review（留空=全部）")
     .fill("refund_specialist_v1");
+  await drawer.getByPlaceholder("例如 support_agent").fill("support_agent");
+  await drawer
+    .getByPlaceholder("例如 finance，支持 *")
+    .fill("support/emea");
+  await drawer
+    .getByPlaceholder("例如 SKU-1001")
+    .fill("SKU-1001, SKU-1002");
   await drawer
     .locator(".ant-form-item")
     .filter({ hasText: "MCP（业务工具）" })
@@ -441,7 +448,11 @@ test("员工配置保存按钮提交知识、Skill、MCP 和预算快照", async
       {
         knowledge_space_id: "space-e2e",
         workflow_key: "refund_specialist_v1",
-        scope: {},
+        scope: {
+          audience: "support_agent",
+          org_unit: "support/emea",
+          product_id: ["SKU-1001", "SKU-1002"],
+        },
         enabled: true,
       },
     ],
