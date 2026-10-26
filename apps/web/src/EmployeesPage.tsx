@@ -3391,6 +3391,58 @@ type TemplateAction =
   | "ROLLBACK"
   | "REOPEN";
 
+function templateBindingIds(
+  bindings: Array<Record<string, unknown>>,
+  key: string,
+): string[] {
+  return bindings
+    .map((binding) => binding[key])
+    .filter((value): value is string => typeof value === "string");
+}
+
+function templateKnowledgeBindings(
+  template: DigitalEmployeeTemplate,
+  knowledgeSpaceIds: string[],
+): Array<Record<string, unknown>> {
+  return knowledgeSpaceIds.map((knowledgeSpaceId) => {
+    const existing = template.knowledge_bindings.find(
+      (binding) => binding.knowledge_space_id === knowledgeSpaceId,
+    );
+    return (
+      existing ?? {
+        knowledge_space_id: knowledgeSpaceId,
+        workflow_key: null,
+        scope: {},
+        enabled: true,
+      }
+    );
+  });
+}
+
+function templateMcpBindings(
+  template: DigitalEmployeeTemplate,
+  connectorIds: string[],
+  connectors: McpConnector[],
+): Array<Record<string, unknown>> {
+  return connectorIds.map((connectorId) => {
+    const existing = template.mcp_bindings.find(
+      (binding) => binding.connector_id === connectorId,
+    );
+    if (existing) return existing;
+    const connector = connectors.find(
+      (item) => item.id === connectorId,
+    );
+    return {
+      connector_id: connectorId,
+      allowed_tools: (connector?.tools ?? [])
+        .filter((tool) => !tool.is_write)
+        .map((tool) => tool.name),
+      write_approved: false,
+      enabled: true,
+    };
+  });
+}
+
 function ManagedTemplatesCard() {
   const queryClient = useQueryClient();
   const [editTemplate, setEditTemplate] =
@@ -3401,6 +3453,12 @@ function ManagedTemplatesCard() {
   const [editIntents, setEditIntents] = useState("");
   const [editSkills, setEditSkills] = useState("");
   const [editTools, setEditTools] = useState("");
+  const [editKnowledgeSpaceIds, setEditKnowledgeSpaceIds] = useState<
+    string[]
+  >([]);
+  const [editConnectorIds, setEditConnectorIds] = useState<string[]>(
+    [],
+  );
   const [confirmTarget, setConfirmTarget] = useState<{
     template: DigitalEmployeeTemplate;
     action: TemplateAction;
@@ -3409,6 +3467,16 @@ function ManagedTemplatesCard() {
     queryKey: ["managed-employee-templates"],
     queryFn: listManagedEmployeeTemplates,
     refetchInterval: 10_000,
+  });
+  const spaces = useQuery({
+    queryKey: ["knowledge", "spaces"],
+    queryFn: listKnowledgeSpaces,
+    enabled: Boolean(editTemplate),
+  });
+  const connectors = useQuery({
+    queryKey: ["mcp-connectors"],
+    queryFn: listMcpConnectors,
+    enabled: Boolean(editTemplate),
   });
   const action = useMutation({
     mutationFn: (input: {
@@ -3473,6 +3541,15 @@ function ManagedTemplatesCard() {
           .split(/[,，\n]/)
           .map((value) => value.trim())
           .filter(Boolean),
+        knowledgeBindings: templateKnowledgeBindings(
+          template,
+          editKnowledgeSpaceIds,
+        ),
+        mcpBindings: templateMcpBindings(
+          template,
+          editConnectorIds,
+          connectors.data ?? [],
+        ),
       }),
     onSuccess: async () => {
       message.success("模板草案已更新并生成新修订");
@@ -3571,6 +3648,18 @@ function ManagedTemplatesCard() {
                           setEditSkills(template.skill_codes.join("\n"));
                           setEditTools(
                             template.tool_allowlist.join("\n"),
+                          );
+                          setEditKnowledgeSpaceIds(
+                            templateBindingIds(
+                              template.knowledge_bindings,
+                              "knowledge_space_id",
+                            ),
+                          );
+                          setEditConnectorIds(
+                            templateBindingIds(
+                              template.mcp_bindings,
+                              "connector_id",
+                            ),
                           );
                         }}
                       >
@@ -3726,6 +3815,43 @@ function ManagedTemplatesCard() {
               rows={3}
               value={editTools}
               onChange={(event) => setEditTools(event.target.value)}
+            />
+          </Form.Item>
+          <Form.Item
+            label="知识空间"
+            extra="至少选择一个启用中的知识空间；新增绑定默认适用于全部工作流。"
+          >
+            <Select
+              mode="multiple"
+              loading={spaces.isLoading}
+              value={editKnowledgeSpaceIds}
+              onChange={setEditKnowledgeSpaceIds}
+              placeholder="选择知识空间"
+              options={(spaces.data ?? []).map((space) => ({
+                value: space.id,
+                label: `${space.name} · ${space.code}`,
+                disabled: space.status !== "ACTIVE",
+              }))}
+            />
+          </Form.Item>
+          <Form.Item
+            label="MCP 连接器"
+            extra="新增连接默认只授予只读工具；写工具仍需独立审批。"
+          >
+            <Select
+              mode="multiple"
+              loading={connectors.isLoading}
+              value={editConnectorIds}
+              onChange={setEditConnectorIds}
+              placeholder="选择 MCP 连接器"
+              options={(connectors.data ?? []).map((connector) => ({
+                value: connector.id,
+                label:
+                  connector.status === "ACTIVE"
+                    ? `${connector.name} · ${connector.code}`
+                    : `${connector.name} · ${connector.code}（${connector.status}）`,
+                disabled: connector.status !== "ACTIVE",
+              }))}
             />
           </Form.Item>
         </Form>

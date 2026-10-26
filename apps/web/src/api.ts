@@ -706,6 +706,8 @@ export function updateManagedEmployeeTemplate(
     intents?: string[];
     skillCodes?: string[];
     toolAllowlist?: string[];
+    knowledgeBindings?: Array<Record<string, unknown>>;
+    mcpBindings?: Array<Record<string, unknown>>;
   },
 ): Promise<DigitalEmployeeTemplate> {
   return request(
@@ -719,6 +721,8 @@ export function updateManagedEmployeeTemplate(
         intents: input.intents,
         skill_codes: input.skillCodes,
         tool_allowlist: input.toolAllowlist,
+        knowledge_bindings: input.knowledgeBindings,
+        mcp_bindings: input.mcpBindings,
       }),
     },
   );

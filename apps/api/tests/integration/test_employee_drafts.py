@@ -667,6 +667,24 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
     assert managed_template["source_draft_id"] == draft["id"]
     assert len(managed_template["skill_codes"]) == 1
     assert len(managed_template["knowledge_bindings"]) == 1
+    edited_template = client.post(
+        f"/api/v1/digital-employee-templates/"
+        f"{managed_template['id']}/edit",
+        headers=ADMIN,
+        json={
+            "knowledge_bindings": managed_template[
+                "knowledge_bindings"
+            ],
+            "mcp_bindings": managed_template["mcp_bindings"],
+        },
+    )
+    assert edited_template.status_code == 200, edited_template.text
+    assert edited_template.json()["version"] == (
+        managed_template["version"] + 1
+    )
+    assert edited_template.json()["knowledge_bindings"] == (
+        managed_template["knowledge_bindings"]
+    )
     promotion_revisions = client.get(
         f"/api/v1/digital-employee-drafts/{draft['id']}/revisions",
         headers=AGENT,

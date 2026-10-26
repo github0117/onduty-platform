@@ -34,6 +34,76 @@ async function mockManagedTemplate(
 ): Promise<void> {
   const current = { ...template, status };
   await page.route(
+    "**/api/v1/knowledge-spaces?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "e2e-space",
+            business_unit_id: "bu_demo",
+            code: "e2e_space",
+            name: "E2E 知识空间",
+            description: "E2E 知识空间",
+            domain: "finance",
+            channel: null,
+            category: null,
+            category_profile_id: null,
+            workflow_key: null,
+            owner_id: "e2e-admin",
+            evaluation_required: false,
+            status: "ACTIVE",
+            document_count: 1,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        ]),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/mcp/connectors?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "e2e-connector",
+            business_unit_id: "bu_demo",
+            code: "e2e_mcp",
+            name: "E2E MCP",
+            description: "E2E MCP",
+            transport: "streamable_http",
+            url: "http://127.0.0.1:8091/mcp",
+            header_env: {},
+            timeout_seconds: 10,
+            status: "ACTIVE",
+            tools: [
+              {
+                name: "orders.read",
+                description: "读取订单",
+                input_schema: {},
+                is_write: false,
+              },
+              {
+                name: "orders.refund",
+                description: "退款",
+                input_schema: {},
+                is_write: true,
+              },
+            ],
+            last_checked_at: null,
+            last_check_error: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        ]),
+      });
+    },
+  );
+  await page.route(
     "**/api/v1/digital-employee-templates?business_unit_id=bu_demo",
     async (route) => {
       await route.fulfill({
@@ -264,6 +334,16 @@ test("编辑岗位模板草案生成新修订", async ({ page }) => {
     .locator("textarea")
     .nth(4)
     .fill("ticket.read\nknowledge.search");
+  await dialog.locator(".ant-select").nth(0).click();
+  await page
+    .getByText("E2E 知识空间 · e2e_space", { exact: true })
+    .last()
+    .click();
+  await dialog.locator(".ant-select").nth(1).click();
+  await page
+    .getByText("E2E MCP · e2e_mcp", { exact: true })
+    .last()
+    .click();
   await dialog.getByRole("button", { name: "保存新修订" }).click();
   const request = await requestPromise;
   expect(request.postDataJSON()).toEqual({
@@ -273,6 +353,22 @@ test("编辑岗位模板草案生成新修订", async ({ page }) => {
     intents: ["退款审核", "财务处理"],
     skill_codes: ["refund-finance"],
     tool_allowlist: ["ticket.read", "knowledge.search"],
+    knowledge_bindings: [
+      {
+        knowledge_space_id: "e2e-space",
+        workflow_key: null,
+        scope: {},
+        enabled: true,
+      },
+    ],
+    mcp_bindings: [
+      {
+        connector_id: "e2e-connector",
+        allowed_tools: ["orders.read"],
+        write_approved: false,
+        enabled: true,
+      },
+    ],
   });
   await expect(page.getByText("模板草案已更新并生成新修订")).toBeVisible();
 });
