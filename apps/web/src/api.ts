@@ -993,6 +993,7 @@ export interface CreateDigitalEmployeeInput {
   workflow_key: string;
   handoff_queue: string;
   tools: string[];
+  instruction?: string;
 }
 
 export function createDigitalEmployee(
@@ -1017,6 +1018,7 @@ export function createDigitalEmployee(
       },
       model_profile: {},
       tool_allowlist: input.tools,
+      instruction: input.instruction ?? "",
     }),
   });
 }

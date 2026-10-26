@@ -1348,6 +1348,7 @@ function CreateEmployeeModal({
   const [name, setName] = useState("");
   const [workflowKey, setWorkflowKey] = useState("customer_service_ticket_v1");
   const [queue, setQueue] = useState("MANUAL_TRIAGE");
+  const [instruction, setInstruction] = useState("");
   const create = useMutation({
     mutationFn: () =>
       createDigitalEmployee({
@@ -1355,6 +1356,7 @@ function CreateEmployeeModal({
         name,
         workflow_key: workflowKey,
         handoff_queue: queue,
+        instruction,
         tools:
           workflowKey === "hr_onboarding_document_collection_v1"
             ? hrTools
@@ -1364,6 +1366,7 @@ function CreateEmployeeModal({
       message.success("数字员工已创建");
       setEmployeeKey("");
       setName("");
+      setInstruction("");
       await onCreated();
       onClose();
     },
@@ -1414,6 +1417,19 @@ function CreateEmployeeModal({
         </Form.Item>
         <Form.Item label="人工队列" required>
           <Input value={queue} onChange={(event) => setQueue(event.target.value)} />
+        </Form.Item>
+        <Form.Item
+          label="角色提示词"
+          extra="可选。补充该员工的角色、语气和服务边界；创建后仍可在配置中修改。"
+        >
+          <TextArea
+            rows={4}
+            maxLength={4000}
+            showCount
+            value={instruction}
+            onChange={(event) => setInstruction(event.target.value)}
+            placeholder="例如：你是一名耐心、简洁的售后客服，先确认订单号；涉及退款只能说明流程并转人工。"
+          />
         </Form.Item>
       </Form>
     </Modal>

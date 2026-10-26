@@ -20,6 +20,44 @@ BUSINESS_SANDBOX_CONNECTOR_CODE = "demo-business-sandbox"
 DEEPWIKI_CONNECTOR_CODE = "deepwiki-public"
 CUSTOMER_SERVICE_ENTRY_CODE = "ecommerce_customer_service"
 ENTERPRISE_SERVICE_ENTRY_CODE = "enterprise_service_desk"
+DEMO_EMPLOYEE_INSTRUCTIONS = {
+    "customer": (
+        "你是电商客服数字员工。先用简洁中文确认商品或订单信息，再依据已发布知识回答；"
+        "涉及退款、改址等资金或地址变更时只说明流程，并转人工审核，不承诺未确认的处理结果。"
+    ),
+    "enterprise": (
+        "你是企业服务台数字员工。先确认员工所在组织和问题类型，再依据已发布制度回答；"
+        "账号、权限和费用操作只说明流程，需要人工复核时明确告知，不替员工绕过审批。"
+    ),
+    "developer": (
+        "你是研发支持数字员工。优先查询公开仓库文档并给出可追溯依据；"
+        "涉及私有仓库、密钥或访问令牌时拒绝继续，并转人工处理。"
+    ),
+    "hr": (
+        "你是 HR 入职资料数字员工。按清单逐步收集资料并保护个人信息；"
+        "遇到敏感信息、缺失材料或政策例外时转人工确认。"
+    ),
+    "logistics": (
+        "你是物流查询数字员工。先用订单号或手机号确认包裹，再依据实时物流工具回答；"
+        "只播报已查询到的节点，不推断未返回的时效或赔付结果。"
+    ),
+    "aftersales": (
+        "你是售后处理数字员工。先确认商品、订单号和售后类型，再说明可执行的处理路径；"
+        "退款、补发等资金或库存动作必须走审批，不自行承诺处理结果。"
+    ),
+    "listing": (
+        "你是商品上架数字员工。先核对商品资料、类目和必填属性，再生成上架内容；"
+        "类目或属性缺失时列出待补项，不编造参数，不直接提交审核。"
+    ),
+    "visual": (
+        "你是视觉内容数字员工。依据商品事实和品牌规范生成视觉方案；"
+        "不虚构商品外观或功效，涉及图片版权和对外发布时提示人工确认。"
+    ),
+    "operations_supervisor": (
+        "你是电商运营主管数字员工。汇总商品、上架和视觉任务的进度与异常；"
+        "只基于已查询数据给出建议，涉及人群、投放和预算变更时转人工决策。"
+    ),
+}
 BUSINESS_SANDBOX_TOOLS = [
     "get_customer_business_context",
     "get_logistics",
@@ -453,6 +491,11 @@ def main() -> None:
             client,
             developer_employee,
         )
+        developer_employee = _ensure_employee_instruction(
+            client,
+            developer_employee,
+            DEMO_EMPLOYEE_INSTRUCTIONS["developer"],
+        )
         _ensure_employee_knowledge_spaces(
             client,
             enterprise_employee,
@@ -468,7 +511,15 @@ def main() -> None:
             enterprise_employee,
             [enterprise_skill],
         )
-        _ensure_employee_active(client, enterprise_employee)
+        enterprise_employee = _ensure_employee_active(
+            client,
+            enterprise_employee,
+        )
+        enterprise_employee = _ensure_employee_instruction(
+            client,
+            enterprise_employee,
+            DEMO_EMPLOYEE_INSTRUCTIONS["enterprise"],
+        )
         _ensure_employee_knowledge_spaces(
             client,
             customer_employee,
@@ -487,7 +538,15 @@ def main() -> None:
                 f"continuing demo setup: {type(exc).__name__}",
                 file=sys.stderr,
             )
-        _ensure_employee_active(client, customer_employee)
+        customer_employee = _ensure_employee_active(
+            client,
+            customer_employee,
+        )
+        customer_employee = _ensure_employee_instruction(
+            client,
+            customer_employee,
+            DEMO_EMPLOYEE_INSTRUCTIONS["customer"],
+        )
         _ensure_employee_knowledge_spaces(
             client,
             hr_employee,
@@ -498,13 +557,19 @@ def main() -> None:
             hr_employee,
             [hr_skill],
         )
-        _ensure_employee_active(client, hr_employee)
+        hr_employee = _ensure_employee_active(client, hr_employee)
+        hr_employee = _ensure_employee_instruction(
+            client,
+            hr_employee,
+            DEMO_EMPLOYEE_INSTRUCTIONS["hr"],
+        )
         logistics_employee = _ensure_template_business_employee(
             client,
             template_code="ecommerce_logistics",
             name="物流查询数字员工",
             knowledge_space_ids=[customer_space["id"]],
             skill_ids=[logistics_skill["id"]],
+            instruction=DEMO_EMPLOYEE_INSTRUCTIONS["logistics"],
         )
         aftersales_employee = _ensure_template_business_employee(
             client,
@@ -512,6 +577,7 @@ def main() -> None:
             name="售后处理数字员工",
             knowledge_space_ids=[customer_space["id"]],
             skill_ids=[aftersales_skill["id"]],
+            instruction=DEMO_EMPLOYEE_INSTRUCTIONS["aftersales"],
         )
         listing_employee = _ensure_template_business_employee(
             client,
@@ -519,6 +585,7 @@ def main() -> None:
             name="商品上架数字员工",
             knowledge_space_ids=[customer_space["id"], ecommerce_space["id"]],
             skill_ids=[listing_skill["id"]],
+            instruction=DEMO_EMPLOYEE_INSTRUCTIONS["listing"],
         )
         visual_employee = _ensure_template_business_employee(
             client,
@@ -526,6 +593,7 @@ def main() -> None:
             name="视觉内容数字员工",
             knowledge_space_ids=[customer_space["id"], ecommerce_space["id"]],
             skill_ids=[visual_skill["id"]],
+            instruction=DEMO_EMPLOYEE_INSTRUCTIONS["visual"],
         )
         operations_supervisor = _ensure_template_business_employee(
             client,
@@ -533,6 +601,7 @@ def main() -> None:
             name="电商运营主管数字员工",
             knowledge_space_ids=[customer_space["id"], ecommerce_space["id"]],
             skill_ids=[operations_supervisor_skill["id"]],
+            instruction=DEMO_EMPLOYEE_INSTRUCTIONS["operations_supervisor"],
         )
         business_entries = [
             _ensure_business_service_entry(
@@ -1050,6 +1119,7 @@ def _ensure_template_business_employee(
     name: str,
     knowledge_space_ids: list[str],
     skill_ids: list[str],
+    instruction: str,
 ) -> dict[str, Any]:
     employees = client.get(
         "/api/v1/digital-employees",
@@ -1077,6 +1147,7 @@ def _ensure_template_business_employee(
                 "skill_ids": skill_ids,
                 "mcp_connector_ids": [],
                 "model_profile": {},
+                "instruction": instruction,
                 "change_note": "演示环境业务入口员工池初始化",
             },
         )
@@ -1093,7 +1164,8 @@ def _ensure_template_business_employee(
             employee,
             [{"id": skill_id} for skill_id in skill_ids],
         )
-    return _ensure_employee_active(client, employee)
+    employee = _ensure_employee_active(client, employee)
+    return _ensure_employee_instruction(client, employee, instruction)
 
 
 def _ensure_employee_active(
@@ -1539,6 +1611,22 @@ def _ensure_employee_tools(
         f"/api/v1/digital-employees/{employee['id']}",
         headers=ADMIN,
         json={"tool_allowlist": tools},
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _ensure_employee_instruction(
+    client: httpx.Client,
+    employee: dict[str, Any],
+    instruction: str,
+) -> dict[str, Any]:
+    if employee.get("instruction") == instruction:
+        return employee
+    response = client.patch(
+        f"/api/v1/digital-employees/{employee['id']}",
+        headers=ADMIN,
+        json={"instruction": instruction},
     )
     response.raise_for_status()
     return response.json()

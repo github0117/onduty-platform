@@ -222,6 +222,9 @@ test("新建数字员工按钮提交岗位标识、工作流和人工队列", as
   const dialog = page.getByRole("dialog", { name: "新建数字员工" });
   await dialog.locator(".ant-input").nth(0).fill("E2E 新建员工");
   await dialog.locator(".ant-input").nth(1).fill("e2e_new_employee");
+  await dialog
+    .getByPlaceholder(/例如：你是一名耐心/)
+    .fill("你是 E2E 售后客服，先确认订单号，再按知识回答。");
   await dialog.getByRole("button", { name: /^创\s*建$/ }).click();
   const request = await requestPromise;
   expect(request.postDataJSON()).toMatchObject({
@@ -230,6 +233,7 @@ test("新建数字员工按钮提交岗位标识、工作流和人工队列", as
     workflow_key: "customer_service_ticket_v1",
     handoff_queue: "MANUAL_TRIAGE",
     business_unit_id: "bu_demo",
+    instruction: "你是 E2E 售后客服，先确认订单号，再按知识回答。",
   });
   await expect(page.getByText("数字员工已创建")).toBeVisible();
 });
