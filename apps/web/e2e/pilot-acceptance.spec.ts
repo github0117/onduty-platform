@@ -94,15 +94,13 @@ test("知识运营可从角色首页进入知识文档", async ({ page }) => {
   await capture(page, "03-knowledge-operator");
 });
 
-test("业务经理可从角色首页查看跨场景指标", async ({ page }) => {
+test("业务经理可从角色首页查看运行与审计指标", async ({ page }) => {
   await useIdentity(page, "business-manager");
   await page.goto("/");
 
-  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page).toHaveURL(/\/operations$/);
   await expect(
-    page.getByRole("heading", {
-      name: "研发支持 Agent：从 RAG 到真实 MCP 工具调用",
-    }),
+    page.getByRole("heading", { name: "运行与审计", exact: true }),
   ).toBeVisible();
   const enabledEmployees = page
     .locator(".ant-statistic")
@@ -118,7 +116,7 @@ test("业务经理可从角色首页查看跨场景指标", async ({ page }) => 
     page.getByRole("button", { name: "检查并恢复演示数据" }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "直接进入主演示" }),
+    page.getByRole("menuitem", { name: "研发支持 Agent", exact: true }),
   ).toBeVisible();
   await capture(page, "04-business-manager");
 });

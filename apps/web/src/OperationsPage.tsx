@@ -6,6 +6,7 @@ import {
   Descriptions,
   Drawer,
   Empty,
+  Modal,
   Progress,
   Row,
   Space,
@@ -16,7 +17,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import {
@@ -27,7 +28,12 @@ import {
   getSyncMetrics,
   getToolCalls,
   getToolMetrics,
+  listDigitalEmployees,
+  listMcpConnectors,
+  resetDemoData,
 } from "./api";
+import { getActiveTestIdentity } from "./auth";
+import { message } from "./feedback";
 import type { AgentRun, ToolCall, ToolMetricItem } from "./types";
 import { eventStatusLabels, eventTypeLabels } from "./statusLabels";
 
@@ -58,6 +64,12 @@ function time(value: string): string {
 export default function OperationsPage() {
   const queryClient = useQueryClient();
   const [selectedRun, setSelectedRun] = useState<AgentRun | null>(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const activeIdentity = getActiveTestIdentity();
+  const canResetDemo = activeIdentity.id === "platform-admin";
+  const canViewMcpConnectors = ["agent", "supervisor", "admin"].includes(
+    activeIdentity.role,
+  );
   const tools = useQuery({ queryKey: ["metrics", "tools"], queryFn: getToolMetrics });
   const calls = useQuery({ queryKey: ["tool-calls"], queryFn: () => getToolCalls(80) });
   const runs = useQuery({
@@ -71,11 +83,40 @@ export default function OperationsPage() {
     queryFn: getModelMetrics,
   });
   const rag = useQuery({ queryKey: ["metrics", "rag"], queryFn: getRagMetrics });
+  const employees = useQuery({
+    queryKey: ["operations-employees"],
+    queryFn: listDigitalEmployees,
+  });
+  const mcpConnectors = useQuery({
+    queryKey: ["operations-mcp-connectors"],
+    queryFn: listMcpConnectors,
+    enabled: canViewMcpConnectors,
+  });
   const trace = useQuery({
     queryKey: ["agent-trace", selectedRun?.id],
     queryFn: () => getAgentRunTrace(selectedRun!.id),
     enabled: Boolean(selectedRun),
   });
+  const resetDemo = useMutation({
+    mutationFn: resetDemoData,
+    onSuccess: async (result) => {
+      setResetOpen(false);
+      message.success(result.message);
+      await queryClient.invalidateQueries();
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+  const activeEmployeeCount =
+    employees.data?.filter((employee) => employee.status === "ACTIVE")
+      .length ?? 0;
+  const externalMcpToolCount =
+    mcpConnectors.data
+      ?.filter(
+        (connector) =>
+          connector.status === "ACTIVE" &&
+          connector.code === "deepwiki-public",
+      )
+      .reduce((total, connector) => total + connector.tools.length, 0) ?? 0;
 
   const refresh = () => queryClient.invalidateQueries();
 
@@ -225,7 +266,15 @@ export default function OperationsPage() {
     },
   ];
 
-  const errors = [tools, calls, sync, models, rag].filter((query) => query.isError);
+  const errors = [
+    tools,
+    calls,
+    sync,
+    models,
+    rag,
+    employees,
+    mcpConnectors,
+  ].filter((query) => query.isError);
 
   return (
     <Space direction="vertical" size="large" className="page-stack">
@@ -236,9 +285,19 @@ export default function OperationsPage() {
             检查工具调用、模型成本、外部同步和证据质量。
           </Paragraph>
         </div>
-        <Button type="primary" onClick={refresh}>
-          刷新运行数据
-        </Button>
+        <Space wrap>
+          {canResetDemo && (
+            <Button
+              loading={resetDemo.isPending}
+              onClick={() => setResetOpen(true)}
+            >
+              检查并恢复演示数据
+            </Button>
+          )}
+          <Button type="primary" onClick={refresh}>
+            刷新运行数据
+          </Button>
+        </Space>
       </div>
 
       {errors.length > 0 && (
@@ -261,14 +320,19 @@ export default function OperationsPage() {
 
       <Row gutter={[16, 16]}>
         {[
+          ["已上岗员工", activeEmployeeCount, "名"],
+          ["知识有依据率", percent(rag.data?.grounding_rate ?? 0), ""],
+          ...(canViewMcpConnectors
+            ? [["DeepWiki 只读工具", externalMcpToolCount, "个"] as const]
+            : []),
+          ["ToolCall 成功率", percent(tools.data?.success_rate ?? 0), ""],
+          ["工具调用", tools.data?.calls ?? 0, "次"],
           ["模型调用", models.data?.calls ?? 0, "次"],
           ["模型 Token", models.data?.total_tokens ?? 0, ""],
-          ["工具调用", tools.data?.calls ?? 0, "次"],
           ["同步成功率", percent(sync.data?.success_rate ?? 0), ""],
-          ["引用覆盖率", percent(rag.data?.grounding_rate ?? 0), ""],
           ["预算预测告警", models.data?.budget_forecast_alerts ?? 0, "人"],
         ].map(([title, value, suffix]) => (
-          <Col xs={12} xl={4} key={String(title)}>
+          <Col xs={12} md={8} xl={6} key={String(title)}>
             <Card className="metric-card">
               <Statistic title={title} value={value} suffix={suffix} />
             </Card>
@@ -456,6 +520,32 @@ export default function OperationsPage() {
           </Space>
         )}
       </Drawer>
+
+      <Modal
+        title="检查并恢复演示数据？"
+        open={resetOpen}
+        onCancel={() => {
+          if (!resetDemo.isPending) setResetOpen(false);
+        }}
+        onOk={() => resetDemo.mutate()}
+        okText="开始恢复"
+        cancelText="取消"
+        confirmLoading={resetDemo.isPending}
+        okButtonProps={{ disabled: resetDemo.isPending }}
+        cancelButtonProps={{ disabled: resetDemo.isPending }}
+      >
+        <Space direction="vertical" size="middle">
+          <Text>
+            系统会检查并补齐固定演示所需的员工、知识、工单、商品和内容任务。
+          </Text>
+          <Alert
+            type="info"
+            showIcon
+            message="这是幂等恢复，不会删除你手工创建的数据"
+            description="固定演示数据已存在时会更新或复用；执行过程可能需要几十秒。仅演示或开发环境可执行。"
+          />
+        </Space>
+      </Modal>
     </Space>
   );
 }

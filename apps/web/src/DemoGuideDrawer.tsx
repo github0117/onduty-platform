@@ -25,11 +25,15 @@ import {
 
 const { Paragraph, Text } = Typography;
 
-const demoGuideSteps = [
+const demoGuideSteps: {
+  title: string;
+  description: string;
+  path?: string;
+}[] = [
   {
     title: "看清技术主线",
-    description: "先理解研发支持 Agent 的 API、LangGraph、RAG、MCP 和 Trace 链路。",
-    path: "/overview",
+    description:
+      "研发支持 Agent 的链路：FastAPI + React 应用底座 → LangGraph 按 Skill 路由 → RAG 检索授权知识 → DeepWiki MCP 只读工具 → ToolCall 与 Trace 留痕。这一步不需要跳转，直接进入下一步检查员工上岗状态。",
   },
   {
     title: "检查员工上岗状态",
@@ -70,6 +74,13 @@ export default function DemoGuideDrawer({
 }) {
   const activeIdentity = getActiveTestIdentity();
   const activeBusinessUnit = getActiveBusinessUnitId();
+  const currentStep = demoGuideSteps[step];
+  const goToStep = (index: number) => {
+    const target = demoGuideSteps[index]?.path;
+    if (!target) return;
+    onNavigate(target);
+    onClose();
+  };
 
   return (
     <Drawer
@@ -158,27 +169,31 @@ export default function DemoGuideDrawer({
           description: step.description,
         }))}
       />
-      <Card size="small" title={demoGuideSteps[step].title}>
-        <Paragraph type="secondary">
-          {demoGuideSteps[step].description}
-        </Paragraph>
+      <Card size="small" title={currentStep.title}>
+        <Paragraph type="secondary">{currentStep.description}</Paragraph>
         <Space wrap>
-          <Button
-            type="primary"
-            onClick={() => {
-              onNavigate(demoGuideSteps[step].path);
-              onClose();
-            }}
-          >
-            前往本步骤
-          </Button>
-          {step < demoGuideSteps.length - 1 && (
+          {currentStep.path ? (
+            <Button type="primary" onClick={() => goToStep(step)}>
+              前往本步骤
+            </Button>
+          ) : (
+            step < demoGuideSteps.length - 1 && (
+              <Button
+                type="primary"
+                onClick={() => {
+                  onStepChange(step + 1);
+                  goToStep(step + 1);
+                }}
+              >
+                直接进入下一步
+              </Button>
+            )
+          )}
+          {currentStep.path && step < demoGuideSteps.length - 1 && (
             <Button
               onClick={() => {
-                const nextStep = step + 1;
-                onStepChange(nextStep);
-                onNavigate(demoGuideSteps[nextStep].path);
-                onClose();
+                onStepChange(step + 1);
+                goToStep(step + 1);
               }}
             >
               直接进入下一步

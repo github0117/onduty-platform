@@ -21,7 +21,6 @@ import {
   demoPerspectiveLabels,
 } from "./demoPerspectives";
 
-const DemoOverviewPage = lazy(() => import("./DemoOverviewPage"));
 const DemoGuideDrawer = lazy(() => import("./DemoGuideDrawer"));
 const TicketsPage = lazy(() => import("./TicketsPage"));
 const EcommercePage = lazy(() => import("./EcommercePage"));
@@ -37,15 +36,10 @@ const { Title, Text } = Typography;
 type RouteMeta = {
   title: string;
   description: string;
-  category: "能力演示总览" | "Agent 演示" | "平台管理";
+  category: "Agent 演示" | "平台管理";
 };
 
 const routeMeta: Record<string, RouteMeta> = {
-  "/overview": {
-    title: "AI 应用开发 · 技术演示",
-    description: "研发支持 Agent：RAG、LangGraph、MCP 与 Trace",
-    category: "能力演示总览",
-  },
   "/tickets": {
     title: "应用场景 · 内部工单与 HR 演示",
     description: "演示内部服务请求、HR 入职任务、人工审核和外部同步",
@@ -243,14 +237,12 @@ const customerServicePageNavigation = [
 
 function identityCanAccessPath(profileId: string, path: string): boolean {
   const businessPath =
-    path === "/overview" ||
     path.startsWith("/customer-service") ||
     path.startsWith("/ecommerce") ||
     path === "/tickets";
   if (profileId === "platform-admin") return true;
   if (profileId === "service-agent") {
     return (
-      path === "/overview" ||
       path === "/customer-service" ||
       path === "/customer-service/workbench" ||
       path.startsWith("/ecommerce") ||
@@ -267,7 +259,6 @@ function identityCanAccessPath(profileId: string, path: string): boolean {
   }
   if (profileId === "knowledge-operator") {
     return (
-      path === "/overview" ||
       path.startsWith("/knowledge") ||
       path.startsWith("/employees")
     );
@@ -279,7 +270,7 @@ function identityCanAccessPath(profileId: string, path: string): boolean {
 }
 
 const legacyPagePaths: Record<string, string> = {
-  overview: "/overview",
+  overview: "/customer-service",
   tickets: "/tickets",
   "customer-service": "/customer-service",
   ecommerce: "/ecommerce",
@@ -297,7 +288,7 @@ function cleanRouteSearch(searchParams: URLSearchParams): URLSearchParams {
 }
 
 function resolveInitialPath(): string {
-  if (typeof window === "undefined") return "/overview";
+  if (typeof window === "undefined") return "/customer-service";
   const currentPath = window.location.pathname;
   if (routeMeta[currentPath]) return currentPath;
   const url = new URL(window.location.href);
@@ -308,7 +299,7 @@ function resolveInitialPath(): string {
   }
   const page = url.searchParams.get("page");
   let target = page
-    ? legacyPagePaths[page] ?? "/overview"
+    ? legacyPagePaths[page] ?? "/customer-service"
     : getActiveTestIdentity().landingPath;
   if (
     page === "employees" &&
@@ -328,7 +319,7 @@ function resolveInitialPath(): string {
 function routeForTarget(target: string): string {
   if (target.startsWith("/")) return target;
   if (target === "employees") return "/employees/roster";
-  return legacyPagePaths[target] ?? "/overview";
+  return legacyPagePaths[target] ?? "/customer-service";
 }
 
 export default function App() {
@@ -337,7 +328,7 @@ export default function App() {
   const [routeRevision, setRouteRevision] = useState(0);
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideStep, setGuideStep] = useState(0);
-  const current = routeMeta[activePath] ?? routeMeta["/overview"];
+  const current = routeMeta[activePath] ?? routeMeta["/customer-service"];
   const activeIdentity = getActiveTestIdentity();
   const activeBusinessUnit = getActiveBusinessUnitId();
   const platformKeysByProfile: Record<string, Set<string>> = {
@@ -375,7 +366,7 @@ export default function App() {
     const onPopState = () => {
       const path = routeMeta[window.location.pathname]
         ? window.location.pathname
-        : "/overview";
+        : "/customer-service";
       setActivePath(path);
       setRouteRevision((value) => value + 1);
     };
@@ -427,7 +418,6 @@ export default function App() {
     ].filter((item) => visiblePlatformKeys.has(item.key)),
   };
   const menuItems = [
-    { key: "/overview", label: "技术演示首页" },
     scenarioMenu,
     ...(platformMenu.children.length ? [platformMenu] : []),
   ];
@@ -476,13 +466,7 @@ export default function App() {
           <div>
             <Space size={8} wrap>
               <Tag
-                color={
-                  current.category === "Agent 演示"
-                    ? "gold"
-                    : current.category === "平台管理"
-                      ? "cyan"
-                      : "blue"
-                }
+                color={current.category === "Agent 演示" ? "gold" : "cyan"}
               >
                 {current.category}
               </Tag>
@@ -565,15 +549,6 @@ export default function App() {
               </div>
             }
           >
-            {activePath === "/overview" && (
-              <DemoOverviewPage
-                onNavigate={navigate}
-                onStartGuide={() => {
-                  setGuideStep(0);
-                  setGuideOpen(true);
-                }}
-              />
-            )}
             {activePath === "/tickets" && <TicketsPage key="business" />}
             {ecommerceSection && (
               <EcommercePage

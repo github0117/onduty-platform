@@ -11,7 +11,7 @@ const captureDocs = process.env.CAPTURE_DOCS === "1";
 const screenshotDir = resolve("test-results/docs");
 
 const pages = [
-  { path: "/overview", name: "overview" },
+  { path: "/customer-service?scenario=enterprise", name: "customer-service-enterprise" },
   { path: "/tickets", name: "tickets" },
   { path: "/customer-service/workbench", name: "customer-service" },
   { path: "/knowledge/documents", name: "knowledge" },

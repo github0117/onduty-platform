@@ -51,7 +51,7 @@ export const testIdentityProfiles: TestIdentityProfile[] = [
     description: "查看业务效果和运行审计",
     actorId: "demo.business_manager",
     role: "business_manager",
-    landingPath: "/overview",
+    landingPath: "/operations",
   },
   {
     id: "platform-admin",
@@ -59,7 +59,7 @@ export const testIdentityProfiles: TestIdentityProfile[] = [
     description: "配置员工、模型、连接器和治理规则",
     actorId: "demo.admin",
     role: "admin",
-    landingPath: "/overview",
+    landingPath: "/employees/roster",
   },
 ];
 

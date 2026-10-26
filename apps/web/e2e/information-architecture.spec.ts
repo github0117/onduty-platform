@@ -4,10 +4,16 @@ test("侧边栏只保留 Agent 演示和平台管理，员工二级页面使用�
   page,
 }) => {
   await page.addInitScript(() => window.localStorage.clear());
-  await page.goto("/overview");
-  await expect(page.getByText("Agent 演示", { exact: true })).toBeVisible();
-  await expect(page.getByText("平台管理", { exact: true })).toBeVisible();
-  await page.getByText("员工、Skill 与 MCP", { exact: true }).click();
+  await page.goto("/customer-service");
+  await expect(
+    page.getByRole("menuitem", { name: "Agent 演示", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "平台管理", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("menuitem", { name: "员工、Skill 与 MCP", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/employees\/roster$/);
   await expect(
     page.getByText("Skill 与 MCP 属于员工能力配置", {
@@ -38,7 +44,7 @@ test("侧边栏只保留 Agent 演示和平台管理，员工二级页面使用�
 test("页头可直接切换演示视角，业务单元仍在 5 步演示设置", async ({
   page,
 }) => {
-  await page.goto("/overview");
+  await page.goto("/employees/roster");
 
   await expect(
     page.getByText("当前视角：平台管理员", { exact: true }),
@@ -69,7 +75,7 @@ test("页头可直接切换演示视角，业务单元仍在 5 步演示设置",
 });
 
 test("5 步演示中的视角菜单可切换角色并进入对应首页", async ({ page }) => {
-  await page.goto("/overview");
+  await page.goto("/customer-service");
 
   await page.getByRole("button", { name: "5 步技术演示" }).click();
   await expect(
@@ -166,9 +172,13 @@ test("客服坐席测试身份不显示平台管理菜单", async ({ page }) => 
       "bu_demo",
     );
   });
-  await page.goto("/overview");
-  await expect(page.getByText("Agent 演示", { exact: true })).toBeVisible();
-  await expect(page.getByText("平台管理", { exact: true })).toHaveCount(0);
+  await page.goto("/knowledge");
+  await expect(
+    page.getByRole("menuitem", { name: "Agent 演示", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "平台管理", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByText("当前视角：业务执行者", { exact: true }),
   ).toBeVisible();
@@ -186,13 +196,15 @@ test("业务经理测试身份只看到业务演示和审批审计", async ({ pa
       "bu_demo",
     );
   });
-  await page.goto("/overview");
-  await expect(page.getByText("平台管理", { exact: true })).toBeVisible();
+  await page.goto("/operations");
   await expect(
-    page.getByText("运行与审计", { exact: true }),
+    page.getByRole("menuitem", { name: "平台管理", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("员工、Skill 与 MCP", { exact: true }),
+    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "员工、Skill 与 MCP", exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByText("当前视角：管理者", { exact: true }),
@@ -240,44 +252,9 @@ test("切换业务单元后 API 查询和身份头同步切换", async ({ page }
       "bu_acceptance",
     );
   });
-  await page.goto("/overview");
+  await page.goto("/operations");
   await expect.poll(() => observedBusinessUnit).toBe("bu_acceptance");
   expect(observedUrl).toContain("business_unit_id=bu_acceptance");
-});
-
-test("能力总览展示一条主演示和三个复用案例", async ({ page }) => {
-  await page.addInitScript(() => {
-    window.localStorage.clear();
-    window.localStorage.setItem(
-      "digital-workforce:test-identity",
-      "service-agent",
-    );
-  });
-  await page.goto("/overview");
-  await expect(
-    page.getByRole("heading", {
-      name: "一条主演示 + 三个复用案例",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("先主链，后复用", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("技术验收证据", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("技术实现主线", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("电商客服复用案例", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("电商运营复用案例", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("内部工单与 HR 复用案例", { exact: true }),
-  ).toBeVisible();
 });
 
 test("电商内容拆分后可直达商品、上架和运营页面", async ({ page }) => {
@@ -416,14 +393,6 @@ test("客服聊天、工作台、审批和事故均有独立入口", async ({ pa
 
 test("通用平台页面不再把电商作为默认业务场景", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
-  await page.goto("/overview");
-  await expect(
-    page.getByText("企业业务数据", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("外部电商平台真实业务接口", { exact: true }),
-  ).toHaveCount(0);
-
   await page.goto("/models/integrations");
   await expect(
     page.getByText(

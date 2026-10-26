@@ -218,21 +218,29 @@ async function mockOperations(page: Page): Promise<void> {
   );
 }
 
-test("技术演示首页可进入研发支持主演示", async ({ page }) => {
+test("根路径按测试身份进入角色首页", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
-  await page.goto("/overview");
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/employees\/roster$/);
+  await expect(
+    page.getByRole("heading", { name: "数字员工名单", exact: true }),
+  ).toBeVisible();
+});
+
+test("研发支持 Agent 主演示可直接访问", async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/customer-service?scenario=enterprise");
   await expect(
     page.getByRole("heading", {
-      name: "研发支持 Agent：从 RAG 到真实 MCP 工具调用",
+      name: "像研发同事一样问，像 Agent 一样执行",
     }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "直接进入主演示" }).click();
   await expect(page).toHaveURL(
     /\/customer-service\?scenario=enterprise$/,
   );
 });
 
-test("能力总览可以检查并恢复演示数据且阻止重复提交", async ({ page }) => {
+test("运行与审计可以检查并恢复演示数据且阻止重复提交", async ({ page }) => {
   let resetCalls = 0;
   let releaseReset: (() => void) | undefined;
   const resetGate = new Promise<void>((resolve) => {
@@ -251,7 +259,7 @@ test("能力总览可以检查并恢复演示数据且阻止重复提交", async
     });
   });
   await page.addInitScript(() => window.localStorage.clear());
-  await page.goto("/overview");
+  await page.goto("/operations");
   await page
     .getByRole("button", { name: "检查并恢复演示数据" })
     .click();
@@ -280,7 +288,7 @@ test("演示数据恢复失败时显示可执行中文提示", async ({ page }) 
     });
   });
   await page.addInitScript(() => window.localStorage.clear());
-  await page.goto("/overview");
+  await page.goto("/operations");
   await page
     .getByRole("button", { name: "检查并恢复演示数据" })
     .click();
@@ -294,8 +302,8 @@ test("演示数据恢复失败时显示可执行中文提示", async ({ page }) 
 
 test("5 步引导可从第一步推进并进入对应页面", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
-  await page.goto("/overview");
-  await page.getByRole("button", { name: "开始 5 步技术演示" }).click();
+  await page.goto("/operations");
+  await page.getByRole("button", { name: "5 步技术演示" }).click();
   const drawer = page.getByRole("dialog", {
     name: "研发支持 Agent · 5 步技术演示",
   });
