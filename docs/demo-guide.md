@@ -232,7 +232,7 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
 > 上方为全宽动图预览。展开下方播放器可看完整视频，不跳转全屏。
 
 <details>
-<summary>在页面内播放完整 60 秒视频</summary>
+<summary>在页面内播放完整演示视频</summary>
 
 <video src="https://github.com/user-attachments/assets/2e085c50-7687-4285-be7d-7039051f0566" controls></video>
 

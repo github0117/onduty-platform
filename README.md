@@ -13,10 +13,10 @@
 <img src="docs/assets/demo/on-duty-routing-demo-preview.gif" width="100%" alt="OnDuty 数字员工平台 60 秒演示预览：同一入口跨岗位分派">
 
 > **60 秒演示**：同一入口跨岗位分派 → 员工能力快照 → 意图冲突检查 → 路由评测。
-> 上方为动图预览；展开下方播放器可看完整 60 秒视频，不跳转全屏。
+> 上方为动图预览；展开下方播放器可看完整演示视频，不跳转全屏。
 
 <details>
-<summary>在页面内播放完整 60 秒视频</summary>
+<summary>在页面内播放完整演示视频</summary>
 
 <video src="https://github.com/user-attachments/assets/2e085c50-7687-4285-be7d-7039051f0566" controls></video>
 
