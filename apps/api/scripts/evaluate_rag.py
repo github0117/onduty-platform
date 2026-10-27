@@ -41,12 +41,24 @@ def _parse_case(line: str) -> EvaluationCase:
     return EvaluationCase(
         query=str(payload["query"]),
         business_unit_id=str(payload["business_unit_id"]),
-        expected_titles=[str(item) for item in payload.get("expected_titles", [])],
+        expected_titles=[
+            str(item) for item in payload.get("expected_titles", [])
+        ],
         expect_no_grounding=bool(payload.get("expect_no_grounding", False)),
         scope={
             str(key): str(value)
             for key, value in payload.get("scope", {}).items()
         },
+        dataset=str(payload.get("dataset") or "TUNING"),
+        expected_chunk_ids=[
+            str(item) for item in payload.get("expected_chunk_ids", [])
+        ],
+        expected_document_ids=[
+            str(item) for item in payload.get("expected_document_ids", [])
+        ],
+        negative_document_ids=[
+            str(item) for item in payload.get("negative_document_ids", [])
+        ],
     )
 
 

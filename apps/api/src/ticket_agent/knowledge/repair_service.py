@@ -34,12 +34,18 @@ class KnowledgeRepairService:
     ) -> list[KnowledgeRepairTask]:
         tasks: list[KnowledgeRepairTask] = []
         for case, score in zip(cases, scored_cases, strict=True):
-            no_grounding_correct = cast(bool | None, score.get("no_grounding_correct"))
-            passed = (
-                no_grounding_correct
-                if case.expect_no_grounding
-                else float(score.get("recall_at_k", 0.0)) >= 1.0
-            )
+            passed = score.get("passed")
+            if passed is None:
+                # Scores produced before the dataset split only carried the
+                # title-level recall.
+                no_grounding_correct = cast(
+                    bool | None, score.get("no_grounding_correct")
+                )
+                passed = (
+                    no_grounding_correct
+                    if case.expect_no_grounding
+                    else float(score.get("recall_at_k", 0.0)) >= 1.0
+                )
             if passed:
                 continue
             title = f"知识评测失败：{case.name}"
@@ -278,13 +284,24 @@ class KnowledgeRepairService:
         from ticket_agent.knowledge.evaluation_service import (
             KnowledgeEvaluationService,
         )
-        from ticket_agent.knowledge.schemas import KnowledgeEvaluationRunCreate
+        from ticket_agent.knowledge.schemas import (
+            KnowledgeEvaluationDataset,
+            KnowledgeEvaluationRunCreate,
+        )
 
         task = self.get(task_id)
+        dataset: KnowledgeEvaluationDataset = "TUNING"
+        if task.evaluation_run_id is not None:
+            source_run = self.session.get(
+                KnowledgeEvaluationRun, task.evaluation_run_id
+            )
+            if source_run is not None:
+                dataset = cast(KnowledgeEvaluationDataset, source_run.dataset)
         run = KnowledgeEvaluationService(self.session).run(
             KnowledgeEvaluationRunCreate(
                 business_unit_id=task.business_unit_id,
                 knowledge_space_id=task.knowledge_space_id,
+                dataset=dataset,
             ),
             actor_id="system.knowledge_repair",
         )

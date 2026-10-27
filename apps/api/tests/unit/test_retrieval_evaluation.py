@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -81,6 +81,86 @@ def test_evaluation_reports_recall_mrr_and_no_grounding() -> None:
     assert report["no_grounding_accuracy"] == 1.0
 
 
+def _hit(
+    *,
+    title: str,
+    chunk_id: UUID | None = None,
+    document_id: UUID | None = None,
+) -> KnowledgeHit:
+    return KnowledgeHit(
+        chunk_id=chunk_id or uuid4(),
+        document_id=document_id or uuid4(),
+        title=title,
+        version="1.0",
+        content=f"{title} 内容",
+        score=0.9,
+    )
+
+
+def test_evaluation_scores_chunk_and_document_level_ground_truth() -> None:
+    relevant_chunk = uuid4()
+    irrelevant_chunk = uuid4()
+    second_chunk = uuid4()
+    relevant_document = uuid4()
+    cases = [
+        EvaluationCase(
+            query="仅声明分块",
+            business_unit_id="bu",
+            expected_titles=[],
+            expected_chunk_ids=[str(relevant_chunk), str(second_chunk)],
+        )
+    ]
+    hits = [
+        _hit(title="无关", chunk_id=irrelevant_chunk),
+        _hit(
+            title="相关",
+            chunk_id=relevant_chunk,
+            document_id=relevant_document,
+        ),
+        _hit(title="相关二", chunk_id=second_chunk),
+    ]
+
+    report = score_evaluation(cases, [hits], top_k=5)
+    case = report["cases"][0]  # type: ignore[index]
+
+    assert case["no_grounding_correct"] is None
+    assert case["chunk_recall_at_k"] == 1.0
+    assert case["chunk_reciprocal_rank"] == 0.5
+    assert case["context_precision"] == 2 / 3
+    assert case["passed"] is True
+    assert report["chunk_recall_at_k"] == 1.0
+    assert report["chunk_mrr"] == 0.5
+    assert report["context_precision"] == 2 / 3
+    assert report["passed_cases"] == 1
+
+
+def test_evaluation_counts_negative_document_violation_as_failure() -> None:
+    expected_document = uuid4()
+    forbidden_document = uuid4()
+    cases = [
+        EvaluationCase(
+            query="禁止召回",
+            business_unit_id="bu",
+            expected_titles=[],
+            expected_document_ids=[str(expected_document)],
+            negative_document_ids=[str(forbidden_document)],
+        )
+    ]
+    hits = [
+        _hit(title="允许文档", document_id=expected_document),
+        _hit(title="禁止文档", document_id=forbidden_document),
+    ]
+
+    report = score_evaluation(cases, [hits], top_k=5)
+    case = report["cases"][0]  # type: ignore[index]
+
+    assert case["document_recall_at_k"] == 1.0
+    assert case["negative_document_hit"] is True
+    assert case["passed"] is False
+    assert report["negative_violation_rate"] == 1.0
+    assert report["passed_cases"] == 0
+
+
 def test_scope_matches_org_descendants_and_wildcards() -> None:
     assert scope_matches(
         {"organizations": ["acme"]},
@@ -136,3 +216,25 @@ def test_external_reranker_uses_provider_scores() -> None:
     assert requests[0].url.path == "/v1/rerank"
     assert requests[0].headers["Authorization"] == "Bearer rerank-secret"
 
+
+
+def test_rrf_fusion_keeps_strongest_vector_score() -> None:
+    from ticket_agent.knowledge.service import _rrf_fuse
+
+    shared = _candidate(content="退款政策", vector_score=0.20, title="退款政策")
+    other = _candidate(content="VPN", vector_score=0.40, title="VPN")
+    rewritten = _candidate(content="退款政策", vector_score=0.75, title="退款政策")
+    rewritten = RetrievalCandidate(
+        chunk_id=shared.chunk_id,
+        document_id=shared.document_id,
+        title=rewritten.title,
+        version=rewritten.version,
+        content=rewritten.content,
+        vector_score=rewritten.vector_score,
+    )
+
+    fused = _rrf_fuse([[other, shared], [rewritten]], limit=5, k=60)
+
+    by_id = {candidate.chunk_id: candidate for candidate in fused}
+    assert by_id[shared.chunk_id].vector_score == 0.75
+    assert fused[0].chunk_id == shared.chunk_id

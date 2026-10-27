@@ -1,12 +1,19 @@
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from ticket_agent.ecommerce.models import EcommerceProduct
+from ticket_agent.knowledge.local_embedding import LocalEmbeddingProvider
 from ticket_agent.knowledge.models import KnowledgeChunk, KnowledgeVersion
+from ticket_agent.knowledge.query_rewrite import (
+    QueryRewriteError,
+    query_rewrite_fallback_total,
+    query_rewrite_total,
+    reset_query_rewrite_metrics,
+)
 from ticket_agent.knowledge.service import KnowledgeService
 from ticket_agent.shared.db import SessionLocal
 from ticket_agent.shared.settings import get_settings
@@ -1065,6 +1072,7 @@ def test_evaluation_gate_blocks_failed_publish_and_rolls_back(
             "knowledge_space_id": space["id"],
             "name": "门禁错误预期",
             "query": "雪地靴鞋面材质",
+            "dataset": "HOLDOUT",
             "expected_titles": ["错误文档标题"],
             "scope": {
                 "channel": "pinduoduo",
@@ -1074,6 +1082,14 @@ def test_evaluation_gate_blocks_failed_publish_and_rolls_back(
         },
     )
     assert wrong_case.status_code == 201
+    assert wrong_case.json()["dataset"] == "HOLDOUT"
+    frozen = client.patch(
+        f"/api/v1/knowledge/evaluation-cases/{wrong_case.json()['id']}",
+        headers=ADMIN_HEADERS,
+        json={"enabled": False},
+    )
+    assert frozen.status_code == 409
+    assert frozen.json()["code"] == "HOLDOUT_CASE_IMMUTABLE"
     blocked = client.post(
         f"/api/v1/knowledge-documents/{document_id}/versions/{version['id']}/publish",
         headers=ADMIN_HEADERS,
@@ -1099,20 +1115,46 @@ def test_evaluation_gate_blocks_failed_publish_and_rolls_back(
     assert failed_verify.status_code == 200, failed_verify.text
     assert failed_verify.json()["status"] == "IN_REPAIR"
 
-    client.patch(
-        f"/api/v1/knowledge/evaluation-cases/{wrong_case.json()['id']}",
-        headers=ADMIN_HEADERS,
-        json={"enabled": False},
+
+def test_evaluation_gate_requires_holdout_cases(client: TestClient) -> None:
+    space = _create_space(
+        client,
+        code="gated_empty_holdout",
+        name="留出集为空的知识",
+        workflow_key="ecommerce_customer_service_v1",
     )
-    correct_case = client.post(
+    enabled = client.patch(
+        f"/api/v1/knowledge-spaces/{space['id']}",
+        headers=ADMIN_HEADERS,
+        json={"evaluation_required": True},
+    )
+    assert enabled.status_code == 200
+    document_id = _create_document(
+        client,
+        title="留出集空门禁指南",
+        space_id=str(space["id"]),
+        scope={
+            "channel": "pinduoduo",
+            "category": "雪地靴",
+            "workflow": "ecommerce_customer_service_v1",
+        },
+    )
+    version = _create_version(
+        client,
+        document_id,
+        label="empty-holdout-1.0",
+        content="留出集空门禁指南说明鞋面为牛剖层革。",
+    )
+    tuning_case = client.post(
         "/api/v1/knowledge/evaluation-cases",
         headers=ADMIN_HEADERS,
         json={
             "business_unit_id": "bu_demo",
             "knowledge_space_id": space["id"],
-            "name": "门禁正确预期",
+            "name": "调参集失败不影响门禁",
             "query": "雪地靴鞋面材质",
-            "expected_titles": ["门禁雪地靴指南"],
+            "dataset": "TUNING",
+            "expected_titles": ["不存在的调参集文档"],
             "scope": {
                 "channel": "pinduoduo",
                 "category": "雪地靴",
@@ -1120,20 +1162,226 @@ def test_evaluation_gate_blocks_failed_publish_and_rolls_back(
             },
         },
     )
-    assert correct_case.status_code == 201
+    assert tuning_case.status_code == 201
+    blocked = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions/{version['id']}/publish",
+        headers=ADMIN_HEADERS,
+        json={"release_note": "no holdout"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "KNOWLEDGE_EVALUATION_HOLDOUT_EMPTY"
+
+    holdout_case = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json={
+            "business_unit_id": "bu_demo",
+            "knowledge_space_id": space["id"],
+            "name": "留出门禁正确预期",
+            "query": "留出集空门禁指南 鞋面材质",
+            "dataset": "HOLDOUT",
+            "expected_titles": ["留出集空门禁指南"],
+            "scope": {
+                "channel": "pinduoduo",
+                "category": "雪地靴",
+                "workflow": "ecommerce_customer_service_v1",
+            },
+        },
+    )
+    assert holdout_case.status_code == 201
     published = client.post(
         f"/api/v1/knowledge-documents/{document_id}/versions/{version['id']}/publish",
         headers=ADMIN_HEADERS,
-        json={"release_note": "gate passes"},
+        json={"release_note": "holdout passes"},
     )
     assert published.status_code == 200, published.text
     assert published.json()["status"] == "ACTIVE"
-    verified = client.post(
-        f"/api/v1/knowledge/repair-tasks/{repair_id}/verify",
+    runs = client.get(
+        "/api/v1/knowledge/evaluation-runs"
+        "?business_unit_id=bu_demo&dataset=HOLDOUT",
         headers=AGENT_HEADERS,
+    ).json()
+    assert runs["items"]
+    gate_run = runs["items"][0]
+    assert gate_run["dataset"] == "HOLDOUT"
+    assert gate_run["case_count"] == 1
+    assert gate_run["verdict"] == "PASS"
+    assert gate_run["baseline"]["dataset"] == "HOLDOUT"
+    assert gate_run["baseline"]["top_k"] == gate_run["top_k"]
+    tuning_cases = client.get(
+        "/api/v1/knowledge/evaluation-cases"
+        "?business_unit_id=bu_demo&dataset=TUNING",
+        headers=AGENT_HEADERS,
+    ).json()
+    assert [item["id"] for item in tuning_cases] == [tuning_case.json()["id"]]
+    tuning_run = client.post(
+        "/api/v1/knowledge/evaluation-runs",
+        headers=AGENT_HEADERS,
+        json={"business_unit_id": "bu_demo", "dataset": "TUNING"},
     )
-    assert verified.status_code == 200, verified.text
-    assert verified.json()["status"] == "VERIFIED"
+    assert tuning_run.status_code == 201, tuning_run.text
+    assert tuning_run.json()["dataset"] == "TUNING"
+    assert tuning_run.json()["verdict"] == "FAIL"
+    assert tuning_run.json()["case_count"] == 1
+
+
+def test_evaluation_dataset_split_isolates_and_freezes_holdout(
+    client: TestClient,
+) -> None:
+    space = _create_space(
+        client,
+        code="dataset_split",
+        name="数据集隔离知识",
+        workflow_key="ecommerce_customer_service_v1",
+    )
+    scope = {
+        "channel": "pinduoduo",
+        "category": "雪地靴",
+        "workflow": "ecommerce_customer_service_v1",
+    }
+    tuning_payload = {
+        "business_unit_id": "bu_demo",
+        "knowledge_space_id": space["id"],
+        "name": "调参集案例",
+        "query": "共享的评测问题",
+        "dataset": "TUNING",
+        "expected_titles": ["调参文档"],
+        "scope": scope,
+    }
+    tuning = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json=tuning_payload,
+    )
+    assert tuning.status_code == 201, tuning.text
+    overlap = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json={
+            **tuning_payload,
+            "name": "留出集重复问题",
+            "dataset": "HOLDOUT",
+        },
+    )
+    assert overlap.status_code == 409
+    assert overlap.json()["code"] == "EVALUATION_QUERY_DATASET_OVERLAP"
+
+    expected_document = str(uuid4())
+    forbidden_document = str(uuid4())
+    holdout_payload = {
+        "business_unit_id": "bu_demo",
+        "knowledge_space_id": space["id"],
+        "name": "留出集案例",
+        "query": "留出集独立问题",
+        "dataset": "HOLDOUT",
+        "expected_titles": [],
+        "expected_chunk_ids": [str(uuid4())],
+        "expected_document_ids": [expected_document],
+        "negative_document_ids": [forbidden_document],
+        "scope": scope,
+    }
+    holdout = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json=holdout_payload,
+    )
+    assert holdout.status_code == 201, holdout.text
+    assert holdout.json()["dataset"] == "HOLDOUT"
+    assert holdout.json()["expected_document_ids"] == [expected_document]
+    assert holdout.json()["negative_document_ids"] == [forbidden_document]
+
+    repeated = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json=holdout_payload,
+    )
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["id"] == holdout.json()["id"]
+
+    conflicting = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json={**holdout_payload, "name": "留出集改动后重复"},
+    )
+    assert conflicting.status_code == 409
+    assert conflicting.json()["code"] == "HOLDOUT_CASE_IMMUTABLE"
+    frozen = client.patch(
+        f"/api/v1/knowledge/evaluation-cases/{holdout.json()['id']}",
+        headers=ADMIN_HEADERS,
+        json={"enabled": False},
+    )
+    assert frozen.status_code == 409
+    assert frozen.json()["code"] == "HOLDOUT_CASE_IMMUTABLE"
+
+    overlap_document = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json={
+            "business_unit_id": "bu_demo",
+            "knowledge_space_id": space["id"],
+            "name": "负样本与预期冲突",
+            "query": "负样本冲突问题",
+            "dataset": "TUNING",
+            "expected_document_ids": [expected_document],
+            "negative_document_ids": [expected_document],
+            "scope": scope,
+        },
+    )
+    assert overlap_document.status_code == 422
+    blank_query = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json={
+            "business_unit_id": "bu_demo",
+            "knowledge_space_id": space["id"],
+            "name": "空问题",
+            "query": "   ",
+            "dataset": "TUNING",
+            "expected_titles": ["调参文档"],
+            "scope": scope,
+        },
+    )
+    assert blank_query.status_code == 422
+
+    tuning_cases = client.get(
+        "/api/v1/knowledge/evaluation-cases"
+        "?business_unit_id=bu_demo&dataset=TUNING",
+        headers=AGENT_HEADERS,
+    ).json()
+    holdout_cases = client.get(
+        "/api/v1/knowledge/evaluation-cases"
+        "?business_unit_id=bu_demo&dataset=HOLDOUT",
+        headers=AGENT_HEADERS,
+    ).json()
+    assert [item["id"] for item in tuning_cases] == [tuning.json()["id"]]
+    assert [item["id"] for item in holdout_cases] == [holdout.json()["id"]]
+
+    disabled_space = client.patch(
+        f"/api/v1/knowledge-spaces/{space['id']}",
+        headers=ADMIN_HEADERS,
+        json={"status": "DISABLED"},
+    )
+    assert disabled_space.status_code == 200
+    disabled_holdout = client.get(
+        "/api/v1/knowledge/evaluation-cases"
+        "?business_unit_id=bu_demo&dataset=HOLDOUT",
+        headers=AGENT_HEADERS,
+    ).json()
+    assert disabled_holdout[0]["enabled"] is False
+    restored = client.patch(
+        f"/api/v1/knowledge/evaluation-cases/{holdout.json()['id']}",
+        headers=ADMIN_HEADERS,
+        json={"enabled": True},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["enabled"] is True
+    hidden = client.patch(
+        f"/api/v1/knowledge/evaluation-cases/{holdout.json()['id']}",
+        headers=ADMIN_HEADERS,
+        json={"enabled": False},
+    )
+    assert hidden.status_code == 409
+    assert hidden.json()["code"] == "HOLDOUT_CASE_IMMUTABLE"
 
 
 def test_negative_feedback_creates_repair_task(client: TestClient) -> None:
@@ -1329,3 +1577,161 @@ def test_structured_chunking_metadata_when_v2_enabled(
     assert paragraph_chunk.metadata_json["chunking_version"] == "v2"
     table_chunk = next(chunk for chunk in chunks if "仅退款" in chunk.content)
     assert table_chunk.metadata_json["block_kinds"] == ["table"]
+
+
+class _RecordingEmbedding(LocalEmbeddingProvider):
+    def __init__(self) -> None:
+        super().__init__(256)
+        self.batches: list[list[str]] = []
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        self.batches.append(list(texts))
+        return super().embed_texts(texts)
+
+
+class _StubRewriter:
+    name = "stub"
+
+    def __init__(self, variants: list[str]) -> None:
+        self.variants = variants
+        self.calls: list[tuple[str, int]] = []
+
+    def rewrite(self, *, query: str, variants: int) -> list[str]:
+        self.calls.append((query, variants))
+        return self.variants
+
+
+class _FailingRewriter:
+    name = "failing"
+
+    def rewrite(self, *, query: str, variants: int) -> list[str]:
+        raise QueryRewriteError("rewriter down")
+
+
+def _published_refund_document(client: TestClient) -> str:
+    document_id = _create_document(client, title="退款政策")
+    version = _create_version(
+        client,
+        document_id,
+        label="1.0",
+        content=(
+            "退款政策。签收后七天内可以申请退款，退款原路退回，"
+            "到账时间以支付渠道为准。"
+        ),
+    )
+    _publish(client, document_id, str(version["id"]))
+    return document_id
+
+
+def test_search_resolves_follow_up_query_with_history(
+    client: TestClient,
+) -> None:
+    _published_refund_document(client)
+    embedding = _RecordingEmbedding()
+
+    with SessionLocal() as session:
+        hits = KnowledgeService(
+            session,
+            embedding_provider=embedding,
+        ).search(
+            query="那退款呢",
+            business_unit_id="bu_demo",
+            history=["我买的保温杯漏水了"],
+        )
+
+    assert embedding.batches[0] == [
+        "那退款呢",
+        "我买的保温杯漏水了\n那退款呢",
+    ]
+    assert hits
+    assert any("退款政策" in hit.title for hit in hits)
+
+
+def test_search_keeps_single_query_when_context_resolution_disabled(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _published_refund_document(client)
+    embedding = _RecordingEmbedding()
+    monkeypatch.setenv("KNOWLEDGE_QUERY_CONTEXT_ENABLED", "false")
+    get_settings.cache_clear()
+    try:
+        with SessionLocal() as session:
+            KnowledgeService(
+                session,
+                embedding_provider=embedding,
+            ).search(
+                query="那退款呢",
+                business_unit_id="bu_demo",
+                history=["我买的保温杯漏水了"],
+            )
+    finally:
+        get_settings.cache_clear()
+
+    assert embedding.batches[0] == ["那退款呢"]
+
+
+def test_search_expands_low_score_query_and_records_rewrite(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _published_refund_document(client)
+    embedding = _RecordingEmbedding()
+    rewriter = _StubRewriter(["退款到账时间", "七天无理由退款"])
+    monkeypatch.setenv("KNOWLEDGE_QUERY_REWRITE_TRIGGER_SCORE", "1.0")
+    get_settings.cache_clear()
+    reset_query_rewrite_metrics()
+    try:
+        with SessionLocal() as session:
+            hits = KnowledgeService(
+                session,
+                embedding_provider=embedding,
+                query_rewriter=rewriter,
+            ).search(query="那退款呢", business_unit_id="bu_demo")
+    finally:
+        get_settings.cache_clear()
+
+    assert rewriter.calls == [("那退款呢", 2)]
+    assert embedding.batches[1] == ["退款到账时间", "七天无理由退款"]
+    assert query_rewrite_total() == 1
+    assert query_rewrite_fallback_total() == 0
+    assert hits
+
+
+def test_search_keeps_local_result_when_rewriter_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _published_refund_document(client)
+    monkeypatch.setenv("KNOWLEDGE_QUERY_REWRITE_TRIGGER_SCORE", "1.0")
+    get_settings.cache_clear()
+    reset_query_rewrite_metrics()
+    try:
+        with SessionLocal() as session:
+            hits = KnowledgeService(
+                session,
+                embedding_provider=LocalEmbeddingProvider(256),
+                query_rewriter=_FailingRewriter(),
+            ).search(query="那退款呢", business_unit_id="bu_demo")
+    finally:
+        get_settings.cache_clear()
+
+    assert query_rewrite_total() == 0
+    assert query_rewrite_fallback_total() == 1
+    assert hits
+
+
+def test_search_skips_rewrite_when_score_is_confident(
+    client: TestClient,
+) -> None:
+    _published_refund_document(client)
+    rewriter = _StubRewriter(["不应调用"])
+
+    with SessionLocal() as session:
+        KnowledgeService(
+            session,
+            embedding_provider=LocalEmbeddingProvider(256),
+            query_rewriter=rewriter,
+        ).search(query="退款政策", business_unit_id="bu_demo")
+
+    assert rewriter.calls == []

@@ -1,6 +1,7 @@
 import hashlib
 import math
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -34,8 +35,18 @@ from ticket_agent.knowledge.models import (
     KnowledgeSpace,
     KnowledgeVersion,
 )
+from ticket_agent.knowledge.query_rewrite import (
+    QueryRewriteError,
+    QueryRewriteProvider,
+    build_query_rewriter,
+    build_search_queries,
+    extract_keywords,
+    log_rewrite_fallback,
+    record_query_rewrite,
+    record_query_rewrite_fallback,
+)
 from ticket_agent.knowledge.rerank import Reranker, get_reranker
-from ticket_agent.knowledge.retrieval import RetrievalCandidate
+from ticket_agent.knowledge.retrieval import RankedCandidate, RetrievalCandidate
 from ticket_agent.knowledge.schemas import (
     EmployeeKnowledgeBindingView,
     KnowledgeDocumentCreate,
@@ -79,12 +90,15 @@ class KnowledgeService:
         *,
         embedding_provider: EmbeddingProvider | None = None,
         reranker: Reranker | None = None,
+        query_rewriter: QueryRewriteProvider | None = None,
     ) -> None:
         self.session = session
         self.settings = get_settings()
         self._uses_default_embedding_provider = embedding_provider is None
         self.embedding_provider = embedding_provider or get_embedding_provider()
         self.reranker = reranker or get_reranker()
+        self._query_rewriter = query_rewriter
+        self._query_rewriter_resolved = query_rewriter is not None
 
     @property
     def retrieval_mode(self) -> str:
@@ -861,6 +875,7 @@ class KnowledgeService:
         top_k: int | None = None,
         min_score: float | None = None,
         correlation_id: str | None = None,
+        history: Sequence[str] | None = None,
     ) -> list[KnowledgeHit]:
         search_scope = self._resolve_search_scope(
             business_unit_id=business_unit_id,
@@ -881,46 +896,40 @@ class KnowledgeService:
             correlation_id=correlation_id,
         )
         version_ids = [version.id for version, document in version_rows]
-        query_vector = self.embedding_provider.embed_texts([query])[0]
         limit = top_k or self.settings.knowledge_search_top_k
         candidate_limit = limit * self.settings.knowledge_candidate_multiplier
         dialect = self.session.get_bind().dialect.name
 
-        dense_candidates = self._dense_candidates(
-            query_vector,
-            version_ids,
+        variants = build_search_queries(
+            query,
+            list(history) if history is not None else None,
+            max_history_turns=self.settings.knowledge_query_context_history_turns,
+            enabled=self.settings.knowledge_query_context_enabled,
+        )
+        primary_query = variants[-1]
+        query_vectors = self.embedding_provider.embed_texts(variants)
+        rankings = self._candidate_rankings(
+            variants,
+            query_vectors,
+            version_ids=version_ids,
             limit=candidate_limit,
             dialect=dialect,
         )
-        if self.retrieval_mode == "hybrid":
-            lexical_candidates = self._lexical_candidates(
-                query=query,
-                query_vector=query_vector,
-                version_ids=version_ids,
-                limit=candidate_limit,
-            )
-            candidates = _rrf_fuse(
-                [dense_candidates, lexical_candidates],
-                limit=candidate_limit,
-                k=self.settings.knowledge_rrf_k,
-            )
-        else:
-            candidates = dense_candidates
-
-        try:
-            ranked = self.reranker.rerank(
-                query=query,
-                candidates=candidates,
-                top_k=limit,
-            )
-        except RuntimeError as exc:
-            raise ApiProblem(
-                status_code=503,
-                code="RERANK_UNAVAILABLE",
-                title="Reranker is unavailable",
-                detail="External rerank failed and local fallback is disabled.",
-                retryable=True,
-            ) from exc
+        candidates = _rrf_fuse(
+            rankings,
+            limit=candidate_limit,
+            k=self.settings.knowledge_rrf_k,
+        )
+        ranked = self._rerank(primary_query, candidates, limit=limit)
+        ranked = self._expand_low_score_query(
+            primary_query,
+            ranked,
+            candidates,
+            version_ids=version_ids,
+            limit=limit,
+            candidate_limit=candidate_limit,
+            dialect=dialect,
+        )
         hits: list[KnowledgeHit] = []
         score_threshold = (
             min_score
@@ -943,6 +952,125 @@ class KnowledgeService:
                 )
             )
         return hits
+
+    def _candidate_rankings(
+        self,
+        variants: list[str],
+        query_vectors: list[list[float]],
+        *,
+        version_ids: list[UUID],
+        limit: int,
+        dialect: str,
+    ) -> list[list[RetrievalCandidate]]:
+        """Dense and lexical rankings for every query variant.
+
+        Each variant contributes its own dense channel and, in hybrid mode, an
+        independent lexical channel. The caller fuses all channels by rank so
+        a single wrong rewrite cannot outvote the original query.
+        """
+        rankings: list[list[RetrievalCandidate]] = []
+        for variant, query_vector in zip(variants, query_vectors, strict=True):
+            rankings.append(
+                self._dense_candidates(
+                    query_vector,
+                    version_ids,
+                    limit=limit,
+                    dialect=dialect,
+                )
+            )
+            if self.retrieval_mode == "hybrid":
+                rankings.append(
+                    self._lexical_candidates(
+                        query=extract_keywords(variant),
+                        query_vector=query_vector,
+                        version_ids=version_ids,
+                        limit=limit,
+                    )
+                )
+        return rankings
+
+    def _rerank(
+        self,
+        query: str,
+        candidates: list[RetrievalCandidate],
+        *,
+        limit: int,
+    ) -> list[RankedCandidate]:
+        try:
+            return self.reranker.rerank(
+                query=query,
+                candidates=candidates,
+                top_k=limit,
+            )
+        except RuntimeError as exc:
+            raise ApiProblem(
+                status_code=503,
+                code="RERANK_UNAVAILABLE",
+                title="Reranker is unavailable",
+                detail="External rerank failed and local fallback is disabled.",
+                retryable=True,
+            ) from exc
+
+    def _expand_low_score_query(
+        self,
+        query: str,
+        ranked: list[RankedCandidate],
+        candidates: list[RetrievalCandidate],
+        *,
+        version_ids: list[UUID],
+        limit: int,
+        candidate_limit: int,
+        dialect: str,
+    ) -> list[RankedCandidate]:
+        """Run LLM multi-query expansion when the first pass is uncertain.
+
+        Only a weak best score triggers the extra model call. Any failure keeps
+        the local ranking and increments the fallback counter; retrieval never
+        fails because the rewriter is down.
+        """
+        provider = self._query_rewrite_provider()
+        if provider is None or not ranked:
+            return ranked
+        if ranked[0].final_score >= self.settings.knowledge_query_rewrite_trigger_score:
+            return ranked
+        try:
+            variants = provider.rewrite(
+                query=query,
+                variants=self.settings.knowledge_query_rewrite_variants,
+            )
+        except QueryRewriteError as exc:
+            record_query_rewrite_fallback()
+            log_rewrite_fallback(exc, query=query)
+            return ranked
+        variants = [
+            variant
+            for variant in variants
+            if variant and variant.strip().casefold() != query.strip().casefold()
+        ]
+        if not variants:
+            record_query_rewrite_fallback()
+            return ranked
+        record_query_rewrite()
+        query_vectors = self.embedding_provider.embed_texts(variants)
+        rankings = self._candidate_rankings(
+            variants,
+            query_vectors,
+            version_ids=version_ids,
+            limit=candidate_limit,
+            dialect=dialect,
+        )
+        fused = _rrf_fuse(
+            [candidates, *rankings],
+            limit=candidate_limit,
+            k=self.settings.knowledge_rrf_k,
+        )
+        return self._rerank(query, fused, limit=limit)
+
+    def _query_rewrite_provider(self) -> QueryRewriteProvider | None:
+        if not self._query_rewriter_resolved:
+            self._query_rewriter = build_query_rewriter(self.settings)
+            self._query_rewriter_resolved = True
+        return self._query_rewriter
 
     def _dense_candidates(
         self,
@@ -1584,7 +1712,18 @@ def _rrf_fuse(
             scores[candidate.chunk_id] = scores.get(candidate.chunk_id, 0.0) + 1.0 / (
                 k + position
             )
-            candidates.setdefault(candidate.chunk_id, candidate)
+            existing = candidates.get(candidate.chunk_id)
+            if existing is None:
+                candidates[candidate.chunk_id] = candidate
+            elif candidate.vector_score > existing.vector_score:
+                # Rank decides the fused order, but the downstream reranker
+                # scores vector similarity again. Keep the strongest vector
+                # score so a chunk found by a rewritten query is not re-scored
+                # with the weaker original-query similarity.
+                candidates[candidate.chunk_id] = replace(
+                    existing,
+                    vector_score=candidate.vector_score,
+                )
     ordered = sorted(scores, key=lambda chunk_id: scores[chunk_id], reverse=True)
     return [candidates[chunk_id] for chunk_id in ordered[:limit]]
 

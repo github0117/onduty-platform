@@ -2031,19 +2031,28 @@ def _disable_test_evaluation_cases(client: httpx.Client) -> None:
     )
     spaces_response.raise_for_status()
     spaces = {space["id"]: space for space in spaces_response.json()}
-    cases_response = client.get(
-        "/api/v1/knowledge/evaluation-cases",
-        headers=ADMIN,
-        params={"business_unit_id": BUSINESS_UNIT},
-    )
-    cases_response.raise_for_status()
+    cases: list[dict[str, Any]] = []
+    for dataset in ("TUNING", "HOLDOUT"):
+        cases_response = client.get(
+            "/api/v1/knowledge/evaluation-cases",
+            headers=ADMIN,
+            params={
+                "business_unit_id": BUSINESS_UNIT,
+                "dataset": dataset,
+            },
+        )
+        cases_response.raise_for_status()
+        cases.extend(cases_response.json())
     reason_labels = {
         "WRONG_ANSWER": "回答内容错误",
         "MISSING_KNOWLEDGE": "缺少相关知识",
         "UNSAFE_ANSWER": "回答存在风险",
         "OUTDATED_KNOWLEDGE": "知识已经过期",
     }
-    for case in cases_response.json():
+    for case in cases:
+        if case.get("dataset") == "HOLDOUT":
+            # Holdout cases are frozen; only tuning cases are demo fixtures.
+            continue
         localized_name = str(case.get("name", ""))
         for code, label in reason_labels.items():
             localized_name = localized_name.replace(code, label)

@@ -178,7 +178,7 @@ export default function OverviewPage({
   });
   const evaluationCases = useQuery({
     queryKey: ["overview", "evaluation-cases"],
-    queryFn: listKnowledgeEvaluationCases,
+    queryFn: () => listKnowledgeEvaluationCases(),
     retry: false,
   });
   const approvals = useQuery({

@@ -489,3 +489,18 @@ def test_technical_gate_reuses_repository_context() -> None:
     assert "DeepWiki" in draft.text
     assert "读取失败" in draft.text
     assert "缺少可用于回答的公开仓库地址" not in draft.text
+
+
+def test_buyer_history_excludes_current_turn_and_assistant_replies() -> None:
+    from ticket_agent.customer_service.suggestions import _buyer_history
+
+    transcript = (
+        "买家：我买的保温杯漏水了\n"
+        "客服：请提供订单号\n"
+        "买家：订单 20261027001，那退款呢\n"
+        "客服：我来帮您查一下"
+    )
+
+    # The last buyer turn is the current question; it is excluded.
+    assert _buyer_history(transcript) == ["我买的保温杯漏水了"]
+    assert _buyer_history("没有买家标记") == []

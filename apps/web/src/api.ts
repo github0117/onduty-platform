@@ -49,6 +49,7 @@ import type {
   EcommerceVideoRenderJobList,
   KnowledgeDocument,
   KnowledgeEvaluationCase,
+  KnowledgeEvaluationDataset,
   KnowledgeEvaluationRun,
   KnowledgeEvaluationRunList,
   KnowledgeFeedback,
@@ -1767,11 +1768,12 @@ export function syncProductKnowledgeCards(
   });
 }
 
-export function listKnowledgeEvaluationCases(): Promise<
-  KnowledgeEvaluationCase[]
-> {
+export function listKnowledgeEvaluationCases(
+  dataset: KnowledgeEvaluationDataset = "TUNING",
+): Promise<KnowledgeEvaluationCase[]> {
+  const suffix = dataset === "TUNING" ? "" : `&dataset=${dataset}`;
   return request(
-    "/api/v1/knowledge/evaluation-cases?business_unit_id=bu_demo",
+    `/api/v1/knowledge/evaluation-cases?business_unit_id=bu_demo${suffix}`,
   );
 }
 
@@ -1779,7 +1781,11 @@ export function createKnowledgeEvaluationCase(input: {
   name: string;
   query: string;
   knowledgeSpaceId: string;
+  dataset: KnowledgeEvaluationDataset;
   expectedTitles: string[];
+  expectedChunkIds: string[];
+  expectedDocumentIds: string[];
+  negativeDocumentIds: string[];
   expectNoGrounding: boolean;
   scope: Record<string, string>;
 }): Promise<KnowledgeEvaluationCase> {
@@ -1791,7 +1797,11 @@ export function createKnowledgeEvaluationCase(input: {
       employee_id: null,
       name: input.name,
       query: input.query,
+      dataset: input.dataset,
       expected_titles: input.expectedTitles,
+      expected_chunk_ids: input.expectedChunkIds,
+      expected_document_ids: input.expectedDocumentIds,
+      negative_document_ids: input.negativeDocumentIds,
       expect_no_grounding: input.expectNoGrounding,
       scope: input.scope,
     }),
@@ -1810,12 +1820,14 @@ export function updateKnowledgeEvaluationCase(
 
 export function runKnowledgeEvaluation(
   knowledgeSpaceId?: string,
+  dataset: KnowledgeEvaluationDataset = "TUNING",
 ): Promise<KnowledgeEvaluationRun> {
   return request("/api/v1/knowledge/evaluation-runs", {
     method: "POST",
     body: JSON.stringify({
       business_unit_id: "bu_demo",
       knowledge_space_id: knowledgeSpaceId || null,
+      dataset,
       top_k: 5,
       min_recall_at_k: 0.8,
       min_mrr: 0.6,
@@ -1824,9 +1836,12 @@ export function runKnowledgeEvaluation(
   });
 }
 
-export function listKnowledgeEvaluationRuns(): Promise<KnowledgeEvaluationRunList> {
+export function listKnowledgeEvaluationRuns(
+  dataset: KnowledgeEvaluationDataset = "TUNING",
+): Promise<KnowledgeEvaluationRunList> {
+  const suffix = dataset === "TUNING" ? "" : `&dataset=${dataset}`;
   return request(
-    "/api/v1/knowledge/evaluation-runs?business_unit_id=bu_demo&limit=10",
+    `/api/v1/knowledge/evaluation-runs?business_unit_id=bu_demo&limit=10${suffix}`,
   );
 }
 

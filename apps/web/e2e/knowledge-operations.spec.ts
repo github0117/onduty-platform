@@ -201,7 +201,7 @@ test("运行全部评测提交验收阈值并刷新结果", async ({ page }) => 
     min_mrr: 0.6,
     min_no_grounding_accuracy: 0.8,
   });
-  await expect(page.getByText("评测通过：1/1")).toBeVisible();
+  await expect(page.getByText("调参集评测通过：1/1")).toBeVisible();
 });
 
 test("评测案例可以停用并立即刷新状态", async ({ page }) => {
@@ -288,7 +288,7 @@ test("评测状态过期时把后端拒绝映射为中文提示", async ({ page 
   await page.getByRole("button", { name: "运行全部评测" }).click();
   await expect(
     page.getByText(
-      "至少启用一个评测案例后才能运行评测，请先启用案例或新建案例。",
+      "调参集还没有启用的评测案例，请先创建或启用。",
     ),
   ).toBeVisible();
   await expect(
@@ -296,6 +296,81 @@ test("评测状态过期时把后端拒绝映射为中文提示", async ({ page 
       "Create at least one enabled evaluation case before running.",
     ),
   ).toHaveCount(0);
+});
+
+test("评测数据集切换展示留出集冻结案例和分块指标", async ({ page }) => {
+  const holdoutCase = {
+    ...evaluationCase,
+    id: "case-holdout-e2e",
+    name: "留出集召回验收",
+    query: "留出集漏水如何退换",
+    dataset: "HOLDOUT",
+    expected_titles: ["E2E 售后处理规范"],
+    expected_chunk_ids: ["chunk-holdout-1"],
+    expected_document_ids: ["doc-holdout-1"],
+    negative_document_ids: ["doc-holdout-2"],
+  };
+  const holdoutRun = {
+    ...evaluationRun,
+    id: "run-holdout-e2e",
+    dataset: "HOLDOUT",
+    chunk_recall_at_k: 0.9,
+    chunk_mrr: 0.8,
+    document_recall_at_k: 0.95,
+    document_mrr: 0.85,
+    context_precision: 0.7,
+    negative_violation_rate: 0,
+    baseline: {
+      dataset: "HOLDOUT",
+      embedding_model: "local-hash",
+      embedding_dimensions: 256,
+      chunking_version: "v2",
+      retrieval_mode: "hybrid",
+      reranker: "local",
+    },
+  };
+  await mockKnowledgePage(page);
+  const holdoutCasesRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "GET" &&
+      request.url().includes("dataset=HOLDOUT") &&
+      request.url().includes("/knowledge/evaluation-cases"),
+  );
+  await page.route(
+    "**/api/v1/knowledge/evaluation-cases?business_unit_id=bu_demo&dataset=HOLDOUT",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([holdoutCase]),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/knowledge/evaluation-runs?business_unit_id=bu_demo&limit=10&dataset=HOLDOUT",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [holdoutRun], total: 1 }),
+      });
+    },
+  );
+  await openKnowledge(page, "/knowledge/evaluation");
+  await expect(page.getByText("调参集", { exact: true }).first()).toBeVisible();
+  const datasetSelect = page.locator(".ant-select").filter({
+    has: page.getByRole("combobox", { name: "评测数据集" }),
+  });
+  await datasetSelect.click();
+  await page.locator('.ant-select-item-option[title="留出集"]').click();
+  await holdoutCasesRequest;
+  await expect(page.getByText("留出集召回验收")).toBeVisible();
+  await expect(page.getByText("已冻结", { exact: true })).toBeVisible();
+  await expect(page.getByText("禁止召回 1 份文档")).toBeVisible();
+  await expect(page.getByText(/留出集评测：PASS/)).toBeVisible();
+  await expect(page.getByText(/分块 Recall@K 0.900/)).toBeVisible();
+  await expect(page.getByText(/embedding local-hash/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "停用" })).toHaveCount(0);
 });
 
 test("知识修复队列完成开始修复、回归验证和关闭任务", async ({
@@ -558,6 +633,53 @@ test("一键验证会处理停用的原评测案例", async ({ page }) => {
   await expect(
     dialog.getByRole("button", { name: "开始自动验证" }),
   ).toBeEnabled();
+});
+
+test("留出集修复任务直接按留出集重新验证", async ({ page }) => {
+  await mockKnowledgePage(page, { cases: [], repairs: [repairTask("IN_REPAIR")] });
+  const holdoutCase = {
+    ...evaluationCase,
+    dataset: "HOLDOUT",
+  };
+  const holdoutCasesResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url().includes("/knowledge/evaluation-cases") &&
+      response.url().includes("dataset=HOLDOUT"),
+  );
+  await page.route(
+    "**/api/v1/knowledge/evaluation-cases?business_unit_id=bu_demo&dataset=HOLDOUT",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([holdoutCase]),
+      });
+    },
+  );
+  const verifyPromise = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/knowledge/repair-tasks/repair-e2e/verify"),
+  );
+  await page.route(
+    "**/api/v1/knowledge/repair-tasks/repair-e2e/verify",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(repairTask("VERIFIED")),
+      });
+    },
+  );
+  await openKnowledge(page, "/knowledge/repairs");
+  await holdoutCasesResponse;
+  await page.getByRole("button", { name: "一键验证修复" }).click();
+  await verifyPromise;
+  await expect(
+    page.getByRole("dialog", { name: "一键验证修复" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("验证通过，可以关闭修复任务")).toBeVisible();
 });
 
 test("修复任务补充知识会跳到对应空间的文档并自动过滤", async ({

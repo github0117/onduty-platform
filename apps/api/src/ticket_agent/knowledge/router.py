@@ -39,6 +39,7 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeEvaluationCaseCreate,
     KnowledgeEvaluationCaseUpdate,
     KnowledgeEvaluationCaseView,
+    KnowledgeEvaluationDataset,
     KnowledgeEvaluationRunCreate,
     KnowledgeEvaluationRunList,
     KnowledgeEvaluationRunView,
@@ -235,6 +236,7 @@ def list_knowledge_evaluation_cases(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
     knowledge_space_id: Annotated[UUID | None, Query()] = None,
+    dataset: Annotated[KnowledgeEvaluationDataset, Query()] = "TUNING",
 ) -> list[KnowledgeEvaluationCaseView]:
     ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
@@ -244,6 +246,7 @@ def list_knowledge_evaluation_cases(
         for case in service.list_cases(
             business_unit_id=business_unit_id,
             knowledge_space_id=knowledge_space_id,
+            dataset=dataset,
         )
     ]
 
@@ -290,12 +293,14 @@ def list_knowledge_evaluation_runs(
     db: DbSession,
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
+    dataset: Annotated[KnowledgeEvaluationDataset, Query()] = "TUNING",
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> KnowledgeEvaluationRunList:
     ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return KnowledgeEvaluationService(db).list_runs(
         business_unit_id=business_unit_id,
+        dataset=dataset,
         limit=limit,
     )
 

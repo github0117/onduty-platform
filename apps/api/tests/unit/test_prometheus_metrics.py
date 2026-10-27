@@ -45,6 +45,16 @@ def test_render_prometheus_metrics() -> None:
         rendered,
         flags=re.MULTILINE,
     )
+    assert re.search(
+        r"^ticket_worker_rag_query_rewrites_total \d+$",
+        rendered,
+        flags=re.MULTILINE,
+    )
+    assert re.search(
+        r"^ticket_worker_rag_query_rewrite_fallbacks_total \d+$",
+        rendered,
+        flags=re.MULTILINE,
+    )
 
 
 def test_metrics_bearer_token_validation() -> None:

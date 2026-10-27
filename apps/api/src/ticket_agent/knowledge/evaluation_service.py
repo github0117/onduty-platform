@@ -20,6 +20,7 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeEvaluationCaseCreate,
     KnowledgeEvaluationCaseUpdate,
     KnowledgeEvaluationCaseView,
+    KnowledgeEvaluationDataset,
     KnowledgeEvaluationRunCreate,
     KnowledgeEvaluationRunList,
     KnowledgeEvaluationRunView,
@@ -38,13 +39,19 @@ class KnowledgeEvaluationService:
         *,
         actor_id: str,
     ) -> KnowledgeEvaluationCase:
-        if not payload.expected_titles and not payload.expect_no_grounding:
+        if not (
+            payload.expected_titles
+            or payload.expected_chunk_ids
+            or payload.expected_document_ids
+            or payload.expect_no_grounding
+        ):
             raise ApiProblem(
                 status_code=422,
                 code="EVALUATION_EXPECTATION_REQUIRED",
                 title="Evaluation expectation is missing",
                 detail=(
-                    "An evaluation case must define expected titles or expect no grounding."
+                    "An evaluation case must define expected titles, chunk "
+                    "or document ids, or expect no grounding."
                 ),
             )
         self._validate_scope_references(
@@ -52,15 +59,48 @@ class KnowledgeEvaluationService:
             knowledge_space_id=payload.knowledge_space_id,
             employee_id=payload.employee_id,
         )
+        other_dataset = "HOLDOUT" if payload.dataset == "TUNING" else "TUNING"
+        overlap = self._find_equivalent_case(
+            business_unit_id=payload.business_unit_id,
+            knowledge_space_id=payload.knowledge_space_id,
+            employee_id=payload.employee_id,
+            query=payload.query,
+            dataset=other_dataset,
+        )
+        if overlap is not None:
+            raise ApiProblem(
+                status_code=409,
+                code="EVALUATION_QUERY_DATASET_OVERLAP",
+                title="Evaluation question used in both datasets",
+                detail=(
+                    "The same question is already registered in "
+                    f"{other_dataset}; tuning and holdout questions must be "
+                    "independent."
+                ),
+            )
         existing = self._find_equivalent_case(
             business_unit_id=payload.business_unit_id,
             knowledge_space_id=payload.knowledge_space_id,
             employee_id=payload.employee_id,
             query=payload.query,
+            dataset=payload.dataset,
         )
         if existing is not None:
+            if existing.dataset == "HOLDOUT":
+                if self._case_matches_payload(existing, payload):
+                    return existing
+                raise _holdout_immutable()
             existing.name = payload.name.strip()
             existing.expected_titles_json = payload.expected_titles
+            existing.expected_chunk_ids_json = _uuid_values(
+                payload.expected_chunk_ids
+            )
+            existing.expected_document_ids_json = _uuid_values(
+                payload.expected_document_ids
+            )
+            existing.negative_document_ids_json = _uuid_values(
+                payload.negative_document_ids
+            )
             existing.expect_no_grounding = payload.expect_no_grounding
             existing.scope_json = payload.scope
             existing.enabled = True
@@ -73,7 +113,15 @@ class KnowledgeEvaluationService:
             employee_id=payload.employee_id,
             name=payload.name.strip(),
             query=payload.query.strip(),
+            dataset=payload.dataset,
             expected_titles_json=payload.expected_titles,
+            expected_chunk_ids_json=_uuid_values(payload.expected_chunk_ids),
+            expected_document_ids_json=_uuid_values(
+                payload.expected_document_ids
+            ),
+            negative_document_ids_json=_uuid_values(
+                payload.negative_document_ids
+            ),
             expect_no_grounding=payload.expect_no_grounding,
             scope_json=payload.scope,
             enabled=True,
@@ -89,6 +137,7 @@ class KnowledgeEvaluationService:
                 knowledge_space_id=payload.knowledge_space_id,
                 employee_id=payload.employee_id,
                 query=payload.query,
+                dataset=payload.dataset,
             )
             if existing is None:
                 raise
@@ -97,6 +146,26 @@ class KnowledgeEvaluationService:
         self.session.refresh(case)
         return case
 
+    def _case_matches_payload(
+        self,
+        case: KnowledgeEvaluationCase,
+        payload: KnowledgeEvaluationCaseCreate,
+    ) -> bool:
+        return (
+            case.name == payload.name.strip()
+            and case.query == payload.query.strip()
+            and case.dataset == payload.dataset
+            and case.expected_titles_json == payload.expected_titles
+            and case.expected_chunk_ids_json
+            == _uuid_values(payload.expected_chunk_ids)
+            and case.expected_document_ids_json
+            == _uuid_values(payload.expected_document_ids)
+            and case.negative_document_ids_json
+            == _uuid_values(payload.negative_document_ids)
+            and case.expect_no_grounding == payload.expect_no_grounding
+            and case.scope_json == payload.scope
+        )
+
     def _find_equivalent_case(
         self,
         *,
@@ -104,9 +173,11 @@ class KnowledgeEvaluationService:
         knowledge_space_id: UUID | None,
         employee_id: UUID | None,
         query: str,
+        dataset: str,
     ) -> KnowledgeEvaluationCase | None:
         statement = select(KnowledgeEvaluationCase).where(
             KnowledgeEvaluationCase.business_unit_id == business_unit_id,
+            KnowledgeEvaluationCase.dataset == dataset,
         )
         if knowledge_space_id is None:
             statement = statement.where(
@@ -183,10 +254,32 @@ class KnowledgeEvaluationService:
                 version_id,
                 actor_id=actor_id,
             )
+            holdout_cases = self.session.scalar(
+                select(func.count())
+                .select_from(KnowledgeEvaluationCase)
+                .where(
+                    KnowledgeEvaluationCase.business_unit_id
+                    == document.business_unit_id,
+                    KnowledgeEvaluationCase.knowledge_space_id == space.id,
+                    KnowledgeEvaluationCase.dataset == "HOLDOUT",
+                    KnowledgeEvaluationCase.enabled.is_(True),
+                )
+            )
+            if not holdout_cases:
+                raise ApiProblem(
+                    status_code=409,
+                    code="KNOWLEDGE_EVALUATION_HOLDOUT_EMPTY",
+                    title="No holdout evaluation cases",
+                    detail=(
+                        "Publishing requires at least one enabled HOLDOUT "
+                        "case; tuning cases are not used for the gate."
+                    ),
+                )
             run = self.run(
                 KnowledgeEvaluationRunCreate(
                     business_unit_id=document.business_unit_id,
                     knowledge_space_id=space.id,
+                    dataset="HOLDOUT",
                 ),
                 actor_id=actor_id,
             )
@@ -242,6 +335,7 @@ class KnowledgeEvaluationService:
         *,
         business_unit_id: str,
         knowledge_space_id: UUID | None = None,
+        dataset: str | None = "TUNING",
     ) -> list[KnowledgeEvaluationCase]:
         statement = select(KnowledgeEvaluationCase).where(
             KnowledgeEvaluationCase.business_unit_id == business_unit_id
@@ -250,6 +344,10 @@ class KnowledgeEvaluationService:
             statement = statement.where(
                 KnowledgeEvaluationCase.knowledge_space_id
                 == knowledge_space_id
+            )
+        if dataset is not None:
+            statement = statement.where(
+                KnowledgeEvaluationCase.dataset == dataset
             )
         return list(
             self.session.scalars(
@@ -274,25 +372,101 @@ class KnowledgeEvaluationService:
         payload: KnowledgeEvaluationCaseUpdate,
     ) -> KnowledgeEvaluationCase:
         case = self.get_case(case_id)
+        if case.dataset == "HOLDOUT":
+            if payload.model_dump(exclude_unset=True) == {"enabled": True}:
+                # Disabling a space also disables its cases. Allow restoring a
+                # frozen holdout case without permitting edits or hiding it.
+                case.enabled = True
+                self.session.commit()
+                self.session.refresh(case)
+                return case
+            raise _holdout_immutable()
+        target_dataset = payload.dataset or case.dataset
+        query = payload.query.strip() if payload.query is not None else case.query
+        other_dataset = (
+            "HOLDOUT" if target_dataset == "TUNING" else "TUNING"
+        )
+        overlap = self._find_equivalent_case(
+            business_unit_id=case.business_unit_id,
+            knowledge_space_id=case.knowledge_space_id,
+            employee_id=case.employee_id,
+            query=query,
+            dataset=other_dataset,
+        )
+        if overlap is not None and overlap.id != case.id:
+            raise ApiProblem(
+                status_code=409,
+                code="EVALUATION_QUERY_DATASET_OVERLAP",
+                title="Evaluation question used in both datasets",
+                detail=(
+                    "The same question is already registered in "
+                    f"{other_dataset}; tuning and holdout questions must be "
+                    "independent."
+                ),
+            )
+        if payload.dataset is not None:
+            case.dataset = payload.dataset
         if payload.name is not None:
             case.name = payload.name.strip()
         if payload.query is not None:
-            case.query = payload.query.strip()
+            case.query = query
         if payload.expected_titles is not None:
             case.expected_titles_json = payload.expected_titles
+        if payload.expected_chunk_ids is not None:
+            case.expected_chunk_ids_json = _uuid_values(
+                payload.expected_chunk_ids
+            )
+        if payload.expected_document_ids is not None:
+            case.expected_document_ids_json = _uuid_values(
+                payload.expected_document_ids
+            )
+        if payload.negative_document_ids is not None:
+            case.negative_document_ids_json = _uuid_values(
+                payload.negative_document_ids
+            )
         if payload.expect_no_grounding is not None:
             case.expect_no_grounding = payload.expect_no_grounding
         if payload.scope is not None:
             case.scope_json = payload.scope
         if payload.enabled is not None:
             case.enabled = payload.enabled
-        if not case.expected_titles_json and not case.expect_no_grounding:
+        if set(case.expected_document_ids_json) & set(
+            case.negative_document_ids_json
+        ):
+            raise ApiProblem(
+                status_code=422,
+                code="EVALUATION_NEGATIVE_OVERLAP",
+                title="Negative document also expected",
+                detail=(
+                    "negative_document_ids must not overlap expected_document_ids."
+                ),
+            )
+        if case.expect_no_grounding and (
+            case.expected_titles_json
+            or case.expected_chunk_ids_json
+            or case.expected_document_ids_json
+        ):
+            raise ApiProblem(
+                status_code=422,
+                code="EVALUATION_EXPECTATION_CONFLICT",
+                title="Conflicting evaluation expectation",
+                detail=(
+                    "expect_no_grounding cannot be combined with expected matches."
+                ),
+            )
+        if not (
+            case.expected_titles_json
+            or case.expected_chunk_ids_json
+            or case.expected_document_ids_json
+            or case.expect_no_grounding
+        ):
             raise ApiProblem(
                 status_code=422,
                 code="EVALUATION_EXPECTATION_REQUIRED",
                 title="Evaluation expectation is missing",
                 detail=(
-                    "An evaluation case must define expected titles or expect no grounding."
+                    "An evaluation case must define expected titles, chunk "
+                    "or document ids, or expect no grounding."
                 ),
             )
         self.session.commit()
@@ -317,6 +491,7 @@ class KnowledgeEvaluationService:
         cases = self.list_cases(
             business_unit_id=payload.business_unit_id,
             knowledge_space_id=payload.knowledge_space_id,
+            dataset=payload.dataset,
         )
         cases = [case for case in cases if case.enabled]
         if not cases:
@@ -324,15 +499,37 @@ class KnowledgeEvaluationService:
                 status_code=409,
                 code="KNOWLEDGE_EVALUATION_CASES_EMPTY",
                 title="No evaluation cases",
-                detail="Create at least one enabled evaluation case before running.",
+                detail=(
+                    "Create at least one enabled "
+                    f"{payload.dataset} evaluation case before running."
+                ),
             )
         thresholds = {
             "min_recall_at_k": payload.min_recall_at_k,
             "min_mrr": payload.min_mrr,
             "min_no_grounding_accuracy": payload.min_no_grounding_accuracy,
         }
+        service = KnowledgeService(self.session)
+        baseline = {
+            "dataset": payload.dataset,
+            "top_k": payload.top_k,
+            "embedding_model": service.embedding_provider.name,
+            "embedding_dimensions": service.settings.embedding_dimensions,
+            "chunking_version": service.settings.knowledge_chunking_version,
+            "retrieval_mode": service.retrieval_mode,
+            "rrf_k": service.settings.knowledge_rrf_k,
+            "reranker": service.settings.knowledge_rerank_provider,
+            "query_context_enabled": (
+                service.settings.knowledge_query_context_enabled
+            ),
+            "query_rewrite_enabled": (
+                service.settings.knowledge_query_rewrite_enabled
+            ),
+            "thresholds": thresholds,
+        }
         run = KnowledgeEvaluationRun(
             business_unit_id=payload.business_unit_id,
+            dataset=payload.dataset,
             status="RUNNING",
             verdict="PENDING",
             top_k=payload.top_k,
@@ -340,6 +537,7 @@ class KnowledgeEvaluationService:
             passed_cases=0,
             failed_cases=0,
             thresholds_json=thresholds,
+            baseline_json=baseline,
             results_json=[],
             created_by=actor_id,
             started_at=datetime.now(UTC),
@@ -348,7 +546,6 @@ class KnowledgeEvaluationService:
         self.session.commit()
         self.session.refresh(run)
 
-        service = KnowledgeService(self.session)
         evaluation_cases = [
             EvaluationCase(
                 query=case.query,
@@ -356,6 +553,10 @@ class KnowledgeEvaluationService:
                 expected_titles=case.expected_titles_json,
                 expect_no_grounding=case.expect_no_grounding,
                 scope=case.scope_json,
+                dataset=case.dataset,
+                expected_chunk_ids=case.expected_chunk_ids_json,
+                expected_document_ids=case.expected_document_ids_json,
+                negative_document_ids=case.negative_document_ids_json,
             )
             for case in cases
         ]
@@ -383,15 +584,28 @@ class KnowledgeEvaluationService:
             )
             scored_cases = cast(list[dict[str, Any]], report["cases"])
             passed_cases = sum(
-                float(case["recall_at_k"]) >= 1.0
-                for case in scored_cases
+                1 for case in scored_cases if case.get("passed") is True
             )
             recall = _optional_float(report.get("recall_at_k"))
             mrr = _optional_float(report.get("mrr"))
             no_grounding = _optional_float(report.get("no_grounding_accuracy"))
+            chunk_recall = _optional_float(report.get("chunk_recall_at_k"))
+            chunk_mrr = _optional_float(report.get("chunk_mrr"))
+            document_recall = _optional_float(
+                report.get("document_recall_at_k")
+            )
+            document_mrr = _optional_float(report.get("document_mrr"))
+            context_precision = _optional_float(
+                report.get("context_precision")
+            )
+            negative_violation = _optional_float(
+                report.get("negative_violation_rate")
+            )
             verdict = _verdict(
-                recall=recall,
-                mrr=mrr,
+                recall=_effective_recall(
+                    recall, chunk_recall, document_recall
+                ),
+                mrr=_effective_recall(mrr, chunk_mrr, document_mrr),
                 no_grounding=no_grounding,
                 thresholds=thresholds,
             )
@@ -402,6 +616,12 @@ class KnowledgeEvaluationService:
             run.recall_at_k = recall
             run.mrr = mrr
             run.no_grounding_accuracy = no_grounding
+            run.chunk_recall_at_k = chunk_recall
+            run.chunk_mrr = chunk_mrr
+            run.document_recall_at_k = document_recall
+            run.document_mrr = document_mrr
+            run.context_precision = context_precision
+            run.negative_violation_rate = negative_violation
             run.results_json = scored_cases
             run.error_message = None
         except Exception as exc:
@@ -431,15 +651,18 @@ class KnowledgeEvaluationService:
         self,
         *,
         business_unit_id: str,
+        dataset: str | None = "TUNING",
         limit: int = 20,
     ) -> KnowledgeEvaluationRunList:
+        filters = [
+            KnowledgeEvaluationRun.business_unit_id == business_unit_id
+        ]
+        if dataset is not None:
+            filters.append(KnowledgeEvaluationRun.dataset == dataset)
         runs = list(
             self.session.scalars(
                 select(KnowledgeEvaluationRun)
-                .where(
-                    KnowledgeEvaluationRun.business_unit_id
-                    == business_unit_id
-                )
+                .where(*filters)
                 .order_by(KnowledgeEvaluationRun.created_at.desc())
                 .limit(limit)
             ).all()
@@ -447,10 +670,7 @@ class KnowledgeEvaluationService:
         total = self.session.scalar(
             select(func.count())
             .select_from(KnowledgeEvaluationRun)
-            .where(
-                KnowledgeEvaluationRun.business_unit_id
-                == business_unit_id
-            )
+            .where(*filters)
         ) or 0
         return KnowledgeEvaluationRunList(
             items=[self.run_view(run) for run in runs],
@@ -479,7 +699,15 @@ class KnowledgeEvaluationService:
             employee_id=case.employee_id,
             name=case.name,
             query=case.query,
+            dataset=cast(KnowledgeEvaluationDataset, case.dataset),
             expected_titles=case.expected_titles_json,
+            expected_chunk_ids=_uuid_list(case.expected_chunk_ids_json),
+            expected_document_ids=_uuid_list(
+                case.expected_document_ids_json
+            ),
+            negative_document_ids=_uuid_list(
+                case.negative_document_ids_json
+            ),
             expect_no_grounding=case.expect_no_grounding,
             scope=case.scope_json,
             enabled=case.enabled,
@@ -495,6 +723,7 @@ class KnowledgeEvaluationService:
         return KnowledgeEvaluationRunView(
             id=run.id,
             business_unit_id=run.business_unit_id,
+            dataset=cast(KnowledgeEvaluationDataset, run.dataset),
             status=run.status,
             verdict=run.verdict,
             top_k=run.top_k,
@@ -504,7 +733,14 @@ class KnowledgeEvaluationService:
             recall_at_k=run.recall_at_k,
             mrr=run.mrr,
             no_grounding_accuracy=run.no_grounding_accuracy,
+            chunk_recall_at_k=run.chunk_recall_at_k,
+            chunk_mrr=run.chunk_mrr,
+            document_recall_at_k=run.document_recall_at_k,
+            document_mrr=run.document_mrr,
+            context_precision=run.context_precision,
+            negative_violation_rate=run.negative_violation_rate,
             thresholds=run.thresholds_json,
+            baseline=run.baseline_json or {},
             results=run.results_json,
             error_message=run.error_message,
             created_by=run.created_by,
@@ -538,6 +774,30 @@ class KnowledgeEvaluationService:
                     title="Digital employee not found",
                     detail="The evaluation employee does not exist.",
                 )
+
+def _holdout_immutable() -> ApiProblem:
+    return ApiProblem(
+        status_code=409,
+        code="HOLDOUT_CASE_IMMUTABLE",
+        title="Holdout case is immutable",
+        detail=(
+            "HOLDOUT cases are frozen for gate evaluation. Create a TUNING "
+            "case to change expectations."
+        ),
+    )
+
+
+def _uuid_values(values: list[UUID]) -> list[str]:
+    return [str(value) for value in values]
+
+
+def _uuid_list(values: list[str]) -> list[UUID]:
+    return [UUID(value) for value in values]
+
+
+def _effective_recall(*values: float | None) -> float | None:
+    return next((value for value in values if value is not None), None)
+
 
 def _optional_float(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) else None

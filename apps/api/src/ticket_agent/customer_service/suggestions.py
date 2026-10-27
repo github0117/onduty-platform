@@ -473,11 +473,13 @@ class CustomerReplySuggestionService:
                 )
             }
         )
+        retrieval_query = _latest_buyer_question(state["query"])
+        history = _buyer_history(state["query"])
         call, _, payload = self.tool_execution.begin(
             employee=employee,
             tool_key="knowledge.search",
             payload={
-                "query": state["query"],
+                "query": retrieval_query,
                 "business_unit_id": ticket.business_unit_id,
                 "employee_id": str(employee.id),
                 "scope": knowledge_scope,
@@ -501,6 +503,7 @@ class CustomerReplySuggestionService:
             scope=payload["scope"],
             top_k=options.top_k,
             min_score=options.min_score,
+            history=history,
         )
         if _is_technical_documentation_question(payload["query"]):
             hits = [
@@ -1531,6 +1534,19 @@ def _latest_buyer_question(query: str) -> str:
     # Replies rendered after the buyer turn are assistant text, not the
     # question being routed or checked.
     return latest.split("\n客服：", 1)[0].strip()
+
+
+def _buyer_history(query: str) -> list[str]:
+    """Earlier buyer turns, oldest first, excluding the current question.
+
+    Assistant replies are intentionally dropped: retrieval context should come
+    from what the buyer actually asked, not from generated answers.
+    """
+    messages = [
+        part.split("\n客服：", 1)[0].strip()
+        for part in query.split("买家：")[1:]
+    ]
+    return [message for message in messages if message][:-1]
 
 
 def _matched_wiki_section(

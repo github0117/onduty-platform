@@ -215,3 +215,34 @@ KNOWLEDGE_RERANK_MAX_CANDIDATES=30
   `usage_guard` 的 token 与耗时。
 - compose 栈通过 `.env` 透传上述变量（默认 `local`），`RERANK_API_KEY` 默认为空，
   密钥只在运行时从本机 `.env` 注入，不写入镜像或 compose 文件。
+
+## 查询改写（多轮消解 + LLM 多查询）
+
+```text
+KNOWLEDGE_QUERY_CONTEXT_ENABLED=true
+KNOWLEDGE_QUERY_CONTEXT_HISTORY_TURNS=3
+KNOWLEDGE_QUERY_REWRITE_ENABLED=false
+KNOWLEDGE_QUERY_REWRITE_VARIANTS=2
+KNOWLEDGE_QUERY_REWRITE_TRIGGER_SCORE=0.3
+KNOWLEDGE_QUERY_REWRITE_TIMEOUT_SECONDS=2
+QUERY_REWRITE_BASE_URL=
+QUERY_REWRITE_API_KEY=
+QUERY_REWRITE_MODEL_NAME=
+```
+
+- `KNOWLEDGE_QUERY_CONTEXT_ENABLED`（默认开，无模型）：客服会话中只把**当前买家
+  问题**作为查询，最近 `KNOWLEDGE_QUERY_CONTEXT_HISTORY_TURNS` 轮买家消息作为
+  上下文。查询含“它/这个/那个/那/该”等指代时，优先替换为历史中的型号、订单号
+  （如 `HX-9080B`）；没有可替换实体时把上一轮问题拼到前面。原始问题仍作为
+  第二路召回参与 RRF，消解错误不会让原本命中的结果掉出。
+- `KNOWLEDGE_QUERY_REWRITE_ENABLED`（默认关）：开启后仅在最高分低于
+  `KNOWLEDGE_QUERY_REWRITE_TRIGGER_SCORE` 时调用 OpenAI 兼容
+  `POST {QUERY_REWRITE_BASE_URL}/chat/completions` 生成
+  `KNOWLEDGE_QUERY_REWRITE_VARIANTS` 条替代查询，与原始候选再 RRF 融合。
+- `QUERY_REWRITE_*` 为空且 `MODEL_PROVIDER=openai_compatible` 时自动继承
+  `MODEL_BASE_URL` / `MODEL_API_KEY` / `MODEL_NAME`；密钥同样只从本机 `.env`
+  注入。总超时为 `KNOWLEDGE_QUERY_REWRITE_TIMEOUT_SECONDS`（默认 2s）。
+- 远端超时、5xx、空结果或非法响应时静默保留本地排序并计数
+  `ticket_worker_rag_query_rewrite_fallbacks_total`；成功扩展计入
+  `ticket_worker_rag_query_rewrites_total`。检索不会因改写失败而失败。
+- 关闭两个开关后，检索行为与升级前完全一致：单查询、单次嵌入，不读取历史。
