@@ -227,12 +227,13 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
 
 ## 60 秒演示视频
 
-[![企业服务台自动分派演示](assets/demo/on-duty-routing-demo-preview.gif)](assets/demo/on-duty-routing-demo.mp4)
+<video src="https://github.com/user-attachments/assets/847fb7a9-c1d5-41ea-be42-0e554dfb8173" controls width="100%"></video>
 
-GitHub 页面不会内嵌播放仓库里的 MP4，因此这里用 8 秒动图预览，完整视频点击下载：
+视频通过 GitHub 附件托管，可在页面内直接播放；仓库内文件作为备份下载：
 
 - [MP4（1440×900，H.264，60 秒）](assets/demo/on-duty-routing-demo.mp4)
 - [WebM 原片](assets/demo/on-duty-routing-demo.webm)
+- [GIF 预览](assets/demo/on-duty-routing-demo-preview.gif)
 
 视频在同一条时间线上展示三件事：
 

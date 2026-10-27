@@ -8,12 +8,12 @@
 主演示是**企业服务台**：同一入口按问题自动分派研发支持、HR 和企业服务台员工；
 电商客服用于验证商品咨询、订单物流、退款审批、人工接管和失败恢复闭环。
 
-[![企业服务台自动分派演示](docs/assets/demo/on-duty-routing-demo-preview.gif)](docs/assets/demo/on-duty-routing-demo.mp4)
+<video src="https://github.com/user-attachments/assets/847fb7a9-c1d5-41ea-be42-0e554dfb8173" controls width="100%"></video>
 
-> 动图截取自 60 秒演示：同一入口跨岗位分派 → 员工能力快照 → 意图冲突检查 →
-> 路由评测。完整视频：
-> [MP4](docs/assets/demo/on-duty-routing-demo.mp4) ·
-> [WebM](docs/assets/demo/on-duty-routing-demo.webm)
+> 60 秒演示：同一入口跨岗位分派 → 员工能力快照 → 意图冲突检查 → 路由评测。
+> [MP4 下载](docs/assets/demo/on-duty-routing-demo.mp4) ·
+> [WebM](docs/assets/demo/on-duty-routing-demo.webm) ·
+> [GIF 预览](docs/assets/demo/on-duty-routing-demo-preview.gif)
 
 ## 界面预览
 
