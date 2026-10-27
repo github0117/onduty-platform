@@ -96,6 +96,14 @@ if (ffmpeg.status === 0) {
   );
   if (conversion.status === 0) {
     console.log(`Saved MP4:   ${mp4Path}`);
+
+    const gifScript = join(webDir, "scripts/make-demo-gif.mjs");
+    const gifBuild = spawnSync(process.execPath, [gifScript], {
+      stdio: "inherit",
+    });
+    if (gifBuild.status !== 0) {
+      console.warn("GIF generation failed; the recorded video is still usable.");
+    }
   } else {
     console.warn("ffmpeg conversion failed; the WebM recording is still usable.");
   }

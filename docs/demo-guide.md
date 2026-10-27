@@ -227,24 +227,19 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
 
 ## 60 秒演示视频
 
-<img src="assets/demo/on-duty-routing-demo-preview.gif" width="100%" alt="OnDuty 数字员工平台 60 秒演示预览">
+<img src="assets/demo/on-duty-routing-demo.gif" width="100%" alt="OnDuty 数字员工平台 60 秒演示">
 
-> 上方为全宽动图预览。展开下方播放器可看完整视频，不跳转全屏。
+> 上方为 60 秒完整演示动图（循环播放），Chrome / Safari 均可直接观看，不跳转全屏。
+> 需要暂停或拖动进度条时下载 MP4。
 
-<details>
-<summary>在页面内播放完整演示视频</summary>
+GitHub 的 README 内嵌 `<video>` 只允许 user-attachments（S3）地址；部分 Chrome 网络
+无法访问该域名，播放器会停在 0:00。因此主 README 使用仓库内 60 秒全幅动图，
+MP4 / WebM 作为带进度条的下载版本：
 
-<video src="https://github.com/user-attachments/assets/2e085c50-7687-4285-be7d-7039051f0566" controls></video>
-
-</details>
-
-视频通过 GitHub 附件托管；仓库内文件作为备份下载。GitHub 的附件播放器
-在加载元数据前固定为 300×200，且会丢弃 `width` / `height` / `poster`，所以这里用
-仓库内 GIF 做全宽预览，把播放器放在可展开区域里：
-
-- [MP4（1440×900，H.264，60 秒）](assets/demo/on-duty-routing-demo.mp4)
-- [WebM 原片](assets/demo/on-duty-routing-demo.webm)
-- [GIF 预览](assets/demo/on-duty-routing-demo-preview.gif)
+- [MP4（1440×900，H.264，60 秒）](https://github.com/github0117/onduty-platform/raw/main/docs/assets/demo/on-duty-routing-demo.mp4)
+- [WebM 原片](https://github.com/github0117/onduty-platform/raw/main/docs/assets/demo/on-duty-routing-demo.webm)
+- [60 秒完整动图](assets/demo/on-duty-routing-demo.gif)
+- [8 秒轻量预览](assets/demo/on-duty-routing-demo-preview.gif)
 - [演示封面（备用素材）](assets/demo/on-duty-routing-demo-cover.jpg)
 
 视频在同一条时间线上展示三件事：
@@ -260,7 +255,8 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
 ```bash
 # 先启动 Compose 栈并写入演示数据
 cd apps/web
-pnpm demo:video   # 等价于 node scripts/record-demo-video.mjs
+pnpm demo:video   # 录制并生成 MP4 / WebM / 封面 / 60 秒 GIF
+pnpm demo:gif     # 仅从现有 MP4 重建 README 动图
 ```
 
 脚本用 Playwright 驱动演示栈，按 `RECORD_DEMO=1` 运行

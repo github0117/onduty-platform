@@ -11,6 +11,7 @@
     "test:e2e": "playwright test",
     "test:e2e:list": "playwright test --list",
     "demo:video": "node scripts/record-demo-video.mjs",
+    "demo:gif": "node scripts/make-demo-gif.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

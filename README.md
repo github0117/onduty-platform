@@ -8,21 +8,15 @@
 主演示是**企业服务台**：同一入口按问题自动分派研发支持、HR 和企业服务台员工；
 电商客服用于验证商品咨询、订单物流、退款审批、人工接管和失败恢复闭环。
 
-<!-- GitHub 播放器在加载元数据前固定为 300×200，且会丢弃 width/height/poster；
-     因此用仓库内动图做全宽预览，完整视频放在可展开的内嵌播放器里，避免小窗口和全屏跳转。 -->
-<img src="docs/assets/demo/on-duty-routing-demo-preview.gif" width="100%" alt="OnDuty 数字员工平台 60 秒演示预览：同一入口跨岗位分派">
+<!-- GitHub 的 README 只允许 user-attachments 视频从 S3 播放；部分 Chrome 网络无法访问
+     该域名，播放器会停在 0:00。这里用仓库内 60 秒全幅动图做浏览器通用内嵌演示，
+     带进度条的 MP4 作为下载版本。 -->
+<img src="docs/assets/demo/on-duty-routing-demo.gif" width="100%" alt="OnDuty 数字员工平台 60 秒演示：同一入口跨岗位分派">
 
-> **60 秒演示**：同一入口跨岗位分派 → 员工能力快照 → 意图冲突检查 → 路由评测。
-> 上方为动图预览；展开下方播放器可看完整演示视频，不跳转全屏。
-
-<details>
-<summary>在页面内播放完整演示视频</summary>
-
-<video src="https://github.com/user-attachments/assets/2e085c50-7687-4285-be7d-7039051f0566" controls></video>
-
-</details>
-
-> [MP4 下载](docs/assets/demo/on-duty-routing-demo.mp4) · [WebM](docs/assets/demo/on-duty-routing-demo.webm) · [GIF 预览](docs/assets/demo/on-duty-routing-demo-preview.gif)
+> **60 秒完整演示**：同一入口跨岗位分派 → 员工能力快照 → 意图冲突检查 → 路由评测。
+> 上图为完整演示动图（循环播放），Chrome / Safari 均可直接观看；带进度条的 MP4 见下方下载链接。
+>
+> [MP4 下载](https://github.com/github0117/onduty-platform/raw/main/docs/assets/demo/on-duty-routing-demo.mp4) · [WebM 原片](https://github.com/github0117/onduty-platform/raw/main/docs/assets/demo/on-duty-routing-demo.webm) · [8 秒轻量预览](docs/assets/demo/on-duty-routing-demo-preview.gif)
 
 ## 界面预览
 

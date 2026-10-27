@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 /**
- * Build the clickable cover used above the README demo video.
- *
- * GitHub's user-attachments player has no poster, so Safari renders it as an
- * empty box until the viewer presses play. A real frame plus a play badge gives
- * every browser something to click and opens the full-size video directly.
+ * Build a backup cover image for the demo video.
  *
  * Usage (from apps/web):
  *   node scripts/make-demo-cover.mjs [input.mp4] [output.jpg]
