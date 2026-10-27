@@ -524,8 +524,12 @@ test("聊天发送后立即清空输入并显示发送中气泡", async ({
     "输入买家问题，按 Enter 发送，Shift + Enter 换行",
   );
   const message = "保温和材质再详细说明一下";
+  const sendButton = page.getByRole("button", { name: /发.?送/ }).last();
+  // 员工和入口数据加载完成前，发送会被静默忽略。
+  await expect(page.getByText(/名数字员工可参与分派/)).toBeVisible();
   await composer.fill(message);
-  await page.getByRole("button", { name: /发.?送/ }).last().click();
+  await expect(sendButton).toBeEnabled();
+  await sendButton.click();
 
   await expect(composer).toHaveValue("");
   await expect(page.getByText(message, { exact: true })).toBeVisible();
@@ -541,6 +545,92 @@ test("聊天发送后立即清空输入并显示发送中气泡", async ({
     page.locator(".chat-bubble-streaming + .chat-bubble-meta"),
   ).toContainText(/数字员工 · 正在/);
   await expect(streamingBubble).toHaveCount(0, { timeout: 30_000 });
+});
+
+test("企业服务台等待回复时只显示一个思考气泡", async ({
+  page,
+  request,
+}) => {
+  const entries = await request.get(
+    "/api/v1/business-service-entries?business_unit_id=bu_demo",
+    { headers: apiHeaders },
+  );
+  expect(entries.ok()).toBeTruthy();
+  const entry = (
+    (await entries.json()) as Array<{ id: string; code: string }>
+  ).find((item) => item.code === "enterprise_service_desk");
+  expect(entry).toBeTruthy();
+
+  const conversation = await request.post(
+    "/api/v1/customer-service/conversations",
+    {
+      headers: apiHeaders,
+      data: {
+        business_unit_id: "bu_demo",
+        service_entry_id: entry!.id,
+        requester_ref: `e2e-enterprise-typing-${Date.now().toString(36)}`,
+        channel: "enterprise_service",
+      },
+    },
+  );
+  expect(conversation.ok()).toBeTruthy();
+  const conversationId = (
+    (await conversation.json()) as { id: string }
+  ).id;
+  createdConversationIds.add(conversationId);
+
+  await page.addInitScript(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem(
+      "digital-workforce:test-identity",
+      "service-agent",
+    );
+  });
+  await page.goto(
+    `/customer-service?scenario=enterprise&conversation=${conversationId}`,
+  );
+  const composer = page.getByPlaceholder(
+    "输入员工问题，按 Enter 发送，Shift + Enter 换行",
+  );
+  const sendButton = page.getByRole("button", { name: /发.?送/ }).last();
+  // 页面刚打开时员工和入口数据还在加载，此时发送会被静默忽略。
+  await expect(page.getByText(/名数字员工可参与分派/)).toBeVisible();
+
+  const readAssistantCount = async () => {
+    const response = await request.get(
+      `/api/v1/customer-service/conversations/${conversationId}`,
+      { headers: apiHeaders },
+    );
+    expect(response.ok()).toBeTruthy();
+    const body = (await response.json()) as {
+      messages: Array<{ role: string }>;
+    };
+    return body.messages.filter((item) => item.role === "ASSISTANT").length;
+  };
+  const initialAssistantCount = await readAssistantCount();
+
+  await composer.fill("入职需要准备哪些材料？");
+  await expect(sendButton).toBeEnabled();
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("");
+
+  let maxTypingBubbles = 0;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 4000) {
+    maxTypingBubbles = Math.max(
+      maxTypingBubbles,
+      await page.locator(".chat-typing").count(),
+    );
+    if (maxTypingBubbles > 1) break;
+    await page.waitForTimeout(50);
+  }
+  expect(maxTypingBubbles).toBeLessThanOrEqual(1);
+
+  // 不依赖具体知识库答案，只要求本轮确实产出了助手回复。
+  await expect
+    .poll(readAssistantCount, { timeout: 60_000 })
+    .toBeGreaterThan(initialAssistantCount);
+  await expect(page.locator(".chat-typing")).toHaveCount(0);
 });
 
 test("切换体验身份后不会恢复上一位身份的聊天会话", async ({

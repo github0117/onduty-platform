@@ -1177,7 +1177,7 @@ function CustomerChatDemo({
               </div>
             )}
 
-            {(send.isPending || (processing && !technicalAnswerInFlight)) &&
+            {(send.isPending || processing || technicalAnswerInFlight) &&
               !activeLiveReply?.text && (
               <div className="chat-message-row assistant">
                 <Avatar className="chat-small-avatar">AI</Avatar>
@@ -1191,11 +1191,13 @@ function CustomerChatDemo({
                     {activeLiveReply?.stage ??
                       (send.isPending
                         ? "消息已送达，正在创建服务任务"
-                        : !currentTicket
-                          ? "正在读取业务上下文"
-                          : !currentTicket.classification
-                            ? "正在识别问题类型"
-                            : "正在检索知识并生成处理建议")}
+                        : technicalAnswerInFlight
+                          ? currentTurn?.stage_label ?? "正在处理本轮问题"
+                          : !currentTicket
+                            ? "正在读取业务上下文"
+                            : !currentTicket.classification
+                              ? "正在识别问题类型"
+                              : "正在检索知识并生成处理建议")}
                   </div>
                 </div>
               </div>
@@ -1318,28 +1320,12 @@ function CustomerChatDemo({
               </div>
             )}
 
-            {technicalAnswerInFlight && !activeLiveReply?.text && (
-                <div className="chat-message-row assistant">
-                  <Avatar className="chat-small-avatar">AI</Avatar>
-                  <div className="chat-message-content">
-                    <div className="chat-bubble chat-typing">
-                      <span />
-                      <span />
-                      <span />
-                    </div>
-                    <div className="chat-bubble-meta">
-                      {activeLiveReply?.stage ??
-                        currentTurn?.stage_label ??
-                        "正在处理本轮问题"}
-                    </div>
-                  </div>
-                </div>
-              )}
-
             {currentTicket?.needs_human &&
               !draftText &&
               !manualSuggestion &&
               !currentTurnDeliveredAnswer &&
+              !turnInFlight &&
+              !send.isPending &&
               !requestManualSuggestion.isPending && (
               <div className="chat-message-row assistant">
                 <Avatar className="chat-small-avatar">AI</Avatar>
