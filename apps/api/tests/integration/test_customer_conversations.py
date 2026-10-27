@@ -12,8 +12,12 @@ from ticket_agent.customer_service.models import (
     CustomerConversation,
     CustomerMessage,
 )
+from ticket_agent.customer_service.suggestions import (
+    CustomerReplySuggestionService,
+)
 from ticket_agent.digital_employees.models import DigitalEmployeeRouteDecision
 from ticket_agent.shared.db import SessionLocal
+from ticket_agent.tickets.drafts import DraftResult
 from ticket_agent.tickets.models import Ticket
 
 ADMIN = {"X-Actor-Id": "admin-1", "X-Actor-Role": "admin"}
@@ -409,6 +413,100 @@ def test_enterprise_expense_question_is_classified_and_grounded(
     assert payload["skill"] == "enterprise-expense-support"
     assert payload["grounding_status"] == "GROUNDED"
     assert payload["citations"]
+
+
+def test_reply_suggestion_does_not_append_duplicate_assistant_message(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    employee = client.post(
+        "/api/v1/digital-employees/from-template",
+        headers=ADMIN,
+        json={
+            "name": "重复回复回归员工",
+            "template_code": "enterprise_service_desk",
+            "business_unit_id": "bu_demo",
+        },
+    )
+    assert employee.status_code == 201, employee.text
+    conversation = client.post(
+        "/api/v1/customer-service/conversations",
+        headers=AGENT,
+        json={
+            "business_unit_id": "bu_demo",
+            "employee_id": employee.json()["id"],
+            "requester_ref": "reply-suggestion-dedupe-buyer",
+            "channel": "enterprise_service",
+        },
+    )
+    assert conversation.status_code == 201, conversation.text
+    conversation_id = conversation.json()["id"]
+    accepted = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/messages",
+        headers=AGENT,
+        json={"content": "办公室门禁失灵了怎么处理？"},
+    )
+    assert accepted.status_code == 202, accepted.text
+    ticket_id = UUID(accepted.json()["current_ticket_id"])
+    with SessionLocal() as session:
+        ticket = session.get(Ticket, ticket_id)
+        assert ticket is not None
+        ticket.needs_human = False
+        ticket.risk_level = "R0"
+        session.commit()
+
+    class _GroundedSuggestionGraph:
+        def invoke(self, _state: dict[str, object]) -> dict[str, object]:
+            return {
+                "draft": DraftResult(
+                    text="请通过服务台提交门禁维修申请。",
+                    citations=[],
+                    claims=[],
+                    provider="stub",
+                    model="stub-v1",
+                    fallback_used=False,
+                    grounding_status="GROUNDED",
+                ),
+                "skill": "stub-skill",
+                "trace": ["stub"],
+            }
+
+    monkeypatch.setattr(
+        CustomerReplySuggestionService,
+        "_build_graph",
+        lambda self: _GroundedSuggestionGraph(),
+    )
+
+    before = client.get(
+        f"/api/v1/customer-service/conversations/{conversation_id}",
+        headers=AGENT,
+    )
+    assert before.status_code == 200, before.text
+    messages_before = before.json()["messages"]
+
+    for _ in range(2):
+        suggestion = client.post(
+            (
+                "/api/v1/customer-service/conversations/"
+                f"{conversation_id}/reply-suggestions"
+            ),
+            headers=AGENT,
+        )
+        assert suggestion.status_code == 200, suggestion.text
+        assert suggestion.json()["text"] == "请通过服务台提交门禁维修申请。"
+
+    after = client.get(
+        f"/api/v1/customer-service/conversations/{conversation_id}",
+        headers=AGENT,
+    )
+    assert after.status_code == 200, after.text
+    assert [
+        (message["id"], message["role"], message["content"])
+        for message in after.json()["messages"]
+    ] == [
+        (message["id"], message["role"], message["content"])
+        for message in messages_before
+    ]
 
 
 def test_auto_assignment_matches_skill_risk_and_load(

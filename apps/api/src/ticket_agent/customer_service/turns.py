@@ -124,7 +124,6 @@ class ConversationTurnOrchestrator:
                 conversation.id,
                 agent_id="digital_employee.runtime",
                 correlation_id=correlation_id,
-                persist_reply=False,
             )
         except ApiProblem as exc:
             self._fail(turn, conversation, exc.code, exc.detail)

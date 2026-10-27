@@ -123,7 +123,6 @@ class CustomerReplySuggestionService:
         *,
         agent_id: str,
         correlation_id: str,
-        persist_reply: bool = True,
     ) -> CustomerReplySuggestionView:
         conversation = self.session.get(CustomerConversation, conversation_id)
         if conversation is None:
@@ -179,14 +178,6 @@ class CustomerReplySuggestionService:
                 payload={"ticket_id": str(ticket.id)},
             )
             self.session.commit()
-            if persist_reply and conversation.channel.startswith("enterprise"):
-                from ticket_agent.customer_service.service import (
-                    CustomerConversationService,
-                )
-
-                CustomerConversationService(
-                    self.session
-                ).append_assistant_reply(ticket.id, security_refusal)
             return CustomerReplySuggestionView(
                 text=security_refusal,
                 provider="security_policy",
@@ -353,21 +344,7 @@ class CustomerReplySuggestionService:
                 ],
             },
         )
-        persist_for_multi_turn = (
-            conversation.channel.startswith("enterprise")
-            and not ticket.needs_human
-            and (ticket.risk_level or "R1") in {"R0", "R1"}
-            and draft.grounding_status == "GROUNDED"
-        )
         self.session.commit()
-        if persist_reply and persist_for_multi_turn:
-            from ticket_agent.customer_service.service import (
-                CustomerConversationService,
-            )
-
-            CustomerConversationService(
-                self.session
-            ).append_assistant_reply(ticket.id, draft.text)
         return CustomerReplySuggestionView(
             text=draft.text,
             provider=draft.provider,
