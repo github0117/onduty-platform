@@ -1,8 +1,15 @@
+import importlib.util
+import json
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import httpx
 
-from ticket_agent.knowledge.evaluation import EvaluationCase, score_evaluation
+from ticket_agent.knowledge.evaluation import (
+    EvaluationCase,
+    score_evaluation,
+    threshold_failures,
+)
 from ticket_agent.knowledge.rerank import ExternalHTTPReranker
 from ticket_agent.knowledge.retrieval import HybridReranker, RetrievalCandidate
 from ticket_agent.knowledge.scope import scope_matches
@@ -159,6 +166,67 @@ def test_evaluation_counts_negative_document_violation_as_failure() -> None:
     assert case["passed"] is False
     assert report["negative_violation_rate"] == 1.0
     assert report["passed_cases"] == 0
+
+
+def test_threshold_failures_pass_when_report_meets_bounds() -> None:
+    report = {
+        "recall_at_k": 0.84,
+        "context_precision": 0.5,
+        "negative_violation_rate": 0.0,
+    }
+
+    failures = threshold_failures(
+        report,
+        minimums={"recall_at_k": 0.8, "context_precision": 0.4},
+        maximums={"negative_violation_rate": 0.1},
+    )
+
+    assert failures == []
+
+
+def test_threshold_failures_report_low_high_and_missing_metrics() -> None:
+    report = {
+        "recall_at_k": 0.7,
+        "negative_violation_rate": 0.2,
+        "context_precision": None,
+    }
+
+    failures = threshold_failures(
+        report,
+        minimums={"recall_at_k": 0.8, "context_precision": 0.4},
+        maximums={"negative_violation_rate": 0.1},
+    )
+
+    assert failures == [
+        "recall_at_k 0.7000 < minimum 0.8000",
+        "context_precision is unavailable (minimum 0.4)",
+        "negative_violation_rate 0.2000 > maximum 0.1000",
+    ]
+
+
+def test_evaluate_script_accepts_legacy_corpus_fields() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "evaluate_rag_script",
+        Path(__file__).parents[2] / "scripts" / "evaluate_rag.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    case = module._parse_case(
+        json.dumps(
+            {
+                "query": "怎么领失业金",
+                "business_unit_id": "bu",
+                "expected_document_id": "DOC-1",
+                "should_refuse": True,
+            }
+        )
+    )
+
+    assert case.expected_document_ids == ["DOC-1"]
+    assert case.expect_no_grounding is True
+    assert case.expected_titles == []
 
 
 def test_scope_matches_org_descendants_and_wildcards() -> None:

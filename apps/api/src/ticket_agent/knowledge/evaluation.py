@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from ticket_agent.knowledge.service import KnowledgeHit
 
@@ -33,6 +34,29 @@ class CaseScore:
     context_precision: float | None
     negative_document_hit: bool | None
     passed: bool
+
+
+def threshold_failures(
+    report: dict[str, Any],
+    *,
+    minimums: dict[str, float],
+    maximums: dict[str, float] | None = None,
+) -> list[str]:
+    """Return human-readable failures for a report against metric bounds."""
+    failures: list[str] = []
+    for key, minimum in minimums.items():
+        value = report.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            failures.append(f"{key} is unavailable (minimum {minimum})")
+        elif value < minimum:
+            failures.append(f"{key} {value:.4f} < minimum {minimum:.4f}")
+    for key, maximum in (maximums or {}).items():
+        value = report.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            failures.append(f"{key} is unavailable (maximum {maximum})")
+        elif value > maximum:
+            failures.append(f"{key} {value:.4f} > maximum {maximum:.4f}")
+    return failures
 
 
 def score_evaluation(

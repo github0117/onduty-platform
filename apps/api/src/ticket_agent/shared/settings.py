@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model_name: str = ""
     embedding_dimensions: int = 256
+    embedding_send_dimensions: bool = False
     embedding_timeout_seconds: float = 20.0
     embedding_fallback_to_local: bool = True
     knowledge_chunk_size: int = 800
@@ -91,7 +92,7 @@ class Settings(BaseSettings):
     knowledge_vector_weight: float = 0.6
     knowledge_lexical_weight: float = 0.4
     knowledge_candidate_multiplier: int = 5
-    knowledge_rerank_provider: Literal["local", "external"] = "local"
+    knowledge_rerank_provider: Literal["local", "external", "dashscope"] = "local"
     knowledge_rerank_min_candidates: int = 1
     knowledge_rerank_trigger_score: float = 0.0
     knowledge_rerank_max_candidates: int = 30

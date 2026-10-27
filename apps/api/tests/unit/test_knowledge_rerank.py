@@ -7,6 +7,7 @@ import pytest
 
 from ticket_agent.knowledge.local_embedding import LocalEmbeddingProvider
 from ticket_agent.knowledge.rerank import (
+    DashScopeReranker,
     ExternalHTTPReranker,
     rerank_fallback_total,
     reset_rerank_metrics,
@@ -200,6 +201,67 @@ def test_low_confidence_pool_triggers_the_remote_call() -> None:
 
     assert len(requests) == 1
     assert ranked[0].final_score == pytest.approx(0.9)
+
+
+def test_dashscope_reranker_uses_service_payload() -> None:
+    requests: list[dict] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": {
+                    "results": [
+                        {"index": 1, "relevance_score": 0.95},
+                        {"index": 0, "relevance_score": 0.1},
+                    ]
+                },
+                "usage": {"total_tokens": 21},
+            },
+        )
+
+    reranker = DashScopeReranker(
+        _settings(
+            knowledge_rerank_provider="dashscope",
+            rerank_base_url="",
+            rerank_model_name="gte-rerank-v2",
+            model_api_key="runtime-key",
+        ),
+        client=_client(handler, requests),
+    )
+    ranked = reranker.rerank(
+        query="退款",
+        candidates=[_candidate(0), _candidate(1)],
+        top_k=2,
+    )
+
+    assert reranker.name == "dashscope:gte-rerank-v2"
+    assert ranked[0].candidate.chunk_id == UUID(int=2)
+    assert requests[0]["input"]["query"] == "退款"  # type: ignore[index]
+    assert requests[0]["parameters"]["top_n"] == 2  # type: ignore[index]
+
+
+def test_dashscope_reranker_falls_back_on_server_error() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"code": "InternalError"})
+
+    reranker = DashScopeReranker(
+        _settings(
+            knowledge_rerank_provider="dashscope",
+            rerank_base_url="",
+            rerank_model_name="gte-rerank-v2",
+            model_api_key="runtime-key",
+        ),
+        client=_client(handler),
+    )
+    ranked = reranker.rerank(
+        query="退款",
+        candidates=[_candidate(0), _candidate(1)],
+        top_k=2,
+    )
+
+    assert len(ranked) == 2
+    assert rerank_fallback_total() == 1
 
 
 def test_empty_candidates_skip_the_remote_call() -> None:

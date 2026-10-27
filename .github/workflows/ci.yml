@@ -78,6 +78,75 @@ jobs:
       - run: uv run alembic upgrade head
       - run: uv run pytest tests/integration/test_postgres_pgvector.py -q
 
+  rag-gate:
+    name: RAG HOLDOUT regression gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: ticket_agent
+          POSTGRES_USER: ticket_agent
+          POSTGRES_PASSWORD: ticket_agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticket_agent -d ticket_agent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://ticket_agent:ticket_agent@localhost:5432/ticket_agent
+      APP_ENV: test
+      APP_AUTH_MODE: dev
+      TASK_MODE: inline
+      RATE_LIMIT_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.5"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - run: uv python install 3.11
+      - run: uv sync --all-groups --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run python scripts/prepare_acceptance_corpus.py /tmp/acceptance-corpus
+      - name: Start API
+        run: |
+          nohup uv run uvicorn ticket_agent.main:app \
+            --host 127.0.0.1 --port 8000 > api.log 2>&1 &
+          timeout 120 bash -c \
+            'until curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; do sleep 2; done'
+      - name: Seed acceptance corpus
+        run: >-
+          uv run python scripts/seed_acceptance_corpus.py --reset
+          http://127.0.0.1:8000 /tmp/acceptance-corpus
+      - name: Evaluate frozen HOLDOUT dataset with thresholds
+        run: |
+          uv run python scripts/evaluate_rag.py \
+            --business-unit bu_acceptance \
+            --dataset-name HOLDOUT \
+            --top-k 5 \
+            --min-recall-at-k 0.9 \
+            --min-chunk-recall-at-k 0.9 \
+            --min-document-recall-at-k 0.9 \
+            --min-mrr 0.9 \
+            --min-chunk-mrr 0.9 \
+            --min-document-mrr 0.9 \
+            --min-context-precision 0.15 \
+            --min-no-grounding-accuracy 1.0
+      - name: Upload API log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-gate-api-log
+          path: apps/api/api.log
+          retention-days: 7
+
   frontend:
     name: Frontend type-check and build
     runs-on: ubuntu-latest

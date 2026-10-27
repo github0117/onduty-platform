@@ -907,7 +907,16 @@ class KnowledgeService:
             enabled=self.settings.knowledge_query_context_enabled,
         )
         primary_query = variants[-1]
-        query_vectors = self.embedding_provider.embed_texts(variants)
+        try:
+            query_vectors = self.embedding_provider.embed_texts(variants)
+        except EmbeddingProviderError as exc:
+            raise ApiProblem(
+                status_code=503,
+                code="EMBEDDING_UNAVAILABLE",
+                title="Embedding provider is unavailable",
+                detail="Query embedding failed; retrieval was not attempted.",
+                retryable=True,
+            ) from exc
         rankings = self._candidate_rankings(
             variants,
             query_vectors,
@@ -1050,8 +1059,12 @@ class KnowledgeService:
         if not variants:
             record_query_rewrite_fallback()
             return ranked
+        try:
+            query_vectors = self.embedding_provider.embed_texts(variants)
+        except EmbeddingProviderError:
+            record_query_rewrite_fallback()
+            return ranked
         record_query_rewrite()
-        query_vectors = self.embedding_provider.embed_texts(variants)
         rankings = self._candidate_rankings(
             variants,
             query_vectors,
