@@ -22,6 +22,7 @@ export type Capability =
   | "knowledge.view"
   | "knowledge.use"
   | "knowledge.write"
+  | "employees.directory"
   | "employees.view"
   | "employees.write"
   | "ecommerce.view"
@@ -50,6 +51,7 @@ export const capabilityLabels: Record<Capability, string> = {
   "knowledge.view": "查看知识",
   "knowledge.use": "使用知识",
   "knowledge.write": "维护知识",
+  "employees.directory": "查看员工目录",
   "employees.view": "查看数字员工",
   "employees.write": "配置数字员工",
   "ecommerce.view": "查看电商运营",

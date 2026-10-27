@@ -18,6 +18,16 @@ ALPHA_AGENT = {
     "X-Actor-Role": "agent",
     "X-Business-Unit-Id": "bu_alpha",
 }
+ALPHA_KNOWLEDGE_OPERATOR = {
+    "X-Actor-Id": "alpha-knowledge-operator",
+    "X-Actor-Role": "knowledge_operator",
+    "X-Business-Unit-Id": "bu_alpha",
+}
+ALPHA_BUSINESS_MANAGER = {
+    "X-Actor-Id": "alpha-business-manager",
+    "X-Actor-Role": "business_manager",
+    "X-Business-Unit-Id": "bu_alpha",
+}
 BETA_ADMIN = {
     "X-Actor-Id": "beta-admin",
     "X-Actor-Role": "admin",
@@ -30,16 +40,28 @@ def test_tenant_query_scope_is_enforced(
 ) -> None:
     own = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_alpha",
-        headers=ALPHA_AGENT,
+        headers=ALPHA_KNOWLEDGE_OPERATOR,
     )
     assert own.status_code == 200
 
     foreign = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_beta",
-        headers=ALPHA_AGENT,
+        headers=ALPHA_KNOWLEDGE_OPERATOR,
     )
     assert foreign.status_code == 403
     assert foreign.json()["code"] == "BUSINESS_UNIT_ACCESS_DENIED"
+
+    # 坐席可以读取本租户员工目录，但没有该能力的角色仍然被拒绝。
+    agent_own = client.get(
+        "/api/v1/digital-employees?business_unit_id=bu_alpha",
+        headers=ALPHA_AGENT,
+    )
+    assert agent_own.status_code == 200
+    manager_own = client.get(
+        "/api/v1/digital-employees?business_unit_id=bu_alpha",
+        headers=ALPHA_BUSINESS_MANAGER,
+    )
+    assert manager_own.status_code == 403
 
     knowledge = client.get(
         "/api/v1/knowledge-spaces?business_unit_id=bu_beta",

@@ -167,6 +167,9 @@ export default function EcommercePage({
   const employees = useQuery({
     queryKey: ["digital-employees"],
     queryFn: listDigitalEmployees,
+    // 员工目录读取需要 employees.directory；没有该能力时列表仍展示任务
+    // 本身，只是不解析负责员工姓名。
+    enabled: hasCapability("employees.directory"),
   });
   const listings = useQuery({
     queryKey: ["ecommerce-listings"],
@@ -239,9 +242,14 @@ export default function EcommercePage({
     human: items.filter((item) => item.status === "NEEDS_HUMAN").length,
     published: items.filter((item) => item.status === "PUBLISHED").length,
   };
-  const employeeName = (employeeId: string | null) =>
-    employees.data?.find((employee) => employee.id === employeeId)?.name ??
-    (employeeId ? "已停用员工" : "未分配");
+  const employeeName = (employeeId: string | null) => {
+    if (!employeeId) return "未分配";
+    const name = employees.data?.find(
+      (employee) => employee.id === employeeId,
+    )?.name;
+    if (name) return name;
+    return hasCapability("employees.directory") ? "已停用员工" : "—";
+  };
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["ecommerce-products"] });

@@ -32,7 +32,10 @@ from ticket_agent.identity.dependencies import (
     tenant_query_guard,
 )
 from ticket_agent.identity.models import Principal
-from ticket_agent.identity.policy import require_capability
+from ticket_agent.identity.policy import (
+    DEMO_RESET_BUSINESS_UNIT,
+    require_capability,
+)
 from ticket_agent.identity.router import router as identity_router
 from ticket_agent.integrations.metrics import SyncMetricsService
 from ticket_agent.integrations.router import router as integration_router
@@ -67,7 +70,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 settings = get_settings()
 demo_reset_lock = Lock()
 DEMO_RESET_DB_LOCK_KEY = 84739021
-DEMO_RESET_BUSINESS_UNIT = "bu_demo"
 DEMO_RESET_CONFIRMATION = "reset-bu_demo"
 demo_reset_jobs: dict[str, dict[str, object]] = {}
 demo_reset_jobs_lock = Lock()

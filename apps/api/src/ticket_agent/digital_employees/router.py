@@ -36,12 +36,15 @@ from ticket_agent.digital_employees.schemas import (
     DigitalEmployeeUpdate,
     DigitalEmployeeView,
     RouteEvaluationDataset,
+    WorkforceMetricsResponse,
 )
 from ticket_agent.digital_employees.service import DigitalEmployeeService
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
-    ensure_knowledge_admin,
-    ensure_workspace_viewer,
+    ensure_employee_console_viewer,
+    ensure_employee_directory_viewer,
+    ensure_employee_writer,
+    ensure_metrics_viewer,
     resolve_business_unit,
 )
 
@@ -57,7 +60,7 @@ def list_digital_employee_templates(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
 ) -> list[DigitalEmployeeTemplateView]:
-    ensure_workspace_viewer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -71,7 +74,7 @@ def list_digital_employees(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
 ) -> list[DigitalEmployeeView]:
-    ensure_workspace_viewer(principal)
+    ensure_employee_directory_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -91,7 +94,7 @@ def create_digital_employee(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     ensure_business_unit_access(principal, payload.business_unit_id)
     service = DigitalEmployeeService(db)
     employee = service.create(payload, actor_id=principal.actor_id)
@@ -126,7 +129,7 @@ def create_digital_employee_from_template(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     ensure_business_unit_access(principal, payload.business_unit_id)
     service = DigitalEmployeeService(db)
     employee = service.create_from_template(
@@ -166,7 +169,7 @@ def update_digital_employee(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -210,7 +213,7 @@ def update_digital_employee_configuration(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -260,7 +263,7 @@ def activate_digital_employee_trial(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -298,7 +301,7 @@ def list_digital_employee_revisions(
     db: DbSession,
     principal: Actor,
 ) -> list[DigitalEmployeeRevisionView]:
-    ensure_workspace_viewer(principal)
+    ensure_employee_directory_viewer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -316,7 +319,7 @@ def get_digital_employee_route_rule(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeRouteRuleView:
-    ensure_workspace_viewer(principal)
+    ensure_employee_console_viewer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -334,7 +337,7 @@ def list_digital_employee_route_rules(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
 ) -> list[DigitalEmployeeRouteRuleView]:
-    ensure_workspace_viewer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -353,7 +356,7 @@ def update_digital_employee_route_rule(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeRouteRuleView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     service = DigitalEmployeeService(db)
     ensure_business_unit_access(
         principal,
@@ -393,7 +396,7 @@ def list_digital_employee_route_intent_conflicts(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
 ) -> DigitalEmployeeRouteIntentConflictList:
-    ensure_workspace_viewer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -415,7 +418,7 @@ def list_digital_employee_route_evaluation_cases(
     service_entry_id: Annotated[UUID | None, Query()] = None,
     dataset: Annotated[RouteEvaluationDataset | None, Query()] = None,
 ) -> list[DigitalEmployeeRouteEvaluationCaseView]:
-    ensure_workspace_viewer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -440,7 +443,7 @@ def create_digital_employee_route_evaluation_case(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
 ) -> DigitalEmployeeRouteEvaluationCaseView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -481,7 +484,7 @@ def update_digital_employee_route_evaluation_case(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeRouteEvaluationCaseView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     existing = get_route_evaluation_case(db, case_id)
     ensure_business_unit_access(principal, existing.business_unit_id)
     case = update_route_evaluation_case(
@@ -515,7 +518,7 @@ def delete_digital_employee_route_evaluation_case(
     db: DbSession,
     principal: Actor,
 ) -> None:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     existing = get_route_evaluation_case(db, case_id)
     ensure_business_unit_access(principal, existing.business_unit_id)
     delete_route_evaluation_case(db, case_id=case_id)
@@ -546,7 +549,7 @@ def run_digital_employee_route_evaluation(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
 ) -> DigitalEmployeeRouteEvaluationRunView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -593,7 +596,7 @@ def list_digital_employee_route_evaluation_runs(
     dataset: Annotated[RouteEvaluationDataset | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> DigitalEmployeeRouteEvaluationRunList:
-    ensure_workspace_viewer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -608,6 +611,29 @@ def list_digital_employee_route_evaluation_runs(
 
 
 @router.get(
+    "/metrics/workforce",
+    response_model=WorkforceMetricsResponse,
+)
+def get_workforce_metrics(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: str | None = Query(default=None),
+) -> WorkforceMetricsResponse:
+    ensure_metrics_viewer(principal)
+    business_unit_id = resolve_business_unit(
+        principal,
+        business_unit_id,
+    )
+    payload = DigitalEmployeeService(db).workforce_metrics(
+        business_unit_id=business_unit_id,
+    )
+    return WorkforceMetricsResponse(
+        business_unit_id=business_unit_id,
+        **payload,
+    )
+
+
+@router.get(
     "/digital-employee-route-decisions",
     response_model=DigitalEmployeeRouteDecisionList,
 )
@@ -617,7 +643,7 @@ def list_digital_employee_route_decisions(
     business_unit_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> DigitalEmployeeRouteDecisionList:
-    ensure_workspace_viewer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,

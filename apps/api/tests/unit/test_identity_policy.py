@@ -1,12 +1,15 @@
 import pytest
 
 from ticket_agent.identity.dependencies import (
+    ensure_approvals_viewer,
     ensure_ecommerce_catalog_admin,
     ensure_ecommerce_operator,
     ensure_ecommerce_viewer,
+    ensure_employee_console_viewer,
+    ensure_employee_directory_viewer,
+    ensure_employee_writer,
     ensure_knowledge_admin,
     ensure_mcp_approver,
-    ensure_mcp_viewer,
     ensure_metrics_viewer,
     ensure_service_admin,
     ensure_service_chat,
@@ -60,6 +63,9 @@ def test_role_matrix_key_contracts() -> None:
     assert "ecommerce.view" in agent
     assert "ecommerce.operate" not in agent
     assert "knowledge.write" not in agent
+    assert "employees.directory" in agent
+    assert "employees.view" not in agent
+    assert "employees.write" not in agent
 
     supervisor = capabilities_for("supervisor")
     assert {
@@ -76,6 +82,9 @@ def test_role_matrix_key_contracts() -> None:
     knowledge_operator = capabilities_for("knowledge_operator")
     assert {
         "knowledge.write",
+        "employees.directory",
+        "employees.view",
+        "employees.write",
         "ecommerce.catalog.write",
         "operations.view",
     } <= knowledge_operator
@@ -91,6 +100,8 @@ def test_role_matrix_key_contracts() -> None:
             "service.incidents.view",
             "operations.view",
         } <= capabilities
+        assert "employees.directory" not in capabilities
+        assert "employees.view" not in capabilities
         assert "tickets.write" not in capabilities
         assert "service.approvals.decide" not in capabilities
         assert "service.incidents.manage" not in capabilities
@@ -133,8 +144,17 @@ def test_unknown_role_falls_back_to_requester() -> None:
         (ensure_metrics_viewer, "agent", False),
         (ensure_sync_batch_operator, "supervisor", True),
         (ensure_sync_batch_operator, "business_manager", False),
-        (ensure_mcp_viewer, "business_manager", True),
-        (ensure_mcp_viewer, "agent", False),
+        (ensure_approvals_viewer, "business_manager", True),
+        (ensure_approvals_viewer, "agent", False),
+        (ensure_employee_directory_viewer, "knowledge_operator", True),
+        (ensure_employee_directory_viewer, "agent", True),
+        (ensure_employee_directory_viewer, "supervisor", True),
+        (ensure_employee_directory_viewer, "business_manager", False),
+        (ensure_employee_console_viewer, "knowledge_operator", True),
+        (ensure_employee_console_viewer, "supervisor", False),
+        (ensure_employee_console_viewer, "agent", False),
+        (ensure_employee_writer, "knowledge_operator", True),
+        (ensure_employee_writer, "supervisor", False),
         (ensure_mcp_approver, "supervisor", True),
         (ensure_mcp_approver, "auditor", False),
     ],

@@ -18,6 +18,10 @@ from ticket_agent.tools.models import ToolCall
 
 ADMIN = {"X-Actor-Id": "mcp-runtime-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "mcp-runtime-agent", "X-Actor-Role": "agent"}
+EMPLOYEE_VIEWER = {
+    "X-Actor-Id": "mcp-runtime-employee-viewer",
+    "X-Actor-Role": "knowledge_operator",
+}
 
 
 def test_mcp_runtime_executes_read_and_blocks_write(
@@ -181,7 +185,7 @@ def test_mcp_runtime_executes_read_and_blocks_write(
     assert skill_bound.status_code == 200, skill_bound.text
     employees = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert next(
         item

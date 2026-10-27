@@ -6,6 +6,10 @@ from ticket_agent.shared.settings import Settings
 
 ADMIN = {"X-Actor-Id": "draft-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "draft-agent", "X-Actor-Role": "agent"}
+EMPLOYEE_VIEWER = {
+    "X-Actor-Id": "draft-employee-viewer",
+    "X-Actor-Role": "knowledge_operator",
+}
 
 
 def _create_template(
@@ -169,7 +173,7 @@ def test_employee_draft_rejection_is_auditable_and_reopenable(
 
     revisions = client.get(
         f"/api/v1/digital-employee-drafts/{draft['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert revisions.status_code == 200, revisions.text
     history = revisions.json()
@@ -207,7 +211,7 @@ def test_employee_draft_revision_can_be_restored(
 
     history = client.get(
         f"/api/v1/digital-employee-drafts/{draft['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     initial = next(item for item in history if item["revision"] == 1)
     assert initial["snapshot"]["name"] == draft["name"]
@@ -252,7 +256,7 @@ def test_employee_draft_revision_can_be_restored(
 
     restored_history = client.get(
         f"/api/v1/digital-employee-drafts/{draft['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert restored_history[0]["revision"] == 3
     assert restored_history[0]["change_note"] == (
@@ -370,7 +374,7 @@ def test_template_backed_draft_applies_edits_to_trial_employee(
     employee_id = trial.json()["employee_id"]
     employees = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert employees.status_code == 200, employees.text
     body = next(
@@ -518,7 +522,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
 
     employees = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     trial_employee = next(
         employee for employee in employees if employee["id"] == employee_id
@@ -631,7 +635,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
     assert published.json()["status"] == "PUBLISHED"
     published_employee = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert next(
         employee
@@ -650,7 +654,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
 
     revisions = client.get(
         f"/api/v1/digital-employees/{employee_id}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert {"TRIAL", "PUBLISHED"}.issubset(
         {revision["status"] for revision in revisions}
@@ -687,7 +691,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
     )
     promotion_revisions = client.get(
         f"/api/v1/digital-employee-drafts/{draft['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert promotion_revisions[0]["snapshot"]["promoted_template_id"] == (
         managed_template["id"]
@@ -723,7 +727,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
 
     published_templates = client.get(
         "/api/v1/digital-employee-templates?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert any(
         template["code"] == managed_template["code"]
@@ -892,7 +896,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
     template_revisions = client.get(
         f"/api/v1/digital-employee-templates/"
         f"{managed_template['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert {
         "DRAFT",
@@ -912,7 +916,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
     assert rolled_back.json()["status"] == "ROLLED_BACK"
     final_employees = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert next(
         employee
@@ -921,7 +925,7 @@ def test_employee_draft_trial_evaluation_publish_and_rollback(
     )["status"] == "DISABLED"
     revisions = client.get(
         f"/api/v1/digital-employees/{employee_id}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     assert "ROLLED_BACK" in {
         revision["status"] for revision in revisions

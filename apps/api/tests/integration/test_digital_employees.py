@@ -6,6 +6,10 @@ from ticket_agent.shared.settings import Settings
 
 ADMIN = {"X-Actor-Id": "admin-1", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "agent-1", "X-Actor-Role": "agent"}
+EMPLOYEE_VIEWER = {
+    "X-Actor-Id": "employee-viewer-1",
+    "X-Actor-Role": "knowledge_operator",
+}
 
 
 def _employee_payload(key: str = "secondary_ticket_employee") -> dict[str, object]:
@@ -103,7 +107,7 @@ def test_list_does_not_create_unrelated_default_employee(
 ) -> None:
     response = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
 
     assert response.status_code == 200
@@ -151,7 +155,7 @@ def test_employee_instruction_is_versioned_with_configuration(
 
     revisions = client.get(
         f"/api/v1/digital-employees/{employee['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert revisions.status_code == 200
     assert revisions.json()[0]["instruction"] == "你是一名耐心、简洁的售后客服。"
@@ -167,7 +171,7 @@ def test_employee_instruction_is_versioned_with_configuration(
 
     revisions = client.get(
         f"/api/v1/digital-employees/{employee['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert revisions.json()[0]["instruction"] == "先确认订单号，再给结论。"
 
@@ -184,7 +188,7 @@ def test_create_employee_from_template_with_manifest_and_revision(
 ) -> None:
     templates = client.get(
         "/api/v1/digital-employee-templates",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert templates.status_code == 200
     assert {
@@ -222,7 +226,7 @@ def test_create_employee_from_template_with_manifest_and_revision(
 
     skills = client.get(
         f"/api/v1/digital-employees/{employee['id']}/skills",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert skills.status_code == 200
     assert [item["skill_code"] for item in skills.json()] == [
@@ -231,7 +235,7 @@ def test_create_employee_from_template_with_manifest_and_revision(
 
     revisions = client.get(
         f"/api/v1/digital-employees/{employee['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert revisions.status_code == 200
     assert len(revisions.json()) == 1
@@ -250,7 +254,7 @@ def test_create_employee_from_template_with_manifest_and_revision(
     assert updated.json()["config_revision"] == 2
     revisions = client.get(
         f"/api/v1/digital-employees/{employee['id']}/revisions",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert len(revisions.json()) == 2
 
@@ -319,7 +323,7 @@ def test_ticket_without_employee_routes_to_specialist(
 
     decisions = client.get(
         "/api/v1/digital-employee-route-decisions?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert decisions.status_code == 200
     selected = {

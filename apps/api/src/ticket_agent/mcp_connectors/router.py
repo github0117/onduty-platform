@@ -7,10 +7,10 @@ from ticket_agent.api.dependencies import Actor, DbSession, correlation_id
 from ticket_agent.audit.service import record_audit
 from ticket_agent.digital_employees.service import DigitalEmployeeService
 from ticket_agent.identity.dependencies import (
+    ensure_approvals_viewer,
     ensure_business_unit_access,
     ensure_knowledge_admin,
     ensure_mcp_approver,
-    ensure_mcp_viewer,
     ensure_workspace_viewer,
     resolve_business_unit,
 )
@@ -223,7 +223,7 @@ def list_mcp_tool_approvals(
     approval_status: Annotated[str | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> McpToolApprovalList:
-    ensure_mcp_viewer(principal)
+    ensure_approvals_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -273,7 +273,7 @@ def list_mcp_action_incidents(
     incident_status: Annotated[str | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> McpActionIncidentList:
-    ensure_mcp_viewer(principal)
+    ensure_approvals_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,

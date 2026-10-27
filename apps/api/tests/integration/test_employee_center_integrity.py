@@ -10,6 +10,10 @@ from ticket_agent.shared.db import SessionLocal
 
 ADMIN = {"X-Actor-Id": "center-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "center-agent", "X-Actor-Role": "agent"}
+EMPLOYEE_VIEWER = {
+    "X-Actor-Id": "center-employee-viewer",
+    "X-Actor-Role": "knowledge_operator",
+}
 
 
 def _employee(
@@ -139,7 +143,7 @@ def test_employee_configuration_is_atomic_and_reactivation_is_enforced(
     assert duplicate_skills.json()["code"] == "SKILL_BINDING_DUPLICATED"
     current = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     stored = next(item for item in current if item["id"] == employee["id"])
     assert stored["name"] == "仅改名保持启用"
@@ -281,7 +285,7 @@ def test_skill_change_moves_bound_active_employee_back_to_trial(
     assert updated.status_code == 200, updated.text
     employees = client.get(
         "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     stored = next(item for item in employees if item["id"] == employee["id"])
     assert stored["status"] == "TRIAL"

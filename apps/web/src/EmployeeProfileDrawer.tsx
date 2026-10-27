@@ -19,6 +19,7 @@ import {
   listEmployeeSkills,
   listKnowledgeSpaces,
 } from "./api";
+import { useAuth } from "./auth";
 import {
   domainLabels,
   employeeReadiness,
@@ -62,10 +63,12 @@ export default function EmployeeProfileDrawer({
   onClose: () => void;
 }) {
   const resolvedId = employeeId ?? employee?.id ?? null;
+  const { hasCapability } = useAuth();
+  const canViewEmployees = hasCapability("employees.directory");
   const employees = useQuery({
     queryKey: ["digital-employees"],
     queryFn: listDigitalEmployees,
-    enabled: open && Boolean(resolvedId) && !employee,
+    enabled: open && canViewEmployees && Boolean(resolvedId) && !employee,
   });
   const current =
     employee ?? employees.data?.find((item) => item.id === resolvedId) ?? null;
@@ -145,7 +148,15 @@ export default function EmployeeProfileDrawer({
               description={(employees.error as Error).message}
             />
           )}
-          {!employees.isLoading && !employees.isError && (
+          {!canViewEmployees && (
+            <Alert
+              type="info"
+              showIcon
+              message="当前身份无权查看员工配置"
+              description="员工目录仅对客服坐席、主管、知识运营和管理员开放。"
+            />
+          )}
+          {canViewEmployees && !employees.isLoading && !employees.isError && (
             <Empty description="未找到这名数字员工" />
           )}
         </Space>

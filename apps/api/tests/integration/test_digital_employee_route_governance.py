@@ -12,6 +12,10 @@ KNOWLEDGE_OPERATOR = {
     "X-Actor-Id": "route-governance-operator",
     "X-Actor-Role": "knowledge_operator",
 }
+BUSINESS_MANAGER = {
+    "X-Actor-Id": "route-governance-manager",
+    "X-Actor-Role": "business_manager",
+}
 
 
 def _create_employee(
@@ -203,7 +207,7 @@ def test_route_evaluation_reports_accuracy_and_suppressed_intents(
 
     listed = client.get(
         "/api/v1/digital-employee-route-evaluation-runs",
-        headers=AGENT,
+        headers=KNOWLEDGE_OPERATOR,
         params={
             "business_unit_id": "bu_demo",
             "service_entry_id": entry["id"],
@@ -214,9 +218,19 @@ def test_route_evaluation_reports_accuracy_and_suppressed_intents(
     assert payload["total"] == 1
     assert payload["items"][0]["id"] == run["id"]
 
+    manager_listed = client.get(
+        "/api/v1/digital-employee-route-evaluation-runs",
+        headers=BUSINESS_MANAGER,
+        params={
+            "business_unit_id": "bu_demo",
+            "service_entry_id": entry["id"],
+        },
+    )
+    assert manager_listed.status_code == 403
+
     decisions = client.get(
         "/api/v1/digital-employee-route-decisions",
-        headers=AGENT,
+        headers=KNOWLEDGE_OPERATOR,
         params={"business_unit_id": "bu_demo"},
     )
     assert decisions.status_code == 200, decisions.text
@@ -316,7 +330,7 @@ def test_route_evaluation_case_crud_and_permissions(
     assert deleted.status_code == 204, deleted.text
     remaining = client.get(
         "/api/v1/digital-employee-route-evaluation-cases",
-        headers=AGENT,
+        headers=KNOWLEDGE_OPERATOR,
         params={
             "business_unit_id": "bu_demo",
             "service_entry_id": entry["id"],
@@ -324,6 +338,16 @@ def test_route_evaluation_case_crud_and_permissions(
     )
     assert remaining.status_code == 200, remaining.text
     assert remaining.json() == []
+
+    manager_remaining = client.get(
+        "/api/v1/digital-employee-route-evaluation-cases",
+        headers=BUSINESS_MANAGER,
+        params={
+            "business_unit_id": "bu_demo",
+            "service_entry_id": entry["id"],
+        },
+    )
+    assert manager_remaining.status_code == 403
 
 
 def test_route_evaluation_holdout_dataset_reports_failure_analysis(
@@ -424,7 +448,7 @@ def test_route_evaluation_holdout_dataset_reports_failure_analysis(
 
     holdout_cases = client.get(
         "/api/v1/digital-employee-route-evaluation-cases",
-        headers=AGENT,
+        headers=KNOWLEDGE_OPERATOR,
         params={
             "business_unit_id": "bu_demo",
             "service_entry_id": entry["id"],
@@ -436,7 +460,7 @@ def test_route_evaluation_holdout_dataset_reports_failure_analysis(
 
     holdout_runs = client.get(
         "/api/v1/digital-employee-route-evaluation-runs",
-        headers=AGENT,
+        headers=KNOWLEDGE_OPERATOR,
         params={
             "business_unit_id": "bu_demo",
             "service_entry_id": entry["id"],
@@ -494,7 +518,7 @@ def test_intent_conflict_endpoint_reports_conflicts_and_suppressions(
 
     response = client.get(
         "/api/v1/digital-employee-route-intent-conflicts",
-        headers=AGENT,
+        headers=KNOWLEDGE_OPERATOR,
         params={"business_unit_id": "bu_demo"},
     )
     assert response.status_code == 200, response.text

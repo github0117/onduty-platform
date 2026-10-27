@@ -253,7 +253,40 @@ def ensure_ecommerce_catalog_admin(principal: Principal) -> None:
     )
 
 
-def ensure_mcp_viewer(principal: Principal) -> None:
+def ensure_employee_directory_viewer(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "employees.directory",
+        title="Employee access denied",
+        detail=(
+            "This operation requires a support, supervisor, knowledge operator "
+            "or administrator role."
+        ),
+    )
+
+
+def ensure_employee_console_viewer(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "employees.view",
+        title="Employee console access denied",
+        detail=(
+            "Employee templates, drafts and routing configuration require a "
+            "knowledge operator or administrator role."
+        ),
+    )
+
+
+def ensure_employee_writer(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "employees.write",
+        title="Employee operation denied",
+        detail="Employee configuration requires a knowledge operator or administrator role.",
+    )
+
+
+def ensure_approvals_viewer(principal: Principal) -> None:
     require_capability(
         principal,
         "service.approvals.view",

@@ -1259,6 +1259,13 @@ export interface RagMetrics {
   provider_counts: Record<string, number>;
 }
 
+export interface WorkforceMetrics {
+  business_unit_id: string;
+  active_employee_count: number;
+  trial_employee_count: number;
+  total_employee_count: number;
+}
+
 export interface RuntimeConfig {
   app_env: string;
   task_mode: string;

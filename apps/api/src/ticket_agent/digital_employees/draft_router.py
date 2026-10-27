@@ -27,8 +27,8 @@ from ticket_agent.digital_employees.template_service import (
 )
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
-    ensure_knowledge_admin,
-    ensure_ticket_writer,
+    ensure_employee_console_viewer,
+    ensure_employee_writer,
     resolve_business_unit,
 )
 from ticket_agent.workforce.service import WorkforceTaskService
@@ -48,7 +48,7 @@ def create_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     service = DigitalEmployeeDraftService(db)
     task = WorkforceTaskService(db).get(task_id)
     ensure_business_unit_access(principal, task.business_unit_id)
@@ -81,7 +81,7 @@ def list_managed_employee_templates(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> list[DigitalEmployeeTemplateView]:
-    ensure_ticket_writer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -107,7 +107,7 @@ def promote_employee_draft_to_template(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeTemplateView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = ManagedEmployeeTemplateService(db)
     template = service.promote_from_draft(
@@ -141,7 +141,7 @@ def edit_managed_employee_template(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeTemplateView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_template_access(db, principal, template_id)
     service = ManagedEmployeeTemplateService(db)
     template = service.update_draft(
@@ -172,7 +172,7 @@ def review_managed_employee_template(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeTemplateView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_template_access(db, principal, template_id)
     service = ManagedEmployeeTemplateService(db)
     template = service.review(
@@ -202,7 +202,7 @@ def publish_managed_employee_template(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeTemplateView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_template_access(db, principal, template_id)
     service = ManagedEmployeeTemplateService(db)
     template = service.publish(
@@ -231,7 +231,7 @@ def rollback_managed_employee_template(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeTemplateView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_template_access(db, principal, template_id)
     service = ManagedEmployeeTemplateService(db)
     template = service.rollback(
@@ -260,7 +260,7 @@ def reopen_managed_employee_template(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeTemplateView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_template_access(db, principal, template_id)
     service = ManagedEmployeeTemplateService(db)
     template = service.reopen(
@@ -288,7 +288,7 @@ def list_managed_employee_template_revisions(
     db: DbSession,
     principal: Actor,
 ) -> list[ManagedEmployeeTemplateRevisionView]:
-    ensure_ticket_writer(principal)
+    ensure_employee_console_viewer(principal)
     _ensure_template_access(db, principal, template_id)
     return ManagedEmployeeTemplateService(db).list_revisions(
         template_id
@@ -304,7 +304,7 @@ def list_capability_drafts(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> DigitalEmployeeDraftList:
-    ensure_ticket_writer(principal)
+    ensure_employee_console_viewer(principal)
     business_unit_id = resolve_business_unit(
         principal,
         business_unit_id,
@@ -321,7 +321,7 @@ def get_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_ticket_writer(principal)
+    ensure_employee_console_viewer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     return service.view(service.get(draft_id))
@@ -338,7 +338,7 @@ def edit_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.update_draft(
@@ -369,7 +369,7 @@ def review_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.review(
@@ -399,7 +399,7 @@ def reopen_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.reopen(
@@ -428,7 +428,7 @@ def create_capability_trial(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.create_trial(
@@ -457,7 +457,7 @@ def evaluate_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.evaluate(
@@ -489,7 +489,7 @@ def publish_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.publish(
@@ -517,7 +517,7 @@ def list_capability_draft_revisions(
     db: DbSession,
     principal: Actor,
 ) -> list[DigitalEmployeeDraftRevisionView]:
-    ensure_ticket_writer(principal)
+    ensure_employee_console_viewer(principal)
     _ensure_draft_access(db, principal, draft_id)
     return DigitalEmployeeDraftService(db).list_revisions(draft_id)
 
@@ -533,7 +533,7 @@ def restore_capability_draft_revision(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.restore_revision(
@@ -566,7 +566,7 @@ def rollback_capability_draft(
     db: DbSession,
     principal: Actor,
 ) -> DigitalEmployeeDraftView:
-    ensure_knowledge_admin(principal)
+    ensure_employee_writer(principal)
     _ensure_draft_access(db, principal, draft_id)
     service = DigitalEmployeeDraftService(db)
     draft = service.rollback(

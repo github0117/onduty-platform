@@ -1,4 +1,8 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
+
+from ticket_agent.digital_employees.models import DigitalEmployee
+from ticket_agent.shared.db import SessionLocal
 
 
 def _payload(
@@ -126,25 +130,137 @@ def test_business_manager_can_read_but_cannot_take_over(
     assert takeover.status_code == 403
 
 
-def test_business_manager_can_read_employee_catalog(client: TestClient) -> None:
-    headers = {
+def test_employee_directory_and_management_have_separate_access(
+    client: TestClient,
+) -> None:
+    manager = {
         "X-Actor-Id": "business-manager-1",
         "X-Actor-Role": "business_manager",
         "X-Business-Unit-Id": "bu_demo",
     }
+    auditor = {
+        "X-Actor-Id": "auditor-1",
+        "X-Actor-Role": "auditor",
+        "X-Business-Unit-Id": "bu_demo",
+    }
+    operator = {
+        "X-Actor-Id": "knowledge-operator-1",
+        "X-Actor-Role": "knowledge_operator",
+        "X-Business-Unit-Id": "bu_demo",
+    }
+    agent = {
+        "X-Actor-Id": "agent-1",
+        "X-Actor-Role": "agent",
+        "X-Business-Unit-Id": "bu_demo",
+    }
+    supervisor = {
+        "X-Actor-Id": "supervisor-1",
+        "X-Actor-Role": "supervisor",
+        "X-Business-Unit-Id": "bu_demo",
+    }
 
-    employees = client.get(
-        "/api/v1/digital-employees?business_unit_id=bu_demo",
-        headers=headers,
-    )
-    templates = client.get(
+    # 业务经理和审计员没有员工目录读取能力。
+    for headers in (manager, auditor):
+        employees = client.get(
+            "/api/v1/digital-employees?business_unit_id=bu_demo",
+            headers=headers,
+        )
+        assert employees.status_code == 403
+        assert employees.json()["code"] == "FORBIDDEN"
+
+    # 坐席、主管和知识运营可以读取运行目录。
+    for headers in (agent, supervisor, operator):
+        employees = client.get(
+            "/api/v1/digital-employees?business_unit_id=bu_demo",
+            headers=headers,
+        )
+        assert employees.status_code == 200, (headers["X-Actor-Role"], employees.text)
+
+    # 模板、草案和路由配置属于员工管理台，只有知识运营能读取。
+    for headers in (agent, supervisor, manager, auditor):
+        templates = client.get(
+            "/api/v1/digital-employee-templates?business_unit_id=bu_demo",
+            headers=headers,
+        )
+        drafts = client.get(
+            "/api/v1/digital-employee-drafts?business_unit_id=bu_demo",
+            headers=headers,
+        )
+        assert templates.status_code == 403, (
+            headers["X-Actor-Role"],
+            templates.text,
+        )
+        assert drafts.status_code == 403, (
+            headers["X-Actor-Role"],
+            drafts.text,
+        )
+
+    operator_templates = client.get(
         "/api/v1/digital-employee-templates?business_unit_id=bu_demo",
-        headers=headers,
+        headers=operator,
     )
+    assert operator_templates.status_code == 200
+    assert len(operator_templates.json()) >= 6
 
-    assert employees.status_code == 200
-    assert templates.status_code == 200
-    assert len(templates.json()) >= 6
+    agent_write = client.post(
+        "/api/v1/digital-employees/from-template",
+        headers=agent,
+        json={
+            "name": "坐席不应创建员工",
+            "template_code": "enterprise_service_desk",
+            "business_unit_id": "bu_demo",
+        },
+    )
+    assert agent_write.status_code == 403
+    assert agent_write.json()["code"] == "FORBIDDEN"
+
+
+def test_workforce_metrics_do_not_expose_employee_roster(
+    client: TestClient,
+) -> None:
+    with SessionLocal() as session:
+        active_count = session.scalar(
+            select(func.count())
+            .select_from(DigitalEmployee)
+            .where(
+                DigitalEmployee.business_unit_id == "bu_demo",
+                DigitalEmployee.status == "ACTIVE",
+            )
+        )
+
+    # 运行看板角色可以读取聚合在岗人数，但读不到员工配置明细。
+    for role in ("supervisor", "knowledge_operator", "business_manager", "auditor"):
+        metrics = client.get(
+            "/api/v1/metrics/workforce?business_unit_id=bu_demo",
+            headers=_role_headers(role),
+        )
+        assert metrics.status_code == 200, (role, metrics.text)
+        payload = metrics.json()
+        assert payload["business_unit_id"] == "bu_demo"
+        assert payload["active_employee_count"] == active_count
+        assert payload["total_employee_count"] >= payload["active_employee_count"]
+
+        roster = client.get(
+            "/api/v1/digital-employees?business_unit_id=bu_demo",
+            headers=_role_headers(role),
+        )
+        if role in {"business_manager", "auditor"}:
+            assert roster.status_code == 403, (role, roster.text)
+        else:
+            assert roster.status_code == 200, (role, roster.text)
+
+    agent = client.get(
+        "/api/v1/metrics/workforce?business_unit_id=bu_demo",
+        headers=_role_headers("agent"),
+    )
+    assert agent.status_code == 403
+
+    foreign = client.get(
+        "/api/v1/metrics/workforce?business_unit_id=bu_beta",
+        headers=_role_headers("business_manager"),
+    )
+    assert foreign.status_code == 403
+    assert foreign.json()["code"] == "BUSINESS_UNIT_ACCESS_DENIED"
 
 
 def test_knowledge_operator_can_manage_knowledge_but_not_tickets(

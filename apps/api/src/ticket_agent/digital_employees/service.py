@@ -1250,6 +1250,24 @@ class DigitalEmployeeService:
         self.session.refresh(rule)
         return self._route_rule_view(rule)
 
+    def workforce_metrics(self, *, business_unit_id: str) -> dict[str, int]:
+        """Aggregate headcount for operations dashboards.
+
+        Oversight roles see the running headcount without gaining the
+        per-employee configuration returned by the employee directory.
+        """
+        rows = self.session.execute(
+            select(DigitalEmployee.status, func.count())
+            .where(DigitalEmployee.business_unit_id == business_unit_id)
+            .group_by(DigitalEmployee.status)
+        ).all()
+        counts = {employee_status: int(count) for employee_status, count in rows}
+        return {
+            "active_employee_count": counts.get("ACTIVE", 0),
+            "trial_employee_count": counts.get("TRIAL", 0),
+            "total_employee_count": sum(counts.values()),
+        }
+
     def list_route_decisions(
         self,
         *,

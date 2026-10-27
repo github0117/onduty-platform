@@ -328,7 +328,7 @@ function CustomerChatDemo({
   onOpenAdmin?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const { me, testIdentity } = useAuth();
+  const { me, testIdentity, hasCapability } = useAuth();
   const actorKey = testIdentity?.id ?? me.actor_id;
   const chatStateStorageKey = getChatDemoStorageKey(scenario, actorKey);
   const requestedConversationId =
@@ -372,6 +372,9 @@ function CustomerChatDemo({
   const employees = useQuery({
     queryKey: ["digital-employees"],
     queryFn: listDigitalEmployees,
+    // 员工目录对坐席、主管、知识运营和管理员开放，用于显示本次接待员工；
+    // 员工管理入口仍由 employees.view 单独控制。
+    enabled: hasCapability("employees.directory"),
   });
   const serviceEntries = useQuery({
     queryKey: ["business-service-entries"],
@@ -2299,7 +2302,7 @@ export default function CustomerServicePage({
   const employees = useQuery({
     queryKey: ["digital-employees"],
     queryFn: listDigitalEmployees,
-    enabled: isAdminSurface,
+    enabled: isAdminSurface && hasCapability("employees.directory"),
   });
   const categories = useQuery({
     queryKey: ["ecommerce-categories"],

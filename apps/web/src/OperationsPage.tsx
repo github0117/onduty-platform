@@ -29,7 +29,7 @@ import {
   getSyncMetrics,
   getToolCalls,
   getToolMetrics,
-  listDigitalEmployees,
+  getWorkforceMetrics,
   listMcpConnectors,
   resetDemoData,
 } from "./api";
@@ -84,9 +84,9 @@ export default function OperationsPage() {
     queryFn: getModelMetrics,
   });
   const rag = useQuery({ queryKey: ["metrics", "rag"], queryFn: getRagMetrics });
-  const employees = useQuery({
-    queryKey: ["operations-employees"],
-    queryFn: listDigitalEmployees,
+  const workforce = useQuery({
+    queryKey: ["metrics", "workforce"],
+    queryFn: getWorkforceMetrics,
   });
   const mcpConnectors = useQuery({
     queryKey: ["operations-mcp-connectors"],
@@ -134,9 +134,7 @@ export default function OperationsPage() {
       setResetJobId(null);
     }
   }, [queryClient, resetStatus.data]);
-  const activeEmployeeCount =
-    employees.data?.filter((employee) => employee.status === "ACTIVE")
-      .length ?? 0;
+  const activeEmployeeCount = workforce.data?.active_employee_count ?? 0;
   const externalMcpToolCount =
     mcpConnectors.data
       ?.filter(
@@ -300,7 +298,7 @@ export default function OperationsPage() {
     sync,
     models,
     rag,
-    employees,
+    workforce,
     mcpConnectors,
   ].filter((query) => query.isError);
 

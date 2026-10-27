@@ -77,6 +77,7 @@ import type {
   TicketList,
   ToolCallList,
   ToolMetrics,
+  WorkforceMetrics,
   WorkforceTask,
   WorkforceTaskList,
 } from "./types";
@@ -1302,6 +1303,10 @@ export function getModelBudget(employeeId: string): Promise<ModelBudget> {
 
 export function getRagMetrics(): Promise<RagMetrics> {
   return request("/api/v1/metrics/rag?business_unit_id=bu_demo");
+}
+
+export function getWorkforceMetrics(): Promise<WorkforceMetrics> {
+  return request("/api/v1/metrics/workforce?business_unit_id=bu_demo");
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {

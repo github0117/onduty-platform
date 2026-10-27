@@ -361,3 +361,10 @@ class DigitalEmployeeRouteEvaluationRunView(BaseModel):
 class DigitalEmployeeRouteEvaluationRunList(BaseModel):
     items: list[DigitalEmployeeRouteEvaluationRunView]
     total: int
+
+
+class WorkforceMetricsResponse(BaseModel):
+    business_unit_id: str
+    active_employee_count: int
+    trial_employee_count: int
+    total_employee_count: int

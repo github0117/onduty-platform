@@ -4,6 +4,10 @@ from fastapi.testclient import TestClient
 
 ADMIN = {"X-Actor-Id": "routing-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "routing-agent", "X-Actor-Role": "agent"}
+EMPLOYEE_VIEWER = {
+    "X-Actor-Id": "routing-employee-viewer",
+    "X-Actor-Role": "knowledge_operator",
+}
 
 
 def _create_from_template(
@@ -92,7 +96,7 @@ def _decision_for_ticket(
 ) -> dict[str, Any]:
     response = client.get(
         "/api/v1/digital-employee-route-decisions?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     )
     assert response.status_code == 200, response.text
     return next(
@@ -329,7 +333,7 @@ def test_ineligible_candidates_include_exclusion_reasons(
     assert disabled.status_code == 200, disabled.text
     rule = client.get(
         f"/api/v1/digital-employees/{logistics['id']}/route-rule",
-        headers=AGENT,
+        headers=EMPLOYEE_VIEWER,
     ).json()
     updated = client.put(
         f"/api/v1/digital-employees/{logistics['id']}/route-rule",
