@@ -907,6 +907,7 @@ def search_knowledge(
         ],
         embedding_model=service.embedding_provider.name,
         reranker=service.reranker.name,
+        retrieval_mode=service.retrieval_mode,
     )
 
 

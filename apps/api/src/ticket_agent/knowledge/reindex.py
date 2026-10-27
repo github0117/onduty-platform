@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from ticket_agent.knowledge.embedding_factory import get_embedding_provider
@@ -14,6 +14,7 @@ from ticket_agent.knowledge.models import (
     KnowledgeVersion,
 )
 from ticket_agent.knowledge.service import KnowledgeService
+from ticket_agent.knowledge.tokenizer import LEXICAL_TOKENIZER_VERSION
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import Settings, get_settings
 
@@ -193,7 +194,20 @@ class KnowledgeReindexService:
         return job
 
     def pending_version_count(self, business_unit_id: str | None) -> int:
-        """Versions whose stored vectors do not match the active model."""
+        """Versions that still need a rebuild for the active model.
+
+        Covers both an embedding-model switch and chunks written before the
+        lexical channel existed (``lexical_text`` is NULL), so an upgrade is
+        observable instead of silently degrading hybrid retrieval to dense.
+        """
+        missing_lexical_text = (
+            select(KnowledgeChunk.id)
+            .where(
+                KnowledgeChunk.knowledge_version_id == KnowledgeVersion.id,
+                KnowledgeChunk.lexical_text.is_(None),
+            )
+            .exists()
+        )
         statement = (
             select(func.count())
             .select_from(KnowledgeVersion)
@@ -203,7 +217,10 @@ class KnowledgeReindexService:
             )
             .where(
                 KnowledgeVersion.status != "FAILED",
-                KnowledgeVersion.embedding_model != self.target_embedding_model,
+                or_(
+                    KnowledgeVersion.embedding_model != self.target_embedding_model,
+                    missing_lexical_text,
+                ),
             )
         )
         if business_unit_id:
@@ -305,6 +322,7 @@ class KnowledgeReindexService:
             return False
         return all(
             (metadata or {}).get("chunking_version") == job.target_chunking_version
+            and (metadata or {}).get("lexical_version") == LEXICAL_TOKENIZER_VERSION
             for metadata in metadata_rows
         )
 

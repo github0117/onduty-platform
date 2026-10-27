@@ -2348,6 +2348,7 @@ export function searchKnowledge(
   items: KnowledgeHit[];
   embedding_model: string;
   reranker: string;
+  retrieval_mode?: "dense" | "hybrid";
 }> {
   return request("/api/v1/knowledge/search", {
     method: "POST",

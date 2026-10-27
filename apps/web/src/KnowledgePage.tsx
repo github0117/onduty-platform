@@ -913,7 +913,11 @@ export default function KnowledgePage({
       }),
     onSuccess: (result) => {
       setHits(result.items);
-      setSearchMeta(`${result.embedding_model} · ${result.reranker}`);
+      setSearchMeta(
+        `${result.embedding_model} · ${result.reranker} · ${
+          result.retrieval_mode === "hybrid" ? "混合检索" : "向量检索"
+        }`,
+      );
     },
     onError: (error: Error) => message.error(error.message),
   });

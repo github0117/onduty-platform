@@ -199,6 +199,7 @@ class KnowledgeSearchResponse(BaseModel):
     items: list[KnowledgeHitView]
     embedding_model: str
     reranker: str
+    retrieval_mode: Literal["dense", "hybrid"] = "dense"
 
 
 class KnowledgeUploadAccepted(BaseModel):

@@ -62,6 +62,9 @@ services:
       CLAIM_VERIFIER_PROVIDER: local
       CLAIM_VERIFIER_FALLBACK_TO_LOCAL: "true"
       CLAIM_VERIFIER_ENFORCE: "false"
+      # 混合检索开关：默认 dense，切换 hybrid 前先完成重索引回填。
+      KNOWLEDGE_RETRIEVAL_MODE: ${KNOWLEDGE_RETRIEVAL_MODE:-dense}
+      KNOWLEDGE_RRF_K: ${KNOWLEDGE_RRF_K:-60}
       # 演示栈用本地卷保存素材，不依赖外部对象存储；接入 S3 兼容服务时
       # 将 provider 改为 s3 并按 .env.example 配置 S3_ENDPOINT_URL 等变量。
       OBJECT_STORAGE_PROVIDER: local

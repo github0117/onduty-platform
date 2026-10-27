@@ -162,6 +162,7 @@ class KnowledgeChunk(Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    lexical_text: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(
         EmbeddingVector(settings.embedding_dimensions),

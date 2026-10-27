@@ -153,3 +153,33 @@ curl -X POST http://127.0.0.1:8000/api/v1/knowledge/reindex \
 
 - 迁移顺序：先 `alembic upgrade head` 再启动应用。开发模式启动会执行
   `init_db()` 建表，顺序颠倒会出现 `DuplicateTable`。
+
+## 混合检索（BM25 词面通道 + RRF）
+
+```text
+KNOWLEDGE_RETRIEVAL_MODE=dense   # dense | hybrid
+KNOWLEDGE_RRF_K=60
+```
+
+- `dense`（默认）只走向量召回；`hybrid` 在 PostgreSQL 上额外执行
+  `to_tsvector('simple', lexical_text)` 全文召回，两路结果用 RRF 融合后再
+  交给 HybridReranker。
+- 词面通道依赖 `knowledge_chunks.lexical_text` 与表达式 GIN 索引
+  `ix_knowledge_chunks_lexical`（迁移 `d5e1f8c2b903`）。SQLite 环境没有全文
+  检索，会自动降级为 `dense`，`/knowledge/search` 的 `retrieval_mode` 返回
+  实际生效的模式。
+- 升级到本版本后历史 chunk 的 `lexical_text` 为空，迁移**不会**自动回填；
+  `/api/v1/metrics/rag` 的 `reindex_pending_versions` 会把它们计入待重建，
+  先执行一次重建再切换 `hybrid`：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/knowledge/reindex \
+  -H "X-Actor-Id: admin-1" -H "X-Actor-Role: admin" \
+  -H "Content-Type: application/json" \
+  -d '{"business_unit_id": "bu_demo"}'
+```
+
+- 分词规则在 `apps/api/src/ticket_agent/knowledge/tokenizer.py`：中文按单字 +
+  二元组，英文/数字保留整词，tsquery 侧按标点拆分（避免 PostgreSQL 把
+  `hx-9080b` 解析成相邻短语）。改动该文件需递增 `LEXICAL_TOKENIZER_VERSION`，
+  否则重建任务会判定 chunk 仍然是最新的。

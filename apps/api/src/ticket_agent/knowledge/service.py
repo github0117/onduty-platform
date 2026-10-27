@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Float, bindparam, delete, func, select, update
 from sqlalchemy import cast as sql_cast
+from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,11 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeVersionView,
 )
 from ticket_agent.knowledge.scope import scope_matches
+from ticket_agent.knowledge.tokenizer import (
+    LEXICAL_TOKENIZER_VERSION,
+    build_lexical_text,
+    build_tsquery,
+)
 from ticket_agent.model_gateway.usage import ModelUsageGuard
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
@@ -79,6 +85,20 @@ class KnowledgeService:
         self._uses_default_embedding_provider = embedding_provider is None
         self.embedding_provider = embedding_provider or get_embedding_provider()
         self.reranker = reranker or get_reranker()
+
+    @property
+    def retrieval_mode(self) -> str:
+        """Effective retrieval channel set for this session's database.
+
+        Hybrid retrieval needs PostgreSQL full-text search, so SQLite (used by
+        unit tests and the offline demo) always degrades to dense retrieval.
+        """
+        if (
+            self.settings.knowledge_retrieval_mode == "hybrid"
+            and self.session.get_bind().dialect.name == "postgresql"
+        ):
+            return "hybrid"
+        return "dense"
 
     def create_space(self, payload: KnowledgeSpaceCreate) -> KnowledgeSpace:
         existing = self.session.scalar(
@@ -863,67 +883,29 @@ class KnowledgeService:
         version_ids = [version.id for version, document in version_rows]
         query_vector = self.embedding_provider.embed_texts([query])[0]
         limit = top_k or self.settings.knowledge_search_top_k
+        candidate_limit = limit * self.settings.knowledge_candidate_multiplier
         dialect = self.session.get_bind().dialect.name
 
-        base_statement = (
-            select(KnowledgeChunk, KnowledgeVersion, KnowledgeDocument)
-            .join(
-                KnowledgeVersion,
-                KnowledgeVersion.id == KnowledgeChunk.knowledge_version_id,
-            )
-            .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeVersion.document_id)
-            .where(
-                KnowledgeChunk.knowledge_version_id.in_(version_ids),
-                KnowledgeVersion.embedding_model == self.embedding_provider.name,
-            )
+        dense_candidates = self._dense_candidates(
+            query_vector,
+            version_ids,
+            limit=candidate_limit,
+            dialect=dialect,
         )
-        if dialect == "postgresql":
-            distance = sql_cast(
-                KnowledgeChunk.embedding.op("<=>")(
-                    bindparam(
-                        "query_embedding",
-                        query_vector,
-                        type_=KnowledgeChunk.embedding.type,
-                    )
-                ),
-                Float,
-            ).label("distance")
-            postgres_rows = self.session.execute(
-                select(KnowledgeChunk, KnowledgeVersion, KnowledgeDocument, distance)
-                .join(
-                    KnowledgeVersion,
-                    KnowledgeVersion.id == KnowledgeChunk.knowledge_version_id,
-                )
-                .join(
-                    KnowledgeDocument,
-                    KnowledgeDocument.id == KnowledgeVersion.document_id,
-                )
-                .where(
-                    KnowledgeChunk.knowledge_version_id.in_(version_ids),
-                    KnowledgeVersion.embedding_model == self.embedding_provider.name,
-                )
-                .order_by(distance)
-                .limit(limit * self.settings.knowledge_candidate_multiplier)
-            ).all()
-            candidates = [
-                _retrieval_candidate(
-                    row,
-                    vector_score=1.0 - float(row[3]),
-                )
-                for row in postgres_rows
-            ]
+        if self.retrieval_mode == "hybrid":
+            lexical_candidates = self._lexical_candidates(
+                query=query,
+                query_vector=query_vector,
+                version_ids=version_ids,
+                limit=candidate_limit,
+            )
+            candidates = _rrf_fuse(
+                [dense_candidates, lexical_candidates],
+                limit=candidate_limit,
+                k=self.settings.knowledge_rrf_k,
+            )
         else:
-            rank_rows = self.session.execute(base_statement).all()
-            candidates = [
-                _retrieval_candidate(
-                    rank_row,
-                    vector_score=_cosine_similarity(
-                        query_vector,
-                        rank_row[0].embedding,
-                    ),
-                )
-                for rank_row in rank_rows
-            ]
+            candidates = dense_candidates
 
         ranked = self.reranker.rerank(query=query, candidates=candidates, top_k=limit)
         hits: list[KnowledgeHit] = []
@@ -948,6 +930,117 @@ class KnowledgeService:
                 )
             )
         return hits
+
+    def _dense_candidates(
+        self,
+        query_vector: list[float],
+        version_ids: list[UUID],
+        *,
+        limit: int,
+        dialect: str,
+    ) -> list[RetrievalCandidate]:
+        if dialect == "postgresql":
+            distance = sql_cast(
+                KnowledgeChunk.embedding.op("<=>")(
+                    bindparam(
+                        "query_embedding",
+                        query_vector,
+                        type_=KnowledgeChunk.embedding.type,
+                    )
+                ),
+                Float,
+            ).label("distance")
+            rows = self.session.execute(
+                select(KnowledgeChunk, KnowledgeVersion, KnowledgeDocument, distance)
+                .join(
+                    KnowledgeVersion,
+                    KnowledgeVersion.id == KnowledgeChunk.knowledge_version_id,
+                )
+                .join(
+                    KnowledgeDocument,
+                    KnowledgeDocument.id == KnowledgeVersion.document_id,
+                )
+                .where(
+                    KnowledgeChunk.knowledge_version_id.in_(version_ids),
+                    KnowledgeVersion.embedding_model == self.embedding_provider.name,
+                )
+                .order_by(distance)
+                .limit(limit)
+            ).all()
+            return [
+                _retrieval_candidate(row, vector_score=1.0 - float(row[3]))
+                for row in rows
+            ]
+        sqlite_rows = self.session.execute(
+            select(KnowledgeChunk, KnowledgeVersion, KnowledgeDocument)
+            .join(
+                KnowledgeVersion,
+                KnowledgeVersion.id == KnowledgeChunk.knowledge_version_id,
+            )
+            .join(
+                KnowledgeDocument,
+                KnowledgeDocument.id == KnowledgeVersion.document_id,
+            )
+            .where(
+                KnowledgeChunk.knowledge_version_id.in_(version_ids),
+                KnowledgeVersion.embedding_model == self.embedding_provider.name,
+            )
+        ).all()
+        return [
+            _retrieval_candidate(
+                row,
+                vector_score=_cosine_similarity(query_vector, row[0].embedding),
+            )
+            for row in sqlite_rows
+        ]
+
+    def _lexical_candidates(
+        self,
+        *,
+        query: str,
+        query_vector: list[float],
+        version_ids: list[UUID],
+        limit: int,
+    ) -> list[RetrievalCandidate]:
+        tsquery_text = build_tsquery(query)
+        if not tsquery_text:
+            return []
+        # Keep this expression identical to the GIN index expression so the
+        # planner can use ix_knowledge_chunks_lexical.
+        document_vector = func.to_tsvector(
+            sql_text("'simple'"),
+            func.coalesce(KnowledgeChunk.lexical_text, ""),
+        )
+        tsquery = func.to_tsquery(
+            sql_text("'simple'"),
+            bindparam("lexical_query", tsquery_text),
+        )
+        rank = func.ts_rank_cd(document_vector, tsquery).label("rank")
+        rows = self.session.execute(
+            select(KnowledgeChunk, KnowledgeVersion, KnowledgeDocument, rank)
+            .join(
+                KnowledgeVersion,
+                KnowledgeVersion.id == KnowledgeChunk.knowledge_version_id,
+            )
+            .join(
+                KnowledgeDocument,
+                KnowledgeDocument.id == KnowledgeVersion.document_id,
+            )
+            .where(
+                KnowledgeChunk.knowledge_version_id.in_(version_ids),
+                KnowledgeVersion.embedding_model == self.embedding_provider.name,
+                document_vector.op("@@")(tsquery),
+            )
+            .order_by(rank.desc())
+            .limit(limit)
+        ).all()
+        return [
+            _retrieval_candidate(
+                row,
+                vector_score=_cosine_similarity(query_vector, row[0].embedding),
+            )
+            for row in rows
+        ]
 
     def _resolve_search_scope(
         self,
@@ -1380,6 +1473,7 @@ class KnowledgeService:
                 "ordinal": ordinal,
                 "chunking_version": chunking_version,
                 "embedding_model": batch.model_name,
+                "lexical_version": LEXICAL_TOKENIZER_VERSION,
             }
             if batch.fallback_used:
                 metadata["embedding_fallback_used"] = True
@@ -1392,6 +1486,7 @@ class KnowledgeService:
                     knowledge_version_id=version.id,
                     ordinal=ordinal,
                     content=draft.content,
+                    lexical_text=build_lexical_text(draft.content),
                     metadata_json=metadata,
                     embedding=embedding,
                 )
@@ -1455,6 +1550,30 @@ class KnowledgeService:
         version.ingestion_error = error[:2000]
         version.processed_at = datetime.now(UTC)
         self.session.commit()
+
+
+def _rrf_fuse(
+    rankings: list[list[RetrievalCandidate]],
+    *,
+    limit: int,
+    k: int,
+) -> list[RetrievalCandidate]:
+    """Merge ranked channels with reciprocal rank fusion.
+
+    Channels are fused by rank rather than score so the dense cosine scale and
+    the ts_rank_cd scale never have to be comparable. ``k`` damps the top-rank
+    dominance; 60 is the conventional default.
+    """
+    scores: dict[UUID, float] = {}
+    candidates: dict[UUID, RetrievalCandidate] = {}
+    for ranking in rankings:
+        for position, candidate in enumerate(ranking, start=1):
+            scores[candidate.chunk_id] = scores.get(candidate.chunk_id, 0.0) + 1.0 / (
+                k + position
+            )
+            candidates.setdefault(candidate.chunk_id, candidate)
+    ordered = sorted(scores, key=lambda chunk_id: scores[chunk_id], reverse=True)
+    return [candidates[chunk_id] for chunk_id in ordered[:limit]]
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

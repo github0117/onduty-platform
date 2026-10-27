@@ -44,6 +44,11 @@
   版本不落库；开启时按真实使用的本地模型名与 `embedding_fallback_used` 标记
   写入，避免向量空间混用。`/metrics/rag` 增加 `embedding_model` 与
   `reindex_pending_versions`，模型切换后未重建的版本可被观测。
+- 混合检索（`KNOWLEDGE_RETRIEVAL_MODE=hybrid`，默认 `dense`）：向量召回与
+  PostgreSQL 全文召回（`to_tsvector('simple')` + `ts_rank_cd`，表达式 GIN
+  索引）各取候选，用 RRF 融合后再重排，兼顾语义召回与型号、单号等精确词面
+  命中。SQLite 与未回填的历史 chunk 自动退化为向量召回，`/knowledge/search`
+  返回实际生效的 `retrieval_mode`，未回填版本计入 `reindex_pending_versions`。
 - 数字员工可绑定多个知识空间，检索与工作流执行均校验空间授权。
 - 商品新增或变化后自动生成静态商品知识卡，使用内容哈希避免重复索引。
 - 知识评测中心支持召回率、MRR、无答案检测和失败修复任务。
