@@ -8,9 +8,10 @@
 主演示是**企业服务台**：同一入口按问题自动分派研发支持、HR 和企业服务台员工；
 电商客服用于验证商品咨询、订单物流、退款审批、人工接管和失败恢复闭环。
 
-[![60 秒演示视频封面](docs/assets/demo/on-duty-routing-demo.jpg)](docs/assets/demo/on-duty-routing-demo.mp4)
+[![企业服务台自动分派演示](docs/assets/demo/on-duty-routing-demo-preview.gif)](docs/assets/demo/on-duty-routing-demo.mp4)
 
-> 60 秒演示：同一入口跨岗位分派 → 员工能力快照 → 意图冲突检查 → 路由评测。
+> 动图截取自 60 秒演示：同一入口跨岗位分派 → 员工能力快照 → 意图冲突检查 →
+> 路由评测。完整视频：
 > [MP4](docs/assets/demo/on-duty-routing-demo.mp4) ·
 > [WebM](docs/assets/demo/on-duty-routing-demo.webm)
 
@@ -97,7 +98,7 @@ Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
 Ruff / mypy: passed（175 个源文件）
 TypeScript / Vite: passed
-Playwright: 131 passed, 1 skipped（21 个测试文件）
+Playwright: 140 passed, 2 skipped（24 个测试文件）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
 PostgreSQL migration: e7a1c3d5b9f2 (head)
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
