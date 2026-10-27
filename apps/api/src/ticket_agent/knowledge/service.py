@@ -907,7 +907,20 @@ class KnowledgeService:
         else:
             candidates = dense_candidates
 
-        ranked = self.reranker.rerank(query=query, candidates=candidates, top_k=limit)
+        try:
+            ranked = self.reranker.rerank(
+                query=query,
+                candidates=candidates,
+                top_k=limit,
+            )
+        except RuntimeError as exc:
+            raise ApiProblem(
+                status_code=503,
+                code="RERANK_UNAVAILABLE",
+                title="Reranker is unavailable",
+                detail="External rerank failed and local fallback is disabled.",
+                retryable=True,
+            ) from exc
         hits: list[KnowledgeHit] = []
         score_threshold = (
             min_score

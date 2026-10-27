@@ -83,10 +83,13 @@ class Settings(BaseSettings):
     knowledge_lexical_weight: float = 0.4
     knowledge_candidate_multiplier: int = 5
     knowledge_rerank_provider: Literal["local", "external"] = "local"
+    knowledge_rerank_min_candidates: int = 1
+    knowledge_rerank_trigger_score: float = 0.0
+    knowledge_rerank_max_candidates: int = 30
     rerank_base_url: str = ""
     rerank_api_key: str = ""
     rerank_model_name: str = ""
-    rerank_timeout_seconds: float = 20.0
+    rerank_timeout_seconds: float = 3.0
     rerank_fallback_to_local: bool = True
     claim_verifier_provider: Literal["none", "local", "external"] = "local"
     claim_verifier_base_url: str = ""

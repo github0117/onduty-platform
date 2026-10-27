@@ -12,6 +12,8 @@ import httpx
 BUSINESS_UNIT = "bu_demo"
 ADMIN = {"X-Actor-Id": "demo-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "demo-agent", "X-Actor-Role": "agent"}
+# 商品上架审核需要 ecommerce.operate，只有主管和管理员具备。
+SUPERVISOR = {"X-Actor-Id": "demo-supervisor", "X-Actor-Role": "supervisor"}
 DEMO_CUSTOMER_EMPLOYEE_KEY = "demo_vacuum_cup_customer_service"
 DEMO_HR_EMPLOYEE_KEY = "demo_hr_onboarding"
 DEMO_DEVELOPER_EMPLOYEE_KEY = "demo_developer_support"
@@ -963,7 +965,7 @@ def main() -> None:
         if published_listing["status"] in {"PENDING_REVIEW", "NEEDS_HUMAN"}:
             response = client.post(
                 (f"/api/v1/ecommerce/listing-tasks/{published_listing['id']}/reviews"),
-                headers=AGENT,
+                headers=SUPERVISOR,
                 json={
                     "expected_version": published_listing["version"],
                     "decision": "ACCEPTED",
@@ -2213,7 +2215,7 @@ def _ensure_ecommerce_product(
 ) -> dict[str, Any]:
     products = client.get(
         "/api/v1/ecommerce/products",
-        headers=AGENT,
+        headers=ADMIN,
         params={"business_unit_id": BUSINESS_UNIT},
     )
     products.raise_for_status()
@@ -2246,7 +2248,7 @@ def _ensure_product_asset(
 ) -> dict[str, Any]:
     assets = client.get(
         f"/api/v1/ecommerce/products/{product['id']}/assets",
-        headers=AGENT,
+        headers=ADMIN,
         params={"business_unit_id": BUSINESS_UNIT},
     )
     assets.raise_for_status()
@@ -2256,7 +2258,7 @@ def _ensure_product_asset(
             return asset
     response = client.post(
         f"/api/v1/ecommerce/products/{product['id']}/assets",
-        headers={**AGENT, "Content-Type": "image/png"},
+        headers={**ADMIN, "Content-Type": "image/png"},
         params={"filename": filename},
         content=_demo_product_png(color),
     )
@@ -2272,7 +2274,7 @@ def _ensure_generated_image(
 ) -> dict[str, Any]:
     assets = client.get(
         f"/api/v1/ecommerce/products/{product['id']}/assets",
-        headers=AGENT,
+        headers=ADMIN,
         params={"business_unit_id": BUSINESS_UNIT},
     )
     assets.raise_for_status()
@@ -2281,7 +2283,7 @@ def _ensure_generated_image(
             return asset
     response = client.post(
         f"/api/v1/ecommerce/products/{product['id']}/assets/generate",
-        headers=AGENT,
+        headers=ADMIN,
         json={"prompt": prompt},
     )
     response.raise_for_status()
@@ -2336,7 +2338,7 @@ def _ensure_listing_task(
 ) -> dict[str, Any]:
     tasks = client.get(
         "/api/v1/ecommerce/listing-tasks",
-        headers=AGENT,
+        headers=ADMIN,
         params={"business_unit_id": BUSINESS_UNIT},
     )
     tasks.raise_for_status()
@@ -2344,13 +2346,13 @@ def _ensure_listing_task(
         if task["product_id"] == product["id"] and task["channel"] == channel:
             detail = client.get(
                 f"/api/v1/ecommerce/listing-tasks/{task['id']}",
-                headers=AGENT,
+                headers=ADMIN,
             )
             detail.raise_for_status()
             return detail.json()
     response = client.post(
         "/api/v1/ecommerce/listing-tasks",
-        headers=AGENT,
+        headers=ADMIN,
         params={"business_unit_id": BUSINESS_UNIT},
         json={"product_id": product["id"], "channel": channel},
     )
@@ -2389,7 +2391,7 @@ def _wait_for_listing(
     while time.monotonic() < deadline:
         response = client.get(
             f"/api/v1/ecommerce/listing-tasks/{task_id}",
-            headers=AGENT,
+            headers=ADMIN,
         )
         response.raise_for_status()
         last_payload = response.json()

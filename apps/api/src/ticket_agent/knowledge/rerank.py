@@ -1,4 +1,5 @@
 from functools import lru_cache
+from threading import Lock
 from typing import Protocol
 
 import httpx
@@ -11,6 +12,30 @@ from ticket_agent.knowledge.retrieval import (
 from ticket_agent.model_gateway.usage import ModelUsageGuard, TokenUsage
 from ticket_agent.shared.redaction import redact_sensitive_text
 from ticket_agent.shared.settings import Settings, get_settings
+
+_FALLBACK_LOCK = Lock()
+_FALLBACKS = 0
+
+
+def rerank_fallback_total() -> int:
+    """Remote rerank failures that were served by the local reranker."""
+
+    with _FALLBACK_LOCK:
+        return _FALLBACKS
+
+
+def reset_rerank_metrics() -> None:
+    """Reset the fallback counter. Intended for tests."""
+
+    global _FALLBACKS
+    with _FALLBACK_LOCK:
+        _FALLBACKS = 0
+
+
+def _record_fallback() -> None:
+    global _FALLBACKS
+    with _FALLBACK_LOCK:
+        _FALLBACKS += 1
 
 
 class Reranker(Protocol):
@@ -47,6 +72,20 @@ class ExternalHTTPReranker:
     def name(self) -> str:
         return f"external:{self.settings.rerank_model_name}"
 
+    def should_rerank(self, candidates: list[RetrievalCandidate]) -> bool:
+        """Decide whether a remote call is worth the latency.
+
+        A large candidate pool or a weak top vector score means the local
+        ordering is uncertain, so the cross-encoder earns its cost. Small,
+        confident pools keep the local reranker and skip the remote round trip.
+        """
+        if not candidates:
+            return False
+        if len(candidates) >= self.settings.knowledge_rerank_min_candidates:
+            return True
+        best = max(candidate.vector_score for candidate in candidates)
+        return best < self.settings.knowledge_rerank_trigger_score
+
     def rerank(
         self,
         *,
@@ -54,6 +93,14 @@ class ExternalHTTPReranker:
         candidates: list[RetrievalCandidate],
         top_k: int,
     ) -> list[RankedCandidate]:
+        if not self.should_rerank(candidates):
+            return self._fallback.rerank(
+                query=query,
+                candidates=candidates,
+                top_k=top_k,
+            )
+        max_candidates = max(1, self.settings.knowledge_rerank_max_candidates)
+        candidates = candidates[:max_candidates]
         started_monotonic = (
             self._usage_guard.start(purpose="rerank")
             if self._usage_guard
@@ -85,6 +132,7 @@ class ExternalHTTPReranker:
                 )
             if not self.settings.rerank_fallback_to_local:
                 raise RuntimeError("External reranker failed") from exc
+            _record_fallback()
             return self._fallback.rerank(
                 query=query,
                 candidates=candidates,
@@ -118,7 +166,7 @@ class ExternalHTTPReranker:
                 "model": self.settings.rerank_model_name,
                 "query": redact_sensitive_text(query) if redact else query,
                 "documents": documents,
-                "top_n": top_k,
+                "top_n": min(top_k, len(documents)),
             },
         )
         response.raise_for_status()

@@ -49,6 +49,10 @@
   索引）各取候选，用 RRF 融合后再重排，兼顾语义召回与型号、单号等精确词面
   命中。SQLite 与未回填的历史 chunk 自动退化为向量召回，`/knowledge/search`
   返回实际生效的 `retrieval_mode`，未回填版本计入 `reindex_pending_versions`。
+- 远端 cross-encoder 重排（`KNOWLEDGE_RERANK_PROVIDER=external`）：按候选数与
+  最高向量分决定是否调用远端 `POST /rerank`，单次最多 30 条、超时 3s；超时或
+  5xx 自动回退本地重排并在 `ticket_worker_rag_rerank_fallbacks_total` 计数，
+  检索不会因重排失败而失败；关闭回退时返回 `503 RERANK_UNAVAILABLE`。
 - 数字员工可绑定多个知识空间，检索与工作流执行均校验空间授权。
 - 商品新增或变化后自动生成静态商品知识卡，使用内容哈希避免重复索引。
 - 知识评测中心支持召回率、MRR、无答案检测和失败修复任务。

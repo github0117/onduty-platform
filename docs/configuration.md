@@ -183,3 +183,35 @@ curl -X POST http://127.0.0.1:8000/api/v1/knowledge/reindex \
   二元组，英文/数字保留整词，tsquery 侧按标点拆分（避免 PostgreSQL 把
   `hx-9080b` 解析成相邻短语）。改动该文件需递增 `LEXICAL_TOKENIZER_VERSION`，
   否则重建任务会判定 chunk 仍然是最新的。
+
+## 远端重排（cross-encoder）
+
+```text
+KNOWLEDGE_RERANK_PROVIDER=external
+RERANK_BASE_URL=https://rerank.example/v1
+RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
+RERANK_API_KEY=<local-secret>
+RERANK_TIMEOUT_SECONDS=3
+RERANK_FALLBACK_TO_LOCAL=true
+KNOWLEDGE_RERANK_MIN_CANDIDATES=1
+KNOWLEDGE_RERANK_TRIGGER_SCORE=0
+KNOWLEDGE_RERANK_MAX_CANDIDATES=30
+```
+
+- 契约固定为 `POST {RERANK_BASE_URL}/rerank`，请求体
+  `{model, query, documents[], top_n}`，响应 `[{index, relevance_score}]`，
+  分数须在 `[0, 1]`；自托管可用 TEI / Infinity 承载 `bge-reranker-v2-m3`。
+- 触发条件：候选数 ≥ `KNOWLEDGE_RERANK_MIN_CANDIDATES`，或最高向量分低于
+  `KNOWLEDGE_RERANK_TRIGGER_SCORE`。默认值（1 / 0）表示只要有候选就调用远端，
+  与旧行为一致；想省成本可把 `MIN_CANDIDATES` 调大、`TRIGGER_SCORE` 设为
+  0.4–0.5。
+- 单次最多发送 `KNOWLEDGE_RERANK_MAX_CANDIDATES` 条（默认 30）控制延迟；
+  `top_n` 取 `min(top_k, 候选数)`。
+- 远端超时/5xx/响应非法时，`RERANK_FALLBACK_TO_LOCAL=true` 回退本地重排并
+  计入 Prometheus 计数器 `ticket_worker_rag_rerank_fallbacks_total`；设为
+  `false` 则检索返回 `503 RERANK_UNAVAILABLE`（可重试），不返回未重排结果。
+  默认回退，因此检索不会因重排失败而整体失败。
+- 数字员工档案里配置的 rerank 端点会覆盖全局设置，并额外记录
+  `usage_guard` 的 token 与耗时。
+- compose 栈通过 `.env` 透传上述变量（默认 `local`），`RERANK_API_KEY` 默认为空，
+  密钥只在运行时从本机 `.env` 注入，不写入镜像或 compose 文件。

@@ -1,5 +1,6 @@
 from collections.abc import Mapping, Sequence
 
+from ticket_agent.knowledge.rerank import rerank_fallback_total
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.rate_limit import rate_limit_rejection_total
 from ticket_agent.shared.settings import Settings
@@ -290,6 +291,16 @@ def render_labeled_prometheus_metrics(
     lines.append(
         "ticket_worker_rate_limit_rejections_total "
         f"{rate_limit_rejection_total()}"
+    )
+    # Process-local counter: remote rerank failures served by the local reranker.
+    lines.append(
+        "# HELP ticket_worker_rag_rerank_fallbacks_total "
+        "Rerank requests that fell back to the local reranker."
+    )
+    lines.append("# TYPE ticket_worker_rag_rerank_fallbacks_total counter")
+    lines.append(
+        "ticket_worker_rag_rerank_fallbacks_total "
+        f"{rerank_fallback_total()}"
     )
     return "\n".join(lines) + "\n"
 
