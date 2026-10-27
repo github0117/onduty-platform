@@ -103,12 +103,12 @@ make acceptance-final
 当前基线：
 
 ```text
-后端: 352 passed, 1 skipped
+后端: 394 passed, 1 skipped
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
-Ruff / mypy: passed（175 个源文件）
+Ruff / mypy: passed（177 个源文件）
 TypeScript / Vite: passed
-Playwright: 141 passed, 2 skipped（24 个测试文件）
+Playwright: 148 passed, 2 skipped（25 个测试文件）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
 PostgreSQL migration: e7a1c3d5b9f2 (head)
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
