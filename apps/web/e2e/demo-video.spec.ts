@@ -171,11 +171,16 @@ async function openDemoPage(page: Page, path: string): Promise<void> {
 }
 
 async function waitForAnswer(page: Page): Promise<void> {
+  // 流式气泡不一定出现（模型可能一次性返回完整回答），用思考气泡作为“本轮已开始”
+  // 的信号，避免录制等待 60 秒超时后留下大段静止画面。
   await page
-    .locator(".chat-bubble-streaming")
-    .waitFor({ state: "visible", timeout: 60_000 })
+    .locator(".chat-typing, .chat-bubble-streaming")
+    .first()
+    .waitFor({ state: "visible", timeout: 15_000 })
     .catch(() => undefined);
-  await page.waitForTimeout(1200);
+  await expect(page.locator(".chat-typing")).toHaveCount(0, {
+    timeout: 120_000,
+  });
   await expect(page.locator(".chat-bubble-streaming")).toHaveCount(0, {
     timeout: 120_000,
   });
@@ -278,7 +283,7 @@ test("按员工分派 · 意图治理 · 路由评测", async ({ page }) => {
   await installOverlay(page);
   await setCaption(
     page,
-    "03 · 每名员工 12 条固定问题，共 36 条路由评测用例",
+    "03 · 调参集 36 条固定问题，另有 18 条留出集只用于验收",
   );
   await expect(
     page.getByRole("heading", { name: "路由评测集", exact: true }),
@@ -315,7 +320,7 @@ test("按员工分派 · 意图治理 · 路由评测", async ({ page }) => {
     "04 · 准确率、判断方式和候选证据都能追溯到每一条问题",
   );
   await page
-    .getByText("最近评测结果", { exact: true })
+    .getByText(/最近评测结果/)
     .scrollIntoViewIfNeeded();
   await page.waitForTimeout(1400);
   const resultCard = page
