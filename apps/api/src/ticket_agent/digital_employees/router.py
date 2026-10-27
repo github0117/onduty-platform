@@ -35,6 +35,7 @@ from ticket_agent.digital_employees.schemas import (
     DigitalEmployeeTemplateView,
     DigitalEmployeeUpdate,
     DigitalEmployeeView,
+    RouteEvaluationDataset,
 )
 from ticket_agent.digital_employees.service import DigitalEmployeeService
 from ticket_agent.identity.dependencies import (
@@ -412,6 +413,7 @@ def list_digital_employee_route_evaluation_cases(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
     service_entry_id: Annotated[UUID | None, Query()] = None,
+    dataset: Annotated[RouteEvaluationDataset | None, Query()] = None,
 ) -> list[DigitalEmployeeRouteEvaluationCaseView]:
     ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(
@@ -422,6 +424,7 @@ def list_digital_employee_route_evaluation_cases(
         db,
         business_unit_id=business_unit_id,
         service_entry_id=service_entry_id,
+        dataset=dataset,
     )
 
 
@@ -460,6 +463,7 @@ def create_digital_employee_route_evaluation_case(
         payload={
             "service_entry_id": str(case.service_entry_id),
             "expected_employee_id": str(case.expected_employee_id),
+            "dataset": case.dataset,
         },
     )
     db.commit()
@@ -551,6 +555,7 @@ def run_digital_employee_route_evaluation(
         db,
         business_unit_id=business_unit_id,
         service_entry_id=payload.service_entry_id,
+        dataset=payload.dataset,
         actor_id=principal.actor_id,
     )
     record_audit(
@@ -565,6 +570,7 @@ def run_digital_employee_route_evaluation(
         decision="EXECUTED",
         payload={
             "service_entry_id": str(run.service_entry_id),
+            "dataset": run.dataset,
             "total": run.total,
             "passed": run.passed,
             "failed": run.failed,
@@ -584,6 +590,7 @@ def list_digital_employee_route_evaluation_runs(
     principal: Actor,
     business_unit_id: str | None = Query(default=None),
     service_entry_id: Annotated[UUID | None, Query()] = None,
+    dataset: Annotated[RouteEvaluationDataset | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> DigitalEmployeeRouteEvaluationRunList:
     ensure_workspace_viewer(principal)
@@ -595,6 +602,7 @@ def list_digital_employee_route_evaluation_runs(
         db,
         business_unit_id=business_unit_id,
         service_entry_id=service_entry_id,
+        dataset=dataset,
         limit=limit,
     )
 

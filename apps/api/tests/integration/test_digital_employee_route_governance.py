@@ -97,6 +97,7 @@ def _add_case(
     entry_id: str,
     employee_id: str,
     question: str,
+    dataset: str = "TUNING",
     headers: dict[str, str] = ADMIN,
 ) -> Any:
     return client.post(
@@ -106,6 +107,7 @@ def _add_case(
         json={
             "service_entry_id": entry_id,
             "expected_employee_id": employee_id,
+            "dataset": dataset,
             "question": question,
             "notes": "路由回归",
         },
@@ -322,6 +324,128 @@ def test_route_evaluation_case_crud_and_permissions(
     )
     assert remaining.status_code == 200, remaining.text
     assert remaining.json() == []
+
+
+def test_route_evaluation_holdout_dataset_reports_failure_analysis(
+    client: TestClient,
+) -> None:
+    enterprise = _create_employee(
+        client,
+        template_code="enterprise_service_desk",
+        name="企业服务台",
+    )
+    hr = _create_employee(
+        client,
+        template_code="hr_onboarding",
+        name="HR 专员",
+    )
+    _set_route_rule(
+        client,
+        enterprise["id"],
+        intents=["会议室", "报销"],
+        priority=50,
+    )
+    _set_route_rule(
+        client,
+        hr["id"],
+        intents=["入职", "请假"],
+        priority=10,
+    )
+    entry = _create_entry(
+        client,
+        code="route_evaluation_holdout",
+        default_employee_id=enterprise["id"],
+        employee_ids=[enterprise["id"], hr["id"]],
+    )
+    _add_case(
+        client,
+        entry_id=entry["id"],
+        employee_id=enterprise["id"],
+        question="会议室怎么预订？",
+    )
+    for employee_id, question in (
+        (enterprise["id"], "报销发票在哪里开？"),
+        (hr["id"], "公积金缴纳基数怎么查询？"),
+    ):
+        created = _add_case(
+            client,
+            entry_id=entry["id"],
+            employee_id=employee_id,
+            question=question,
+            dataset="HOLDOUT",
+        )
+        assert created.status_code == 201, created.text
+
+    tuning = client.post(
+        "/api/v1/digital-employee-route-evaluation-runs",
+        headers=KNOWLEDGE_OPERATOR,
+        params={"business_unit_id": "bu_demo"},
+        json={"service_entry_id": entry["id"]},
+    )
+    assert tuning.status_code == 201, tuning.text
+    assert tuning.json()["dataset"] == "TUNING"
+    assert tuning.json()["total"] == 1
+    assert tuning.json()["passed"] == 1
+
+    holdout = client.post(
+        "/api/v1/digital-employee-route-evaluation-runs",
+        headers=KNOWLEDGE_OPERATOR,
+        params={"business_unit_id": "bu_demo"},
+        json={
+            "service_entry_id": entry["id"],
+            "dataset": "HOLDOUT",
+        },
+    )
+    assert holdout.status_code == 201, holdout.text
+    run = holdout.json()
+    assert run["dataset"] == "HOLDOUT"
+    assert run["total"] == 2
+    assert run["passed"] == 1
+    assert run["failed"] == 1
+    assert {item["question"] for item in run["results"]} == {
+        "报销发票在哪里开？",
+        "公积金缴纳基数怎么查询？",
+    }
+    missed = next(item for item in run["results"] if item["question"] == "公积金缴纳基数怎么查询？")
+    assert missed["matched"] is False
+    assert missed["predicted_in_pool"] is False
+    analysis = run["failure_analysis"]
+    assert analysis["failed_total"] == 1
+    assert analysis["out_of_pool_total"] == 1
+    assert analysis["confusions"] == [
+        {
+            "expected_employee_name": "HR 专员",
+            "predicted_employee_name": missed["predicted_employee_name"],
+            "count": 1,
+            "out_of_pool_count": 1,
+        }
+    ]
+    assert analysis["reasons"][0]["reason_code"] == "NO_MATCH_DEFAULT"
+
+    holdout_cases = client.get(
+        "/api/v1/digital-employee-route-evaluation-cases",
+        headers=AGENT,
+        params={
+            "business_unit_id": "bu_demo",
+            "service_entry_id": entry["id"],
+            "dataset": "HOLDOUT",
+        },
+    )
+    assert holdout_cases.status_code == 200, holdout_cases.text
+    assert len(holdout_cases.json()) == 2
+
+    holdout_runs = client.get(
+        "/api/v1/digital-employee-route-evaluation-runs",
+        headers=AGENT,
+        params={
+            "business_unit_id": "bu_demo",
+            "service_entry_id": entry["id"],
+            "dataset": "HOLDOUT",
+        },
+    )
+    assert holdout_runs.status_code == 200, holdout_runs.text
+    assert holdout_runs.json()["total"] == 1
+    assert holdout_runs.json()["items"][0]["id"] == run["id"]
 
 
 def test_intent_conflict_endpoint_reports_conflicts_and_suppressions(

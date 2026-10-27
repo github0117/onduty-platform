@@ -34,19 +34,12 @@ def test_fresh_sqlite_migrations_normalize_employee_ids(
 
     assert completed.returncode == 0, completed.stderr
     with sqlite3.connect(database_path) as connection:
-        revision = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
         default_employee = connection.execute(
-            "SELECT id FROM digital_employees "
-            "WHERE employee_key = 'customer_service_ticket_v1'"
+            "SELECT id FROM digital_employees WHERE employee_key = 'customer_service_ticket_v1'"
         ).fetchone()
-        violations = connection.execute(
-            "PRAGMA foreign_key_check"
-        ).fetchall()
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert revision == ("c7d4e1a9b352",)
-    assert default_employee == (
-        "00000000000000000000000000000101",
-    )
+    assert revision == ("e7a1c3d5b9f2",)
+    assert default_employee == ("00000000000000000000000000000101",)
     assert violations == []

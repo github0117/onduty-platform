@@ -181,6 +181,7 @@ const routeEvaluationCase = {
   service_entry_id: evaluationEntry.id,
   expected_employee_id: activeEmployee.id,
   expected_employee_name: activeEmployee.name,
+  dataset: "TUNING",
   question: "报销需要准备哪些发票？",
   notes: "财务与费用",
   enabled: true,
@@ -192,10 +193,24 @@ const routeEvaluationRun = {
   id: "evaluation-run-e2e",
   business_unit_id: "bu_demo",
   service_entry_id: evaluationEntry.id,
+  dataset: "TUNING",
   total: 2,
   passed: 1,
   failed: 1,
   accuracy: 0.5,
+  failure_analysis: {
+    failed_total: 1,
+    out_of_pool_total: 0,
+    confusions: [
+      {
+        expected_employee_name: "HR 入职资料数字员工",
+        predicted_employee_name: activeEmployee.name,
+        count: 1,
+        out_of_pool_count: 0,
+      },
+    ],
+    reasons: [{ reason_code: "INTENT_MATCH", count: 1 }],
+  },
   results: [
     {
       case_id: routeEvaluationCase.id,
@@ -204,6 +219,7 @@ const routeEvaluationRun = {
       expected_employee_name: activeEmployee.name,
       predicted_employee_id: activeEmployee.id,
       predicted_employee_name: activeEmployee.name,
+      predicted_in_pool: true,
       matched: true,
       reason_code: "INTENT_MATCH",
       confidence: 0.88,
@@ -216,6 +232,7 @@ const routeEvaluationRun = {
       expected_employee_name: "HR 入职资料数字员工",
       predicted_employee_id: activeEmployee.id,
       predicted_employee_name: activeEmployee.name,
+      predicted_in_pool: true,
       matched: false,
       reason_code: "INTENT_MATCH",
       confidence: 0.71,
@@ -1166,6 +1183,7 @@ test("路由评测页展示准确率、误派原因并支持添加问题", async
   expect(create.postDataJSON()).toMatchObject({
     service_entry_id: evaluationEntry.id,
     expected_employee_id: activeEmployee.id,
+    dataset: "TUNING",
     question: "办公室 VPN 连不上怎么办？",
     notes: "IT 与账号",
   });
@@ -1174,8 +1192,137 @@ test("路由评测页展示准确率、误派原因并支持添加问题", async
   const run = await runRequest;
   expect(run.postDataJSON()).toEqual({
     service_entry_id: evaluationEntry.id,
+    dataset: "TUNING",
   });
   await expect(
     page.getByText("路由评测完成：准确率 50%"),
+  ).toBeVisible();
+});
+
+test("路由评测页支持留出集和失败分析", async ({ page }) => {
+  await mockRouteEvaluationShell(page);
+  const holdoutCase = {
+    ...routeEvaluationCase,
+    id: "evaluation-case-holdout",
+    dataset: "HOLDOUT",
+    question: "新员工第一周需要完成哪些手续？",
+    expected_employee_id: "employee-hr",
+    expected_employee_name: "HR 入职资料数字员工",
+    notes: "入职",
+  };
+  const holdoutRun = {
+    ...routeEvaluationRun,
+    id: "evaluation-run-holdout",
+    dataset: "HOLDOUT",
+    total: 18,
+    passed: 15,
+    failed: 3,
+    accuracy: 0.8333,
+    failure_analysis: {
+      failed_total: 3,
+      out_of_pool_total: 1,
+      confusions: [
+        {
+          expected_employee_name: "HR 入职资料数字员工",
+          predicted_employee_name: activeEmployee.name,
+          count: 2,
+          out_of_pool_count: 0,
+        },
+        {
+          expected_employee_name: "HR 入职资料数字员工",
+          predicted_employee_name: "平台兜底员工",
+          count: 1,
+          out_of_pool_count: 1,
+        },
+      ],
+      reasons: [
+        { reason_code: "INTENT_MATCH", count: 2 },
+        { reason_code: "NO_MATCH_DEFAULT", count: 1 },
+      ],
+    },
+    results: [
+      {
+        case_id: holdoutCase.id,
+        question: holdoutCase.question,
+        expected_employee_id: "employee-hr",
+        expected_employee_name: "HR 入职资料数字员工",
+        predicted_employee_id: "employee-platform-default",
+        predicted_employee_name: "平台兜底员工",
+        predicted_in_pool: false,
+        matched: false,
+        reason_code: "NO_MATCH_DEFAULT",
+        confidence: 0.2,
+        candidates: [],
+      },
+    ],
+  };
+  await page.route(
+    "**/api/v1/digital-employee-route-evaluation-cases?*",
+    async (route) => {
+      if (!route.request().url().includes("dataset=HOLDOUT")) {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([holdoutCase]),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/digital-employee-route-evaluation-runs?*",
+    async (route) => {
+      if (!route.request().url().includes("dataset=HOLDOUT")) {
+        await route.fallback();
+        return;
+      }
+      if (route.request().method() === "POST") {
+        await route.fulfill({
+          status: 201,
+          contentType: "application/json",
+          body: JSON.stringify(holdoutRun),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [holdoutRun], total: 1 }),
+      });
+    },
+  );
+  const holdoutLoaded = page.waitForResponse(
+    (response) =>
+      response.url().includes("route-evaluation-runs") &&
+      response.url().includes("dataset=HOLDOUT"),
+  );
+  await openPage(page, "/employees/route-evaluation");
+  await page.locator('[aria-label="评测数据集"]').first().click();
+  await page.getByText("留出集", { exact: true }).last().click();
+  await holdoutLoaded;
+
+  await expect(page.getByText("失败分析", { exact: true })).toBeVisible();
+  await expect(page.getByText("落在外池", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("最近一次评测（留出集）：15/18 命中"),
+  ).toBeVisible();
+  await expect(page.getByText("平台兜底员工").first()).toBeVisible();
+
+  const runRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes(
+        "/api/v1/digital-employee-route-evaluation-runs",
+      ),
+  );
+  await page.getByRole("button", { name: "运行评测" }).click();
+  const run = await runRequest;
+  expect(run.postDataJSON()).toEqual({
+    service_entry_id: evaluationEntry.id,
+    dataset: "HOLDOUT",
+  });
+  await expect(
+    page.getByText("路由评测完成：准确率 83%"),
   ).toBeVisible();
 });

@@ -18,6 +18,9 @@ from ticket_agent.digital_employees.schemas import (
     DigitalEmployeeRouteEvaluationCaseCreate,
     DigitalEmployeeRouteEvaluationCaseUpdate,
     DigitalEmployeeRouteEvaluationCaseView,
+    DigitalEmployeeRouteEvaluationFailureAnalysis,
+    DigitalEmployeeRouteEvaluationFailureGroup,
+    DigitalEmployeeRouteEvaluationFailureReason,
     DigitalEmployeeRouteEvaluationResultView,
     DigitalEmployeeRouteEvaluationRunList,
     DigitalEmployeeRouteEvaluationRunView,
@@ -32,6 +35,7 @@ def list_route_evaluation_cases(
     *,
     business_unit_id: str,
     service_entry_id: UUID | None = None,
+    dataset: str | None = None,
 ) -> list[DigitalEmployeeRouteEvaluationCaseView]:
     statement = select(DigitalEmployeeRouteEvaluationCase).where(
         DigitalEmployeeRouteEvaluationCase.business_unit_id == business_unit_id
@@ -40,6 +44,8 @@ def list_route_evaluation_cases(
         statement = statement.where(
             DigitalEmployeeRouteEvaluationCase.service_entry_id == service_entry_id
         )
+    if dataset is not None:
+        statement = statement.where(DigitalEmployeeRouteEvaluationCase.dataset == dataset)
     cases = list(
         session.scalars(
             statement.order_by(
@@ -68,6 +74,7 @@ def create_route_evaluation_case(
         business_unit_id=business_unit_id,
         service_entry_id=payload.service_entry_id,
         expected_employee_id=payload.expected_employee_id,
+        dataset=payload.dataset,
         question=payload.question.strip(),
         notes=payload.notes.strip(),
         enabled=payload.enabled,
@@ -107,6 +114,8 @@ def update_route_evaluation_case(
     )
     if payload.expected_employee_id is not None:
         case.expected_employee_id = payload.expected_employee_id
+    if payload.dataset is not None:
+        case.dataset = payload.dataset
     if payload.question is not None:
         case.question = payload.question.strip()
     if payload.notes is not None:
@@ -147,6 +156,7 @@ def run_route_evaluation(
     business_unit_id: str,
     service_entry_id: UUID,
     actor_id: str,
+    dataset: str = "TUNING",
 ) -> DigitalEmployeeRouteEvaluationRunView:
     entry = _entry(session, business_unit_id, service_entry_id)
     employee_ids = _entry_employee_ids(session, service_entry_id)
@@ -163,6 +173,7 @@ def run_route_evaluation(
             .where(
                 DigitalEmployeeRouteEvaluationCase.business_unit_id == business_unit_id,
                 DigitalEmployeeRouteEvaluationCase.service_entry_id == service_entry_id,
+                DigitalEmployeeRouteEvaluationCase.dataset == dataset,
                 DigitalEmployeeRouteEvaluationCase.enabled.is_(True),
             )
             .order_by(
@@ -176,7 +187,7 @@ def run_route_evaluation(
             status_code=409,
             code="ROUTE_EVALUATION_NO_CASES",
             title="Route evaluation has no cases",
-            detail="Add enabled evaluation questions before running.",
+            detail=("Add enabled evaluation questions for this dataset before running."),
         )
     names = _employee_names(session, cases)
     router = DigitalEmployeeRouter(session)
@@ -202,6 +213,7 @@ def run_route_evaluation(
                 expected_employee_name=expected_name,
                 predicted_employee_id=routed.employee.id,
                 predicted_employee_name=routed.employee.name,
+                predicted_in_pool=routed.employee.id in employee_ids,
                 matched=routed.employee.id == case.expected_employee_id,
                 reason_code=(decision.reason_code if decision is not None else "NO_DECISION"),
                 confidence=(decision.confidence if decision is not None else 0.0),
@@ -213,6 +225,7 @@ def run_route_evaluation(
     run = DigitalEmployeeRouteEvaluationRun(
         business_unit_id=business_unit_id,
         service_entry_id=service_entry_id,
+        dataset=dataset,
         total=total,
         passed=passed,
         failed=total - passed,
@@ -231,11 +244,14 @@ def list_route_evaluation_runs(
     *,
     business_unit_id: str,
     service_entry_id: UUID | None = None,
+    dataset: str | None = None,
     limit: int = 20,
 ) -> DigitalEmployeeRouteEvaluationRunList:
     filters = [DigitalEmployeeRouteEvaluationRun.business_unit_id == business_unit_id]
     if service_entry_id is not None:
         filters.append(DigitalEmployeeRouteEvaluationRun.service_entry_id == service_entry_id)
+    if dataset is not None:
+        filters.append(DigitalEmployeeRouteEvaluationRun.dataset == dataset)
     total = (
         session.scalar(
             select(func.count()).select_from(DigitalEmployeeRouteEvaluationRun).where(*filters)
@@ -266,6 +282,7 @@ def _case_view(
         service_entry_id=case.service_entry_id,
         expected_employee_id=case.expected_employee_id,
         expected_employee_name=expected_employee_name,
+        dataset=case.dataset,
         question=case.question,
         notes=case.notes,
         enabled=case.enabled,
@@ -277,20 +294,66 @@ def _case_view(
 def _run_view(
     run: DigitalEmployeeRouteEvaluationRun,
 ) -> DigitalEmployeeRouteEvaluationRunView:
+    results = [
+        DigitalEmployeeRouteEvaluationResultView.model_validate(item) for item in run.results_json
+    ]
     return DigitalEmployeeRouteEvaluationRunView(
         id=run.id,
         business_unit_id=run.business_unit_id,
         service_entry_id=run.service_entry_id,
+        dataset=run.dataset,
         total=run.total,
         passed=run.passed,
         failed=run.failed,
         accuracy=run.accuracy,
-        results=[
-            DigitalEmployeeRouteEvaluationResultView.model_validate(item)
-            for item in run.results_json
-        ],
+        failure_analysis=_failure_analysis(results),
+        results=results,
         created_by=run.created_by,
         created_at=run.created_at,
+    )
+
+
+def _failure_analysis(
+    results: list[DigitalEmployeeRouteEvaluationResultView],
+) -> DigitalEmployeeRouteEvaluationFailureAnalysis:
+    failed = [item for item in results if not item.matched]
+    confusion_counts: dict[tuple[str, str], list[int]] = {}
+    reason_counts: dict[str, int] = {}
+    out_of_pool_total = 0
+    for item in failed:
+        if not item.predicted_in_pool:
+            out_of_pool_total += 1
+        key = (item.expected_employee_name, item.predicted_employee_name)
+        bucket = confusion_counts.setdefault(key, [0, 0])
+        bucket[0] += 1
+        if not item.predicted_in_pool:
+            bucket[1] += 1
+        reason_counts[item.reason_code] = reason_counts.get(item.reason_code, 0) + 1
+    return DigitalEmployeeRouteEvaluationFailureAnalysis(
+        failed_total=len(failed),
+        out_of_pool_total=out_of_pool_total,
+        confusions=[
+            DigitalEmployeeRouteEvaluationFailureGroup(
+                expected_employee_name=expected,
+                predicted_employee_name=predicted,
+                count=counts[0],
+                out_of_pool_count=counts[1],
+            )
+            for (expected, predicted), counts in sorted(
+                confusion_counts.items(),
+                key=lambda item: (-item[1][0], item[0][0], item[0][1]),
+            )
+        ],
+        reasons=[
+            DigitalEmployeeRouteEvaluationFailureReason(
+                reason_code=reason,
+                count=count,
+            )
+            for reason, count in sorted(
+                reason_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ],
     )
 
 

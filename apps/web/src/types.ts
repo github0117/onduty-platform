@@ -572,12 +572,15 @@ export interface DigitalEmployeeRouteIntentConflictList {
   suppressed: DigitalEmployeeRouteIntentSuppression[];
 }
 
+export type DigitalEmployeeRouteEvaluationDataset = "TUNING" | "HOLDOUT";
+
 export interface DigitalEmployeeRouteEvaluationCase {
   id: string;
   business_unit_id: string;
   service_entry_id: string;
   expected_employee_id: string;
   expected_employee_name: string;
+  dataset: DigitalEmployeeRouteEvaluationDataset;
   question: string;
   notes: string;
   enabled: boolean;
@@ -592,20 +595,42 @@ export interface DigitalEmployeeRouteEvaluationResult {
   expected_employee_name: string;
   predicted_employee_id: string;
   predicted_employee_name: string;
+  predicted_in_pool: boolean;
   matched: boolean;
   reason_code: string;
   confidence: number;
   candidates: DigitalEmployeeRouteCandidate[];
 }
 
+export interface DigitalEmployeeRouteEvaluationFailureGroup {
+  expected_employee_name: string;
+  predicted_employee_name: string;
+  count: number;
+  out_of_pool_count: number;
+}
+
+export interface DigitalEmployeeRouteEvaluationFailureReason {
+  reason_code: string;
+  count: number;
+}
+
+export interface DigitalEmployeeRouteEvaluationFailureAnalysis {
+  failed_total: number;
+  out_of_pool_total: number;
+  confusions: DigitalEmployeeRouteEvaluationFailureGroup[];
+  reasons: DigitalEmployeeRouteEvaluationFailureReason[];
+}
+
 export interface DigitalEmployeeRouteEvaluationRun {
   id: string;
   business_unit_id: string;
   service_entry_id: string | null;
+  dataset: DigitalEmployeeRouteEvaluationDataset;
   total: number;
   passed: number;
   failed: number;
   accuracy: number;
+  failure_analysis: DigitalEmployeeRouteEvaluationFailureAnalysis;
   results: DigitalEmployeeRouteEvaluationResult[];
   created_by: string;
   created_at: string;

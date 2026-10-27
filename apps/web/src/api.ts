@@ -14,6 +14,7 @@ import type {
   DigitalEmployeeRevision,
   DigitalEmployeeRouteDecisionList,
   DigitalEmployeeRouteEvaluationCase,
+  DigitalEmployeeRouteEvaluationDataset,
   DigitalEmployeeRouteEvaluationRun,
   DigitalEmployeeRouteEvaluationRunList,
   DigitalEmployeeRouteIntentConflictList,
@@ -926,25 +927,31 @@ export function listDigitalEmployeeRouteIntentConflicts(): Promise<DigitalEmploy
   );
 }
 
-function routeEvaluationQuery(serviceEntryId?: string): string {
+function routeEvaluationQuery(
+  serviceEntryId?: string,
+  dataset?: DigitalEmployeeRouteEvaluationDataset,
+): string {
   const params = new URLSearchParams({
     business_unit_id: "bu_demo",
   });
   if (serviceEntryId) params.set("service_entry_id", serviceEntryId);
+  if (dataset) params.set("dataset", dataset);
   return params.toString();
 }
 
 export function listDigitalEmployeeRouteEvaluationCases(
   serviceEntryId?: string,
+  dataset?: DigitalEmployeeRouteEvaluationDataset,
 ): Promise<DigitalEmployeeRouteEvaluationCase[]> {
   return request(
-    `/api/v1/digital-employee-route-evaluation-cases?${routeEvaluationQuery(serviceEntryId)}`,
+    `/api/v1/digital-employee-route-evaluation-cases?${routeEvaluationQuery(serviceEntryId, dataset)}`,
   );
 }
 
 export function createDigitalEmployeeRouteEvaluationCase(input: {
   serviceEntryId: string;
   expectedEmployeeId: string;
+  dataset?: DigitalEmployeeRouteEvaluationDataset;
   question: string;
   notes?: string;
   enabled?: boolean;
@@ -956,6 +963,7 @@ export function createDigitalEmployeeRouteEvaluationCase(input: {
       body: JSON.stringify({
         service_entry_id: input.serviceEntryId,
         expected_employee_id: input.expectedEmployeeId,
+        dataset: input.dataset ?? "TUNING",
         question: input.question,
         notes: input.notes ?? "",
         enabled: input.enabled ?? true,
@@ -968,6 +976,7 @@ export function updateDigitalEmployeeRouteEvaluationCase(
   caseId: string,
   input: {
     expectedEmployeeId?: string;
+    dataset?: DigitalEmployeeRouteEvaluationDataset;
     question?: string;
     notes?: string;
     enabled?: boolean;
@@ -979,6 +988,7 @@ export function updateDigitalEmployeeRouteEvaluationCase(
       method: "PATCH",
       body: JSON.stringify({
         expected_employee_id: input.expectedEmployeeId,
+        dataset: input.dataset,
         question: input.question,
         notes: input.notes,
         enabled: input.enabled,
@@ -998,21 +1008,26 @@ export function deleteDigitalEmployeeRouteEvaluationCase(
 
 export function runDigitalEmployeeRouteEvaluation(
   serviceEntryId: string,
+  dataset: DigitalEmployeeRouteEvaluationDataset = "TUNING",
 ): Promise<DigitalEmployeeRouteEvaluationRun> {
   return request(
-    `/api/v1/digital-employee-route-evaluation-runs?${routeEvaluationQuery()}`,
+    `/api/v1/digital-employee-route-evaluation-runs?${routeEvaluationQuery(undefined, dataset)}`,
     {
       method: "POST",
-      body: JSON.stringify({ service_entry_id: serviceEntryId }),
+      body: JSON.stringify({
+        service_entry_id: serviceEntryId,
+        dataset,
+      }),
     },
   );
 }
 
 export function listDigitalEmployeeRouteEvaluationRuns(
   serviceEntryId?: string,
+  dataset?: DigitalEmployeeRouteEvaluationDataset,
 ): Promise<DigitalEmployeeRouteEvaluationRunList> {
   return request(
-    `/api/v1/digital-employee-route-evaluation-runs?${routeEvaluationQuery(serviceEntryId)}&limit=10`,
+    `/api/v1/digital-employee-route-evaluation-runs?${routeEvaluationQuery(serviceEntryId, dataset)}&limit=10`,
   );
 }
 

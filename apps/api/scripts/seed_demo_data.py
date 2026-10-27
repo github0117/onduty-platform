@@ -51,7 +51,7 @@ HR_ROUTE_INTENTS = [
     "人事",
     "HR",
 ]
-ENTERPRISE_ROUTE_EVALUATION_CASES = {
+ENTERPRISE_ROUTE_TUNING_CASES = {
     "enterprise": [
         ("报销需要准备哪些发票？", "财务与费用"),
         ("发票抬头在哪里修改？", "财务与费用"),
@@ -93,6 +93,35 @@ ENTERPRISE_ROUTE_EVALUATION_CASES = {
         ("年假可以跨年使用吗？", "假期"),
         ("转正需要哪些材料？", "转正"),
         ("离职手续需要提前多久办理？", "离职"),
+    ],
+}
+# Holdout questions were written after the tuning set and are never used to
+# adjust route rules. They deliberately include paraphrases that the current
+# keyword/synonym matcher may miss, so the reported accuracy stays honest.
+ENTERPRISE_ROUTE_HOLDOUT_CASES = {
+    "enterprise": [
+        ("公司制度文件在哪里可以查到？", "制度与通知"),
+        ("出差费用的报销标准是多少？", "财务与费用"),
+        ("企业邮箱收不到外部邮件怎么办？", "IT 与账号"),
+        ("申请系统权限需要找哪个部门审批？", "IT 与账号"),
+        ("办公室门禁失灵了怎么处理？", "行政与设施"),
+        ("VPN 客户端提示认证失败怎么办？", "IT 与账号"),
+    ],
+    "developer": [
+        ("如何申请访问公司的代码仓库？", "仓库与文档"),
+        ("多个模块之间的依赖怎么梳理？", "代码与依赖"),
+        ("SDK 升级后接口不兼容怎么办？", "代码与依赖"),
+        ("MCP 工具调用失败了怎么排查？", "代码与依赖"),
+        ("GitHub 上的 issue 怎么关联到内部项目？", "仓库与文档"),
+        ("新人研发环境怎么配置？", "研发支持"),
+    ],
+    "hr": [
+        ("新员工第一周需要完成哪些手续？", "入职"),
+        ("试用期结束前多久提交转正材料？", "转正"),
+        ("想请三天事假应该走什么流程？", "假期"),
+        ("考勤打卡漏了一次怎么补？", "考勤"),
+        ("离职证明什么时候能拿到？", "离职"),
+        ("人事政策文件在哪里下载？", "人事"),
     ],
 }
 BUSINESS_SANDBOX_CONNECTOR_CODE = "demo-business-sandbox"
@@ -763,16 +792,25 @@ def main() -> None:
         enterprise_entry = next(
             item for item in business_entries if item["code"] == ENTERPRISE_SERVICE_ENTRY_CODE
         )
-        evaluation_cases_by_employee = {
-            enterprise_employee["id"]: ENTERPRISE_ROUTE_EVALUATION_CASES["enterprise"],
-            developer_employee["id"]: ENTERPRISE_ROUTE_EVALUATION_CASES["developer"],
-            hr_employee["id"]: ENTERPRISE_ROUTE_EVALUATION_CASES["hr"],
-        }
-        _ensure_route_evaluation_cases(
-            client,
-            service_entry_id=enterprise_entry["id"],
-            cases_by_employee=evaluation_cases_by_employee,
-        )
+        for dataset, cases in (
+            ("TUNING", ENTERPRISE_ROUTE_TUNING_CASES),
+            ("HOLDOUT", ENTERPRISE_ROUTE_HOLDOUT_CASES),
+        ):
+            _ensure_route_evaluation_cases(
+                client,
+                service_entry_id=enterprise_entry["id"],
+                dataset=dataset,
+                cases_by_employee={
+                    enterprise_employee["id"]: cases["enterprise"],
+                    developer_employee["id"]: cases["developer"],
+                    hr_employee["id"]: cases["hr"],
+                },
+            )
+            _ensure_route_evaluation_run(
+                client,
+                service_entry_id=enterprise_entry["id"],
+                dataset=dataset,
+            )
 
         pending = _ensure_ticket(
             client,
@@ -1318,6 +1356,7 @@ def _ensure_route_evaluation_cases(
     client: httpx.Client,
     *,
     service_entry_id: str,
+    dataset: str,
     cases_by_employee: dict[str, list[tuple[str, str]]],
 ) -> None:
     response = client.get(
@@ -1326,6 +1365,7 @@ def _ensure_route_evaluation_cases(
         params={
             "business_unit_id": BUSINESS_UNIT,
             "service_entry_id": service_entry_id,
+            "dataset": dataset,
         },
     )
     response.raise_for_status()
@@ -1341,12 +1381,48 @@ def _ensure_route_evaluation_cases(
                 json={
                     "service_entry_id": service_entry_id,
                     "expected_employee_id": employee_id,
+                    "dataset": dataset,
                     "question": question,
                     "notes": notes,
                 },
             )
             created.raise_for_status()
             existing.add(question)
+
+
+def _ensure_route_evaluation_run(
+    client: httpx.Client,
+    *,
+    service_entry_id: str,
+    dataset: str,
+) -> dict[str, Any]:
+    runs = client.get(
+        "/api/v1/digital-employee-route-evaluation-runs",
+        headers=ADMIN,
+        params={
+            "business_unit_id": BUSINESS_UNIT,
+            "service_entry_id": service_entry_id,
+            "dataset": dataset,
+        },
+    )
+    runs.raise_for_status()
+    existing: list[dict[str, Any]] = runs.json()["items"]
+    if existing:
+        return existing[0]
+    created = client.post(
+        "/api/v1/digital-employee-route-evaluation-runs",
+        headers=ADMIN,
+        params={"business_unit_id": BUSINESS_UNIT},
+        json={"service_entry_id": service_entry_id, "dataset": dataset},
+    )
+    created.raise_for_status()
+    result: dict[str, Any] = created.json()
+    print(
+        f"Route evaluation baseline {dataset}: "
+        f"{result['passed']}/{result['total']} "
+        f"({result['accuracy']:.0%})",
+    )
+    return result
 
 
 def _ensure_deepwiki_binding(

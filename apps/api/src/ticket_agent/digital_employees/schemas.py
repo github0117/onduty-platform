@@ -72,15 +72,15 @@ class DigitalEmployeeConfigurationUpdate(BaseModel):
     model_profile: dict[str, Any] | None = None
     tool_allowlist: list[str] | None = Field(default=None, max_length=50)
     instruction: str | None = Field(default=None, max_length=4000)
-    knowledge_bindings: (
-        list[DigitalEmployeeConfigurationKnowledgeBinding] | None
-    ) = Field(default=None, max_length=100)
-    skill_bindings: (
-        list[DigitalEmployeeConfigurationSkillBinding] | None
-    ) = Field(default=None, max_length=100)
-    mcp_bindings: (
-        list[DigitalEmployeeConfigurationMcpBinding] | None
-    ) = Field(default=None, max_length=50)
+    knowledge_bindings: list[DigitalEmployeeConfigurationKnowledgeBinding] | None = Field(
+        default=None, max_length=100
+    )
+    skill_bindings: list[DigitalEmployeeConfigurationSkillBinding] | None = Field(
+        default=None, max_length=100
+    )
+    mcp_bindings: list[DigitalEmployeeConfigurationMcpBinding] | None = Field(
+        default=None, max_length=50
+    )
 
     @model_validator(mode="after")
     def require_change(self) -> "DigitalEmployeeConfigurationUpdate":
@@ -267,9 +267,13 @@ class DigitalEmployeeRouteIntentConflictList(BaseModel):
     suppressed: list[DigitalEmployeeRouteIntentSuppression]
 
 
+RouteEvaluationDataset = Literal["TUNING", "HOLDOUT"]
+
+
 class DigitalEmployeeRouteEvaluationCaseCreate(BaseModel):
     service_entry_id: UUID
     expected_employee_id: UUID
+    dataset: RouteEvaluationDataset = "TUNING"
     question: str = Field(min_length=2, max_length=1000)
     notes: str = Field(default="", max_length=1000)
     enabled: bool = True
@@ -277,6 +281,7 @@ class DigitalEmployeeRouteEvaluationCaseCreate(BaseModel):
 
 class DigitalEmployeeRouteEvaluationCaseUpdate(BaseModel):
     expected_employee_id: UUID | None = None
+    dataset: RouteEvaluationDataset | None = None
     question: str | None = Field(
         default=None,
         min_length=2,
@@ -292,6 +297,7 @@ class DigitalEmployeeRouteEvaluationCaseView(BaseModel):
     service_entry_id: UUID
     expected_employee_id: UUID
     expected_employee_name: str
+    dataset: RouteEvaluationDataset
     question: str
     notes: str
     enabled: bool
@@ -306,24 +312,47 @@ class DigitalEmployeeRouteEvaluationResultView(BaseModel):
     expected_employee_name: str
     predicted_employee_id: UUID
     predicted_employee_name: str
+    predicted_in_pool: bool = True
     matched: bool
     reason_code: str
     confidence: float
     candidates: list[dict[str, Any]]
 
 
+class DigitalEmployeeRouteEvaluationFailureGroup(BaseModel):
+    expected_employee_name: str
+    predicted_employee_name: str
+    count: int
+    out_of_pool_count: int
+
+
+class DigitalEmployeeRouteEvaluationFailureReason(BaseModel):
+    reason_code: str
+    count: int
+
+
+class DigitalEmployeeRouteEvaluationFailureAnalysis(BaseModel):
+    failed_total: int
+    out_of_pool_total: int
+    confusions: list[DigitalEmployeeRouteEvaluationFailureGroup]
+    reasons: list[DigitalEmployeeRouteEvaluationFailureReason]
+
+
 class DigitalEmployeeRouteEvaluationRunRequest(BaseModel):
     service_entry_id: UUID
+    dataset: RouteEvaluationDataset = "TUNING"
 
 
 class DigitalEmployeeRouteEvaluationRunView(BaseModel):
     id: UUID
     business_unit_id: str
     service_entry_id: UUID | None
+    dataset: RouteEvaluationDataset
     total: int
     passed: int
     failed: int
     accuracy: float
+    failure_analysis: DigitalEmployeeRouteEvaluationFailureAnalysis
     results: list[DigitalEmployeeRouteEvaluationResultView]
     created_by: str
     created_at: datetime
@@ -332,4 +361,3 @@ class DigitalEmployeeRouteEvaluationRunView(BaseModel):
 class DigitalEmployeeRouteEvaluationRunList(BaseModel):
     items: list[DigitalEmployeeRouteEvaluationRunView]
     total: int
-

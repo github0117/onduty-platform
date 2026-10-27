@@ -95,6 +95,7 @@ import type {
   DigitalEmployeeRouteCandidate,
   DigitalEmployeeRouteDecision,
   DigitalEmployeeRouteEvaluationCase,
+  DigitalEmployeeRouteEvaluationDataset,
   DigitalEmployeeRouteEvaluationRun,
   DigitalEmployeeRouteIntentConflictList,
   DigitalEmployeeRouteRule,
@@ -107,6 +108,14 @@ import { message } from "./feedback";
 
 const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
+
+const routeEvaluationDatasetLabels: Record<
+  DigitalEmployeeRouteEvaluationDataset,
+  string
+> = {
+  TUNING: "调参集",
+  HOLDOUT: "留出集",
+};
 
 const routeReasonLabels: Record<string, string> = {
   INTENT_MATCH: "关键词命中",
@@ -2185,6 +2194,8 @@ function RouteEvaluationCard({
 }) {
   const queryClient = useQueryClient();
   const [entryId, setEntryId] = useState("");
+  const [dataset, setDataset] =
+    useState<DigitalEmployeeRouteEvaluationDataset>("TUNING");
   const [selectedRunId, setSelectedRunId] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [editingCase, setEditingCase] =
@@ -2192,7 +2203,10 @@ function RouteEvaluationCard({
   const [question, setQuestion] = useState("");
   const [notes, setNotes] = useState("");
   const [expectedEmployeeId, setExpectedEmployeeId] = useState("");
+  const [caseDataset, setCaseDataset] =
+    useState<DigitalEmployeeRouteEvaluationDataset>("TUNING");
   const [caseEnabled, setCaseEnabled] = useState(true);
+  const [failuresOnly, setFailuresOnly] = useState(false);
 
   useEffect(() => {
     if (entryId || entries.length === 0) return;
@@ -2215,13 +2229,13 @@ function RouteEvaluationCard({
       employee.business_unit_id === entry?.business_unit_id,
   );
   const cases = useQuery({
-    queryKey: ["route-evaluation-cases", entryId],
-    queryFn: () => listDigitalEmployeeRouteEvaluationCases(entryId),
+    queryKey: ["route-evaluation-cases", entryId, dataset],
+    queryFn: () => listDigitalEmployeeRouteEvaluationCases(entryId, dataset),
     enabled: Boolean(entryId),
   });
   const runs = useQuery({
-    queryKey: ["route-evaluation-runs", entryId],
-    queryFn: () => listDigitalEmployeeRouteEvaluationRuns(entryId),
+    queryKey: ["route-evaluation-runs", entryId, dataset],
+    queryFn: () => listDigitalEmployeeRouteEvaluationRuns(entryId, dataset),
     enabled: Boolean(entryId),
   });
   const selectedRun: DigitalEmployeeRouteEvaluationRun | undefined =
@@ -2235,6 +2249,7 @@ function RouteEvaluationCard({
       if (editingCase) {
         return updateDigitalEmployeeRouteEvaluationCase(editingCase.id, {
           expectedEmployeeId,
+          dataset: caseDataset,
           question: question.trim(),
           notes: notes.trim(),
           enabled: caseEnabled,
@@ -2243,6 +2258,7 @@ function RouteEvaluationCard({
       return createDigitalEmployeeRouteEvaluationCase({
         serviceEntryId: entryId,
         expectedEmployeeId,
+        dataset: caseDataset,
         question: question.trim(),
         notes: notes.trim(),
         enabled: caseEnabled,
@@ -2272,7 +2288,7 @@ function RouteEvaluationCard({
   const runEvaluation = useMutation({
     mutationFn: () => {
       if (!entryId) throw new Error("请选择业务入口");
-      return runDigitalEmployeeRouteEvaluation(entryId);
+      return runDigitalEmployeeRouteEvaluation(entryId, dataset);
     },
     onSuccess: async (run) => {
       message.success(
@@ -2289,6 +2305,7 @@ function RouteEvaluationCard({
     setEditingCase(null);
     setQuestion("");
     setNotes("");
+    setCaseDataset(dataset);
     setCaseEnabled(true);
     setExpectedEmployeeId(
       expectedEmployees.find(
@@ -2303,6 +2320,7 @@ function RouteEvaluationCard({
     setEditingCase(item);
     setQuestion(item.question);
     setNotes(item.notes);
+    setCaseDataset(item.dataset);
     setCaseEnabled(item.enabled);
     setExpectedEmployeeId(item.expected_employee_id);
     setModalOpen(true);
@@ -2333,6 +2351,20 @@ function RouteEvaluationCard({
                 label: `${item.name} · ${item.employees.length} 名员工`,
               }))}
             />
+            <Select
+              aria-label="评测数据集"
+              value={dataset}
+              onChange={(value: DigitalEmployeeRouteEvaluationDataset) => {
+                setDataset(value);
+                setSelectedRunId("");
+                setFailuresOnly(false);
+              }}
+              style={{ width: 130 }}
+              options={[
+                { value: "TUNING", label: routeEvaluationDatasetLabels.TUNING },
+                { value: "HOLDOUT", label: routeEvaluationDatasetLabels.HOLDOUT },
+              ]}
+            />
             <Button
               type="primary"
               loading={runEvaluation.isPending}
@@ -2346,7 +2378,8 @@ function RouteEvaluationCard({
       >
         <Paragraph type="secondary">
           每条问题都固定期望员工。运行时会复用真实路由逻辑，但不会写入最近路由记录，
-          因此可以反复回归。准确率下降时，先看误派问题命中了谁，再调整意图或员工池。
+          因此可以反复回归。调参集用于调整意图和员工池，留出集只用来验收：
+          不要根据留出集的失败问题去改规则，否则它也会失去参考价值。
         </Paragraph>
         <div
           style={{
@@ -2403,7 +2436,9 @@ function RouteEvaluationCard({
                   : "error"
             }
             showIcon
-            message={`最近一次评测：${selectedRun.passed}/${selectedRun.total} 命中`}
+            message={`最近一次评测（${
+              routeEvaluationDatasetLabels[selectedRun.dataset]
+            }）：${selectedRun.passed}/${selectedRun.total} 命中`}
             description={`准确率 ${(selectedRun.accuracy * 100).toFixed(1)}%，由 ${
               selectedRun.created_by
             } 于 ${new Date(selectedRun.created_at).toLocaleString(
@@ -2414,11 +2449,98 @@ function RouteEvaluationCard({
           <Alert
             type="info"
             showIcon
-            message="还没有评测记录"
+            message={`${routeEvaluationDatasetLabels[dataset]}还没有评测记录`}
             description="添加 10–20 条贴近真实提问的问题，然后运行一次评测建立基线。"
           />
         )}
       </Card>
+
+      {selectedRun && selectedRun.failure_analysis.failed_total > 0 && (
+        <Card
+          className="section-card"
+          title="失败分析"
+          extra={
+            <Tag color="red">
+              {selectedRun.failure_analysis.failed_total} 条误派
+            </Tag>
+          }
+        >
+          <div
+            style={{
+              display: "grid",
+              gap: 12,
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              marginBottom: 16,
+            }}
+          >
+            <Card size="small">
+              <Statistic
+                title="落在外池"
+                value={selectedRun.failure_analysis.out_of_pool_total}
+                suffix={`/ ${selectedRun.failure_analysis.failed_total}`}
+              />
+            </Card>
+            <Card size="small">
+              <Statistic
+                title="主要失败类型"
+                value={
+                  routeReasonLabels[
+                    selectedRun.failure_analysis.reasons[0]?.reason_code ?? ""
+                  ] ??
+                  selectedRun.failure_analysis.reasons[0]?.reason_code ??
+                  "暂无"
+                }
+                valueStyle={{ fontSize: 18 }}
+              />
+            </Card>
+          </div>
+          <Paragraph type="secondary">
+            落在外池表示路由结果不在当前业务入口的员工池内。这类问题在真实流量中会
+            绕开该入口，需要优先检查入口绑定和路由规则。
+          </Paragraph>
+          <Table
+            rowKey={(row) =>
+              `${row.expected_employee_name}-${row.predicted_employee_name}`
+            }
+            size="small"
+            pagination={false}
+            dataSource={selectedRun.failure_analysis.confusions}
+            style={{ marginBottom: 16 }}
+            columns={[
+              {
+                title: "期望员工",
+                dataIndex: "expected_employee_name",
+                width: 180,
+              },
+              {
+                title: "实际派给",
+                dataIndex: "predicted_employee_name",
+                width: 180,
+              },
+              { title: "次数", dataIndex: "count", width: 80 },
+              {
+                title: "其中池外",
+                dataIndex: "out_of_pool_count",
+                width: 100,
+              },
+            ]}
+          />
+          <Table
+            rowKey="reason_code"
+            size="small"
+            pagination={false}
+            dataSource={selectedRun.failure_analysis.reasons}
+            columns={[
+              {
+                title: "判断方式",
+                dataIndex: "reason_code",
+                render: (value: string) => routeReasonLabels[value] ?? value,
+              },
+              { title: "次数", dataIndex: "count", width: 120 },
+            ]}
+          />
+        </Card>
+      )}
 
       <Card
         className="section-card"
@@ -2494,11 +2616,26 @@ function RouteEvaluationCard({
       </Card>
 
       {selectedRun && (
-        <Card className="section-card" title="最近评测结果">
+        <Card
+          className="section-card"
+          title={`最近评测结果 · ${
+            routeEvaluationDatasetLabels[selectedRun.dataset]
+          }`}
+          extra={
+            <Checkbox
+              checked={failuresOnly}
+              onChange={(event) => setFailuresOnly(event.target.checked)}
+            >
+              只看误派
+            </Checkbox>
+          }
+        >
           <Table
             rowKey="case_id"
             size="small"
-            dataSource={selectedRun.results}
+            dataSource={selectedRun.results.filter(
+              (item) => !failuresOnly || !item.matched,
+            )}
             pagination={{ pageSize: 10, showSizeChanger: true }}
             expandable={{
               expandedRowRender: (row) => (
@@ -2516,9 +2653,14 @@ function RouteEvaluationCard({
               {
                 title: "实际员工",
                 dataIndex: "predicted_employee_name",
-                width: 170,
+                width: 190,
                 render: (value: string, row) => (
-                  <Tag color={row.matched ? "green" : "red"}>{value}</Tag>
+                  <Space size={4} wrap>
+                    <Tag color={row.matched ? "green" : "red"}>{value}</Tag>
+                    {!row.predicted_in_pool && (
+                      <Tag color="volcano">池外</Tag>
+                    )}
+                  </Space>
                 ),
               },
               {
@@ -2554,7 +2696,10 @@ function RouteEvaluationCard({
         </Card>
       )}
 
-      <Card className="section-card" title="历史评测">
+      <Card
+        className="section-card"
+        title={`历史评测 · ${routeEvaluationDatasetLabels[dataset]}`}
+      >
         <Table
           rowKey="id"
           size="small"
@@ -2618,6 +2763,20 @@ function RouteEvaluationCard({
         <Form layout="vertical">
           <Form.Item label="业务入口">
             <Text strong>{entry?.name ?? "未选择"}</Text>
+          </Form.Item>
+          <Form.Item
+            label="所属评测集"
+            extra="留出集只用于验收，不要根据这里的问题去调整路由规则。"
+          >
+            <Select
+              aria-label="所属评测集"
+              value={caseDataset}
+              onChange={setCaseDataset}
+              options={[
+                { value: "TUNING", label: routeEvaluationDatasetLabels.TUNING },
+                { value: "HOLDOUT", label: routeEvaluationDatasetLabels.HOLDOUT },
+              ]}
+            />
           </Form.Item>
           <Form.Item
             label="评测问题"

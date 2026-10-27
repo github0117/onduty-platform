@@ -50,23 +50,15 @@ class DigitalEmployee(Base):
     business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
     service_identity: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
-    handoff_queue: Mapped[str] = mapped_column(
-        String(64), default="MANUAL_TRIAGE", nullable=False
-    )
+    handoff_queue: Mapped[str] = mapped_column(String(64), default="MANUAL_TRIAGE", nullable=False)
     knowledge_policy_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, default=dict, nullable=False
     )
-    model_profile_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON, default=dict, nullable=False
-    )
-    tool_allowlist_json: Mapped[list[str]] = mapped_column(
-        JSON, default=list, nullable=False
-    )
+    model_profile_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    tool_allowlist_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     # 员工级提示词：operator 配置的角色、语气和服务边界。生成时作为
     # 系统提示词的一个独立区块注入，不能覆盖安全约束和知识事实。
-    instruction_text: Mapped[str] = mapped_column(
-        Text, default="", nullable=False
-    )
+    instruction_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     manifest_json: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         default=dict,
@@ -563,7 +555,6 @@ class DigitalEmployeeRouteDecision(Base):
     )
 
 
-
 class DigitalEmployeeRouteEvaluationCase(Base):
     __tablename__ = "digital_employee_route_evaluation_cases"
     __table_args__ = (
@@ -588,6 +579,12 @@ class DigitalEmployeeRouteEvaluationCase(Base):
     )
     expected_employee_id: Mapped[UUID] = mapped_column(
         ForeignKey("digital_employees.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dataset: Mapped[str] = mapped_column(
+        String(16),
+        default="TUNING",
+        server_default="TUNING",
         nullable=False,
     )
     question: Mapped[str] = mapped_column(Text, nullable=False)
@@ -625,6 +622,12 @@ class DigitalEmployeeRouteEvaluationRun(Base):
     service_entry_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("business_service_entries.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    dataset: Mapped[str] = mapped_column(
+        String(16),
+        default="TUNING",
+        server_default="TUNING",
+        nullable=False,
     )
     total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     passed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
