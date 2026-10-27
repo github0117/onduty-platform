@@ -234,7 +234,7 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
 <details>
 <summary>在页面内播放完整 60 秒视频</summary>
 
-<video src="https://github.com/user-attachments/assets/847fb7a9-c1d5-41ea-be42-0e554dfb8173" controls></video>
+<video src="https://github.com/user-attachments/assets/2e085c50-7687-4285-be7d-7039051f0566" controls></video>
 
 </details>
 
