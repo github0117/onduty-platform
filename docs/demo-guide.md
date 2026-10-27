@@ -227,20 +227,25 @@ beta 复用 alpha 的 `Idempotency-Key` 还会在 409 响应里拿到 alpha 的 
 
 ## 60 秒演示视频
 
-[![OnDuty 数字员工平台 60 秒演示（点击全屏播放）](assets/demo/on-duty-routing-demo-cover.jpg)](https://github.com/user-attachments/assets/847fb7a9%2Dc1d5%2D41ea%2Dbe42%2D0e554dfb8173)
+<img src="assets/demo/on-duty-routing-demo-preview.gif" width="100%" alt="OnDuty 数字员工平台 60 秒演示预览">
 
-> 点击封面在独立窗口全屏播放；Chrome / Edge 也可在下方页面内直接播放。
+> 上方为全宽动图预览。展开下方播放器可看完整视频，不跳转全屏。
 
-<video src="https://github.com/user-attachments/assets/847fb7a9-c1d5-41ea-be42-0e554dfb8173" controls width="100%"></video>
+<details>
+<summary>在页面内播放完整 60 秒视频</summary>
 
-视频通过 GitHub 附件托管，可在页面内直接播放；仓库内文件作为备份下载。
-GitHub 的附件播放器不生成海报帧，Safari 需要先点击播放按钮才显示画面，
-因此这里和 README 都用封面图作为 Safari / 移动端的全屏播放入口：
+<video src="https://github.com/user-attachments/assets/847fb7a9-c1d5-41ea-be42-0e554dfb8173" controls></video>
+
+</details>
+
+视频通过 GitHub 附件托管；仓库内文件作为备份下载。GitHub 的附件播放器
+在加载元数据前固定为 300×200，且会丢弃 `width` / `height` / `poster`，所以这里用
+仓库内 GIF 做全宽预览，把播放器放在可展开区域里：
 
 - [MP4（1440×900，H.264，60 秒）](assets/demo/on-duty-routing-demo.mp4)
 - [WebM 原片](assets/demo/on-duty-routing-demo.webm)
 - [GIF 预览](assets/demo/on-duty-routing-demo-preview.gif)
-- [演示封面](assets/demo/on-duty-routing-demo-cover.jpg)
+- [演示封面（备用素材）](assets/demo/on-duty-routing-demo-cover.jpg)
 
 视频在同一条时间线上展示三件事：
 
@@ -260,7 +265,7 @@ pnpm demo:video   # 等价于 node scripts/record-demo-video.mjs
 
 脚本用 Playwright 驱动演示栈，按 `RECORD_DEMO=1` 运行
 `e2e/demo-video.spec.ts`，把最新 WebM 复制到 `docs/assets/demo/`；本机安装
-ffmpeg 时同时导出 MP4、海报 JPG 和带播放按钮的封面图
+ffmpeg 时同时导出 MP4、海报 JPG 和备用封面图
 （`scripts/make-demo-cover.mjs`）。普通 `pnpm test:e2e` 会跳过该用例。
 
 ## 7 分钟技术演示脚本
