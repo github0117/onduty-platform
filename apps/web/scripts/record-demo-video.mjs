@@ -109,6 +109,16 @@ if (ffmpeg.status === 0) {
   if (poster.status === 0) {
     console.log(`Saved poster: ${posterPath}`);
   }
+
+  const coverScript = join(webDir, "scripts/make-demo-cover.mjs");
+  const cover = spawnSync(
+    process.execPath,
+    [coverScript, mp4Path, join(assetDir, `${baseName}-cover.jpg`)],
+    { stdio: "inherit" },
+  );
+  if (cover.status !== 0) {
+    console.warn("Cover generation failed; the recorded video is still usable.");
+  }
 } else {
   console.log("ffmpeg is not installed; skipped MP4 export and poster.");
 }
