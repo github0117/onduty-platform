@@ -82,8 +82,7 @@ import type {
   TicketDetail,
 } from "./types";
 import { message } from "./feedback";
-import { getActiveBusinessUnitId, getActiveTestIdentity } from "./auth";
-import { hasCapability } from "./capabilities";
+import { getActiveBusinessUnitId, useAuth } from "./auth";
 import {
   conversationStatusLabels,
   draftStateLabels,
@@ -290,22 +289,26 @@ interface StoredChatDemoState {
   ticketId?: string;
 }
 
-function getChatDemoStorageKey(scenario: CustomerDemoScenario): string {
+function getChatDemoStorageKey(
+  scenario: CustomerDemoScenario,
+  actorKey: string,
+): string {
   return [
     chatStateStoragePrefix,
     getActiveBusinessUnitId(),
-    getActiveTestIdentity().id,
+    actorKey,
     scenario,
   ].join(":");
 }
 
 function loadChatDemoState(
   scenario: CustomerDemoScenario,
+  actorKey: string,
 ): StoredChatDemoState {
   if (typeof window === "undefined") return {};
   try {
     const raw = window.localStorage.getItem(
-      getChatDemoStorageKey(scenario),
+      getChatDemoStorageKey(scenario, actorKey),
     );
     return raw ? (JSON.parse(raw) as StoredChatDemoState) : {};
   } catch {
@@ -325,10 +328,12 @@ function CustomerChatDemo({
   onOpenAdmin?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const chatStateStorageKey = getChatDemoStorageKey(scenario);
+  const { me, testIdentity } = useAuth();
+  const actorKey = testIdentity?.id ?? me.actor_id;
+  const chatStateStorageKey = getChatDemoStorageKey(scenario, actorKey);
   const requestedConversationId =
     new URLSearchParams(window.location.search).get("conversation") ?? "";
-  const [stored] = useState(() => loadChatDemoState(scenario));
+  const [stored] = useState(() => loadChatDemoState(scenario, actorKey));
   const [conversationId, setConversationId] = useState(
     requestedConversationId || stored.conversationId || "",
   );
@@ -2135,11 +2140,9 @@ export default function CustomerServicePage({
   onNavigate?: (path: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
   const [stored] = useState(loadSandboxState);
-  const canOpenAdmin = hasCapability(
-    getActiveTestIdentity().role,
-    "service.admin",
-  );
+  const canOpenAdmin = hasCapability("service.admin");
   const [demoScenario, setDemoScenario] = useState<CustomerDemoScenario>(() =>
     new URLSearchParams(window.location.search).get("scenario") === "ecommerce"
       ? "ecommerce"
@@ -2288,6 +2291,10 @@ export default function CustomerServicePage({
   }, [viewMode]);
 
   const isAdminSurface = viewMode === "admin" && canOpenAdmin;
+  const canViewApprovals = hasCapability("service.approvals.view");
+  const canDecideApprovals = hasCapability("service.approvals.decide");
+  const canViewIncidents = hasCapability("service.incidents.view");
+  const canManageIncidents = hasCapability("service.incidents.manage");
 
   const employees = useQuery({
     queryKey: ["digital-employees"],
@@ -2346,7 +2353,7 @@ export default function CustomerServicePage({
         approvalFilter === "ALL" ? undefined : approvalFilter,
       ),
     refetchInterval: 10_000,
-    enabled: isAdminSurface && section === "approvals",
+    enabled: canViewApprovals && section === "approvals",
   });
   const mcpIncidents = useQuery({
     queryKey: ["mcp-action-incidents", incidentFilter],
@@ -2355,7 +2362,7 @@ export default function CustomerServicePage({
         incidentFilter === "ALL" ? undefined : incidentFilter,
       ),
     refetchInterval: 10_000,
-    enabled: isAdminSurface && section === "incidents",
+    enabled: canViewIncidents && section === "incidents",
   });
   const metrics = useQuery({
     queryKey: ["customer-service-metrics"],
@@ -3823,6 +3830,7 @@ export default function CustomerServicePage({
               width: 150,
               render: (_value, record) =>
                 record.status === "PENDING" ? (
+                  canDecideApprovals ? (
                   <Space
                     onClick={(event) => event.stopPropagation()}
                   >
@@ -3853,6 +3861,9 @@ export default function CustomerServicePage({
                       拒绝
                     </Button>
                   </Space>
+                  ) : (
+                    <Text type="secondary">等待有权限的审批人处理</Text>
+                  )
                 ) : (
                   <Text type="secondary">
                     {record.decided_by
@@ -4016,6 +4027,7 @@ export default function CustomerServicePage({
               width: 180,
               render: (_value, record) =>
                 record.status !== "RESOLVED" ? (
+                  canManageIncidents ? (
                   <Space
                     direction="vertical"
                     onClick={(event) => event.stopPropagation()}
@@ -4083,6 +4095,9 @@ export default function CustomerServicePage({
                       关闭事故
                     </Button>
                   </Space>
+                  ) : (
+                    <Text type="secondary">只读查看，处理需主管权限</Text>
+                  )
                 ) : (
                   <Text type="secondary">已闭环</Text>
                 ),

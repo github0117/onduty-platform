@@ -18,7 +18,7 @@ from ticket_agent.outbox.service import dispatch_pending_events
 from ticket_agent.shared.db import SessionLocal
 
 ADMIN = {"X-Actor-Id": "ecommerce-admin", "X-Actor-Role": "admin"}
-AGENT = {"X-Actor-Id": "ecommerce-agent", "X-Actor-Role": "agent"}
+AGENT = {"X-Actor-Id": "ecommerce-agent", "X-Actor-Role": "supervisor"}
 TINY_PNG = (
     b"\x89PNG\r\n\x1a\n"
     b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"

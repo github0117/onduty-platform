@@ -61,8 +61,9 @@ from ticket_agent.ecommerce.schemas import (
 from ticket_agent.ecommerce.service import EcommerceService
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
-    ensure_knowledge_admin,
-    ensure_ticket_writer,
+    ensure_ecommerce_catalog_admin,
+    ensure_ecommerce_operator,
+    ensure_ecommerce_viewer,
     resolve_business_unit,
 )
 from ticket_agent.outbox.service import dispatch_outbox_event
@@ -142,7 +143,7 @@ def create_ecommerce_category(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceCategoryProfileView:
-    ensure_knowledge_admin(principal)
+    ensure_ecommerce_catalog_admin(principal)
     ensure_business_unit_access(principal, payload.business_unit_id)
     service = EcommerceService(db)
     return service.category_profile_view(
@@ -159,7 +160,7 @@ def list_ecommerce_categories(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> list[EcommerceCategoryProfileView]:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     service = EcommerceService(db)
     return [
@@ -178,7 +179,7 @@ def update_ecommerce_category(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceCategoryProfileView:
-    ensure_knowledge_admin(principal)
+    ensure_ecommerce_catalog_admin(principal)
     service = EcommerceService(db)
     _category_for_access(service, profile_id, principal)
     return service.category_profile_view(
@@ -191,7 +192,7 @@ def update_ecommerce_category(
     response_model=ChannelConnectionTestResult,
 )
 def test_pinduoduo_connection(principal: Actor) -> ChannelConnectionTestResult:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     gateway = get_pinduoduo_gateway()
     if not gateway.configured:
         return ChannelConnectionTestResult(
@@ -232,7 +233,7 @@ def get_ecommerce_metrics(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> EcommerceOperationalMetrics:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return EcommerceService(db).operational_metrics(business_unit_id)
 
@@ -243,7 +244,7 @@ def backfill_ecommerce_employee_owners(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> dict[str, int]:
-    ensure_knowledge_admin(principal)
+    ensure_ecommerce_catalog_admin(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return EcommerceService(db).backfill_operation_owners(business_unit_id)
 
@@ -258,7 +259,7 @@ def list_image_generations(
     business_unit_id: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> EcommerceImageGenerationListResponse:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return EcommerceService(db).list_image_generations(
         business_unit_id=business_unit_id,
@@ -277,7 +278,7 @@ def create_product(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceProductView:
-    ensure_knowledge_admin(principal)
+    ensure_ecommerce_catalog_admin(principal)
     ensure_business_unit_access(principal, payload.business_unit_id)
     product = EcommerceService(db).create_product(
         payload,
@@ -293,7 +294,7 @@ def list_products(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> list[EcommerceProductView]:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     service = EcommerceService(db)
     return [
@@ -304,7 +305,7 @@ def list_products(
 
 @router.get("/ecommerce/products/import-template")
 def download_product_import_template(principal: Actor) -> Response:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     return Response(
         content=product_import_template(),
         media_type="text/csv; charset=utf-8",
@@ -323,7 +324,7 @@ def download_category_import_template(
     db: DbSession,
     principal: Actor,
 ) -> Response:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     service = EcommerceService(db)
     profile = _category_for_access(service, profile_id, principal)
     return Response(
@@ -352,7 +353,7 @@ async def preview_product_import(
     business_unit_id: Annotated[str | None, Query()] = None,
     category_profile_id: Annotated[UUID | None, Query()] = None,
 ) -> EcommerceProductImportPreview:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     if category_profile_id is not None:
         _category_for_access(
@@ -384,7 +385,7 @@ async def import_products(
     business_unit_id: Annotated[str | None, Query()] = None,
     category_profile_id: Annotated[UUID | None, Query()] = None,
 ) -> EcommerceProductImportResult:
-    ensure_knowledge_admin(principal)
+    ensure_ecommerce_catalog_admin(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     if category_profile_id is not None:
         _category_for_access(
@@ -419,7 +420,7 @@ async def upload_product_asset(
     principal: Actor,
     filename: Annotated[str, Query(min_length=1, max_length=255)],
 ) -> EcommerceProductAssetView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _product_for_access(service, product_id, principal)
     data = await request.body()
@@ -455,7 +456,7 @@ def generate_product_image(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceProductAssetView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _product_for_access(service, product_id, principal)
     asset = service.generate_product_image(
@@ -480,7 +481,7 @@ def generate_product_image_candidates(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceImageBatchGenerateResponse:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _product_for_access(service, product_id, principal)
     assets = service.generate_product_images(
@@ -505,7 +506,7 @@ def list_product_assets(
     business_unit_id: Annotated[str | None, Query()] = None,
     include_archived: Annotated[bool, Query()] = False,
 ) -> list[EcommerceProductAssetView]:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     service = EcommerceService(db)
     _product_for_access(service, product_id, principal)
@@ -525,7 +526,7 @@ def get_product_asset_content(
     db: DbSession,
     principal: Actor,
 ) -> Response:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     service = EcommerceService(db)
     _asset_for_access(service, asset_id, principal)
     asset, data, _storage = service.get_asset(asset_id)
@@ -548,7 +549,7 @@ def set_primary_product_asset(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceProductAssetView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _asset_for_access(service, asset_id, principal)
     return service.asset_view(service.set_primary_asset(asset_id))
@@ -564,7 +565,7 @@ def archive_product_asset(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceProductAssetView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _asset_for_access(service, asset_id, principal)
     asset = service.archive_asset(
@@ -585,7 +586,7 @@ def accept_product_asset_visual_review(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceProductAssetView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _asset_for_access(service, asset_id, principal)
     asset = service.accept_visual_review(
@@ -608,7 +609,7 @@ def create_listing_task(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> EcommerceListingDetail:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     service = EcommerceService(db)
     _product_for_access(service, payload.product_id, principal)
@@ -633,7 +634,7 @@ def create_listing_batch_job(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> EcommerceListingBatchJobView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     for product_id in set(payload.product_ids):
         product = db.get(EcommerceProduct, product_id)
@@ -660,7 +661,7 @@ def list_listing_batch_jobs(
     business_unit_id: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> EcommerceListingBatchJobListResponse:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return EcommerceService(db).list_listing_batch_jobs(
         business_unit_id=business_unit_id,
@@ -677,7 +678,7 @@ def get_listing_batch_job(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceListingBatchJobView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     service = EcommerceService(db)
     return service.listing_batch_view(
         _listing_batch_job_for_access(service, job_id, principal)
@@ -691,7 +692,7 @@ def list_listing_tasks(
     business_unit_id: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
 ) -> EcommerceListingListResponse:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     items, total = EcommerceService(db).list_tasks(
         business_unit_id=business_unit_id,
@@ -709,7 +710,7 @@ def get_listing_task(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceListingDetail:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     return service.detail(task_id)
@@ -722,7 +723,7 @@ def export_listing_task_package(
     db: DbSession,
     principal: Actor,
 ) -> Response:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     data, filename = service.export_listing_package(
@@ -751,7 +752,7 @@ def update_listing_content(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceListingDetail:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     task = service.update_listing_content(
@@ -775,7 +776,7 @@ def generate_listing_storyboard(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceImageBatchGenerateResponse:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     assets = service.generate_listing_storyboard(
@@ -800,7 +801,7 @@ def render_listing_storyboard_video(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceProductAssetView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     asset = service.render_listing_storyboard_video(
@@ -825,7 +826,7 @@ def create_listing_storyboard_video_job(
     principal: Actor,
     payload: EcommerceVideoRenderJobCreate | None = None,
 ) -> EcommerceVideoRenderJobView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     job, event = service.create_video_render_job(
@@ -849,7 +850,7 @@ def list_listing_storyboard_video_jobs(
     principal: Actor,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> EcommerceVideoRenderJobListResponse:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     return service.list_video_render_jobs(task_id, limit=limit)
@@ -864,7 +865,7 @@ def get_storyboard_video_job(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceVideoRenderJobView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_viewer(principal)
     service = EcommerceService(db)
     return service.video_render_job_view(
         _video_render_job_for_access(service, job_id, principal)
@@ -884,7 +885,7 @@ def retry_storyboard_video_job(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceVideoRenderJobView:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _video_render_job_for_access(service, job_id, principal)
     job, event = service.retry_video_render_job(
@@ -909,7 +910,7 @@ def review_listing_task(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceListingMutation:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     task, event = service.review(
@@ -945,7 +946,7 @@ def retry_listing_publish(
     db: DbSession,
     principal: Actor,
 ) -> EcommerceListingMutation:
-    ensure_ticket_writer(principal)
+    ensure_ecommerce_operator(principal)
     service = EcommerceService(db)
     _listing_task_for_access(service, task_id, principal)
     task, event = service.retry_publish(

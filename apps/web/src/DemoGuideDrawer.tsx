@@ -10,13 +10,11 @@ import {
 } from "antd";
 
 import {
-  getActiveBusinessUnitId,
-  getActiveTestIdentity,
   isTestIdentityMode,
-  switchTestBusinessUnit,
   switchTestIdentity,
   testBusinessUnits,
   testIdentityProfiles,
+  useAuth,
 } from "./auth";
 import {
   demoPerspectiveIds,
@@ -72,8 +70,7 @@ export default function DemoGuideDrawer({
   onClose: () => void;
   onNavigate: (target: string) => void;
 }) {
-  const activeIdentity = getActiveTestIdentity();
-  const activeBusinessUnit = getActiveBusinessUnitId();
+  const { testIdentity, activeBusinessUnitId, switchBusinessUnit } = useAuth();
   const currentStep = demoGuideSteps[step];
   const goToStep = (index: number) => {
     const target = demoGuideSteps[index]?.path;
@@ -106,7 +103,7 @@ export default function DemoGuideDrawer({
               />
               <Select
                 aria-label="切换演示视角"
-                value={activeIdentity.id}
+                value={testIdentity?.id}
                 style={{ width: "100%" }}
                 options={testIdentityProfiles
                   .filter((profile) =>
@@ -141,12 +138,11 @@ export default function DemoGuideDrawer({
                 <Text strong>业务单元</Text>
                 <Select
                   aria-label="切换业务单元"
-                  value={activeBusinessUnit}
+                  value={activeBusinessUnitId}
                   style={{ width: "100%" }}
                   options={testBusinessUnits}
                   onChange={(value) => {
-                    switchTestBusinessUnit(value);
-                    window.location.reload();
+                    switchBusinessUnit(value).catch(() => undefined);
                   }}
                 />
               </Space>

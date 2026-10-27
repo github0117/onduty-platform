@@ -18,7 +18,7 @@ import {
   listKnowledgeSpaces,
   listMcpToolApprovals,
 } from "./api";
-import { getActiveBusinessUnitId } from "./auth";
+import { useAuth } from "./auth";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -160,6 +160,7 @@ export default function OverviewPage({
   onNavigate: (path: string) => void;
   onOpenGuide?: () => void;
 }) {
+  const { activeBusinessUnitId, activeBusinessUnitLabel } = useAuth();
   const employees = useQuery({
     queryKey: ["overview", "employees"],
     queryFn: listDigitalEmployees,
@@ -209,7 +210,9 @@ export default function OverviewPage({
         <div className="overview-hero-copy">
           <Space size={8} wrap>
             <Tag color="gold">平台总览</Tag>
-            <Tag color="cyan">{getActiveBusinessUnitId()} · 演示租户</Tag>
+            <Tag color="cyan">
+              {activeBusinessUnitId} · {activeBusinessUnitLabel}
+            </Tag>
           </Space>
           <Title level={1}>
             先看平台全景，

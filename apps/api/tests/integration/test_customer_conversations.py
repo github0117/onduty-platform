@@ -232,7 +232,7 @@ def test_test_conversation_archive_hides_it_from_default_list(
     assert listed_after.json()["total"] == 0
     metrics = client.get(
         "/api/v1/customer-service/metrics?business_unit_id=bu_demo",
-        headers=AGENT,
+        headers=ADMIN,
     )
     assert metrics.status_code == 200
     assert metrics.json()["total_conversations"] == 0
@@ -603,7 +603,7 @@ def test_auto_assignment_matches_skill_risk_and_load(
 
     assigned = client.post(
         "/api/v1/customer-service/assignment-queue/auto-assign",
-        headers=AGENT,
+        headers=ADMIN,
     )
     assert assigned.status_code == 200, assigned.text
     by_conversation = {
@@ -754,7 +754,7 @@ def test_customer_assignment_and_presence_are_tenant_scoped(
         "/api/v1/customer-service/assignment-queue/auto-assign",
         headers={
             "X-Actor-Id": "demo-agent-tenant",
-            "X-Actor-Role": "agent",
+            "X-Actor-Role": "supervisor",
             "X-Business-Unit-Id": "bu_demo",
         },
     )
@@ -775,7 +775,7 @@ def test_customer_assignment_and_presence_are_tenant_scoped(
         "/api/v1/customer-service/assignment-queue/auto-assign",
         headers={
             "X-Actor-Id": "other-agent-tenant",
-            "X-Actor-Role": "agent",
+            "X-Actor-Role": "supervisor",
             "X-Business-Unit-Id": "bu_other",
         },
     )
@@ -960,7 +960,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
     assert presence.json()["online_count"] == 1
     assigned = client.post(
         "/api/v1/customer-service/assignment-queue/auto-assign",
-        headers=AGENT,
+        headers=ADMIN,
     )
     assert assigned.status_code == 200, assigned.text
     assigned_pending = next(
@@ -978,7 +978,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
         session.commit()
     reclaimed = client.post(
         "/api/v1/customer-service/presence/reclaim-offline",
-        headers=AGENT,
+        headers=ADMIN,
     )
     assert reclaimed.status_code == 200
     assert reclaimed.json()["reclaimed_count"] >= 1
@@ -1006,14 +1006,14 @@ def test_conversation_persists_buyer_and_assistant_messages(
         last_message.role = "BUYER"
         last_message.created_at = datetime.now(UTC) - timedelta(minutes=40)
         session.commit()
-    alerts = client.get("/api/v1/customer-service/alerts", headers=AGENT)
+    alerts = client.get("/api/v1/customer-service/alerts", headers=ADMIN)
     assert alerts.status_code == 200
     assert alerts.json()["total"] == 1
     assert alerts.json()["items"][0]["conversation_id"] == conversation_id
     assert alerts.json()["items"][0]["overdue_seconds"] > 0
     escalated = client.post(
         "/api/v1/customer-service/alerts/escalate",
-        headers=AGENT,
+        headers=ADMIN,
     )
     assert escalated.status_code == 200
     assert escalated.json()["escalated_count"] == 1
@@ -1058,7 +1058,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
     )
     assert reassigned.status_code == 200, reassigned.text
     assert reassigned.json()["assigned_agent_id"] == "agent-2"
-    metrics = client.get("/api/v1/customer-service/metrics", headers=AGENT)
+    metrics = client.get("/api/v1/customer-service/metrics", headers=ADMIN)
     assert metrics.status_code == 200
     assert metrics.json()["total_conversations"] == 2
     assert metrics.json()["total_messages"] >= 3
@@ -1073,7 +1073,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
     assert sum(metrics.json()["risk_counts"].values()) == 2
     history = client.get(
         "/api/v1/customer-service/metrics/history?days=7",
-        headers=AGENT,
+        headers=ADMIN,
     )
     assert history.status_code == 200
     assert history.json()["conversations_created"] == 2

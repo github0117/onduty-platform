@@ -28,6 +28,11 @@ ALPHA_AGENT = {
     "X-Actor-Role": "agent",
     "X-Business-Unit-Id": "bu_alpha",
 }
+ALPHA_OPERATOR = {
+    "X-Actor-Id": "alpha-operator",
+    "X-Actor-Role": "supervisor",
+    "X-Business-Unit-Id": "bu_alpha",
+}
 ALPHA_AUDITOR = {
     "X-Actor-Id": "alpha-auditor",
     "X-Actor-Role": "auditor",
@@ -41,6 +46,11 @@ BETA_ADMIN = {
 BETA_AGENT = {
     "X-Actor-Id": "beta-agent",
     "X-Actor-Role": "agent",
+    "X-Business-Unit-Id": "bu_beta",
+}
+BETA_OPERATOR = {
+    "X-Actor-Id": "beta-operator",
+    "X-Actor-Role": "supervisor",
     "X-Business-Unit-Id": "bu_beta",
 }
 BETA_AUDITOR = {
@@ -471,7 +481,7 @@ def test_ecommerce_rejects_cross_tenant_resource_access(
 
     asset = client.post(
         f"/api/v1/ecommerce/products/{product_id}/assets",
-        headers={**ALPHA_AGENT, "Content-Type": "image/png"},
+        headers={**ALPHA_OPERATOR, "Content-Type": "image/png"},
         params={"filename": "cover.png"},
         content=TINY_PNG,
     )
@@ -480,7 +490,7 @@ def test_ecommerce_rejects_cross_tenant_resource_access(
 
     listing = client.post(
         "/api/v1/ecommerce/listing-tasks",
-        headers=ALPHA_AGENT,
+        headers=ALPHA_OPERATOR,
         params={"business_unit_id": "bu_alpha"},
         json={"product_id": product_id, "channel": "pinduoduo_sandbox"},
     )
@@ -530,7 +540,7 @@ def test_ecommerce_rejects_cross_tenant_resource_access(
     _assert_denied(
         client.post(
             f"/api/v1/ecommerce/products/{product_id}/assets",
-            headers={**BETA_AGENT, "Content-Type": "image/png"},
+            headers={**BETA_OPERATOR, "Content-Type": "image/png"},
             params={"filename": "intruder.png"},
             content=TINY_PNG,
         )
@@ -555,7 +565,7 @@ def test_ecommerce_rejects_cross_tenant_resource_access(
     _assert_denied(
         client.post(
             "/api/v1/ecommerce/listing-batch-jobs",
-            headers=BETA_AGENT,
+            headers=BETA_OPERATOR,
             json={"product_ids": [product_id], "channel": "pinduoduo_sandbox"},
         )
     )

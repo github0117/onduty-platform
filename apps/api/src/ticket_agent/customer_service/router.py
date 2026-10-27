@@ -60,8 +60,10 @@ from ticket_agent.customer_service.turns import (
 )
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
+    ensure_service_admin,
+    ensure_service_chat,
+    ensure_service_workbench,
     ensure_sync_batch_operator,
-    ensure_ticket_writer,
     resolve_business_unit,
 )
 from ticket_agent.shared.db import SessionLocal
@@ -135,7 +137,7 @@ def get_customer_service_metrics(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> CustomerServiceMetrics:
-    ensure_ticket_writer(principal)
+    ensure_service_admin(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return CustomerConversationService(db).metrics(
         business_unit_id=business_unit_id
@@ -152,7 +154,7 @@ def get_customer_service_history_metrics(
     business_unit_id: Annotated[str | None, Query()] = None,
     days: Annotated[int, Query(ge=1, le=90)] = 7,
 ) -> CustomerServiceHistoryMetrics:
-    ensure_ticket_writer(principal)
+    ensure_service_admin(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return CustomerConversationService(db).history_metrics(
         business_unit_id=business_unit_id,
@@ -166,7 +168,7 @@ def heartbeat_agent(
     db: DbSession,
     principal: Actor,
 ) -> AgentPresenceView:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     ensure_business_unit_access(principal, payload.business_unit_id)
     service = CustomerConversationService(db)
     presence = service.heartbeat(
@@ -201,7 +203,7 @@ def heartbeat_agent(
 
 @router.get("/customer-service/presence", response_model=AgentPresenceList)
 def list_agent_presence(db: DbSession, principal: Actor) -> AgentPresenceList:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     business_unit_id = resolve_business_unit(principal)
     return CustomerConversationService(db).presence(business_unit_id)
 
@@ -211,7 +213,7 @@ def list_agent_presence(db: DbSession, principal: Actor) -> AgentPresenceList:
     response_model=AssignmentQueue,
 )
 def get_assignment_queue(db: DbSession, principal: Actor) -> AssignmentQueue:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     business_unit_id = resolve_business_unit(principal)
     return CustomerConversationService(db).assignment_queue(business_unit_id)
 
@@ -224,7 +226,7 @@ def reclaim_offline_presence(
     db: DbSession,
     principal: Actor,
 ) -> PresenceReclaimResult:
-    ensure_ticket_writer(principal)
+    ensure_service_admin(principal)
     business_unit_id = resolve_business_unit(principal)
     return PresenceReclaimResult(
         reclaimed_count=CustomerConversationService(
@@ -243,7 +245,7 @@ def auto_assign_customer_conversations(
     db: DbSession,
     principal: Actor,
 ) -> AssignmentRunResult:
-    ensure_ticket_writer(principal)
+    ensure_service_admin(principal)
     business_unit_id = resolve_business_unit(principal)
     return CustomerConversationService(db).auto_assign(business_unit_id)
 
@@ -256,7 +258,7 @@ def list_customer_service_alerts(
     db: DbSession,
     principal: Actor,
 ) -> CustomerServiceAlertList:
-    ensure_ticket_writer(principal)
+    ensure_service_admin(principal)
     business_unit_id = resolve_business_unit(principal)
     return CustomerConversationService(db).alerts(
         business_unit_id=business_unit_id
@@ -271,7 +273,7 @@ def escalate_customer_service_sla(
     db: DbSession,
     principal: Actor,
 ) -> SlaEscalationResult:
-    ensure_ticket_writer(principal)
+    ensure_service_admin(principal)
     business_unit_id = resolve_business_unit(principal)
     return SlaEscalationResult(
         escalated_count=CustomerConversationService(
@@ -305,7 +307,7 @@ def list_customer_service_notifications(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> CustomerServiceNotificationList:
-    ensure_ticket_writer(principal)
+    ensure_service_admin(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return CustomerConversationService(db).notifications(
         business_unit_id=business_unit_id
@@ -321,7 +323,7 @@ def acknowledge_customer_service_notification(
     db: DbSession,
     principal: Actor,
 ) -> CustomerServiceNotificationView:
-    ensure_sync_batch_operator(principal)
+    ensure_service_admin(principal)
     service = CustomerConversationService(db)
     _notification_for_access(service, notification_id, principal)
     return service.notification_view(
@@ -343,7 +345,7 @@ def reassign_customer_conversation(
     db: DbSession,
     principal: Actor,
 ) -> CustomerConversationView:
-    ensure_sync_batch_operator(principal)
+    ensure_service_admin(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
     return service.view(
@@ -363,7 +365,7 @@ def stream_customer_conversation(
     db: DbSession,
     principal: Actor,
 ) -> StreamingResponse:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     _conversation_for_access(
         CustomerConversationService(db),
         conversation_id,
@@ -414,7 +416,7 @@ def create_customer_conversation(
     db: DbSession,
     principal: Actor,
 ) -> CustomerConversationView:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     ensure_business_unit_access(principal, payload.business_unit_id)
     service = CustomerConversationService(db)
     return service.view(service.create(payload))
@@ -429,7 +431,7 @@ def list_customer_conversations(
     principal: Actor,
     business_unit_id: Annotated[str | None, Query()] = None,
 ) -> CustomerConversationList:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return CustomerConversationService(db).list(business_unit_id)
 
@@ -510,7 +512,7 @@ def get_customer_conversation(
     db: DbSession,
     principal: Actor,
 ) -> CustomerConversationView:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     service = CustomerConversationService(db)
     conversation = _conversation_for_access(
         service, conversation_id, principal
@@ -528,7 +530,7 @@ def get_customer_business_context(
     principal: Actor,
     order_id: Annotated[str | None, Query(max_length=128)] = None,
 ) -> CustomerBusinessContextView:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     service = CustomerConversationService(db)
     conversation = service.get(conversation_id)
     ensure_business_unit_access(
@@ -553,7 +555,7 @@ def request_customer_address_change(
     db: DbSession,
     principal: Actor,
 ) -> CustomerBusinessActionView:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     service = CustomerConversationService(db)
     conversation = service.get(conversation_id)
     ensure_business_unit_access(
@@ -583,7 +585,7 @@ def add_customer_message(
     db: DbSession,
     principal: Actor,
 ) -> CustomerConversationView:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
     conversation, turn_id = service.append_buyer_message(
@@ -612,7 +614,7 @@ def stream_customer_message(
     db: DbSession,
     principal: Actor,
 ) -> StreamingResponse:
-    ensure_ticket_writer(principal)
+    ensure_service_chat(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
     conversation, turn_id = service.append_buyer_message(
@@ -689,7 +691,7 @@ def take_over_customer_conversation(
     db: DbSession,
     principal: Actor,
 ) -> CustomerConversationView:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
     return service.view(
@@ -710,7 +712,7 @@ def release_customer_conversation(
     db: DbSession,
     principal: Actor,
 ) -> CustomerConversationView:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
     return service.view(
@@ -730,7 +732,7 @@ def send_manual_customer_reply(
     db: DbSession,
     principal: Actor,
 ) -> CustomerConversationView:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
     return service.view(
@@ -754,7 +756,7 @@ def generate_customer_reply_suggestion(
     db: DbSession,
     principal: Actor,
 ) -> CustomerReplySuggestionView:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     _conversation_for_access(
         CustomerConversationService(db),
         conversation_id,
@@ -779,7 +781,7 @@ def optimize_customer_reply(
     db: DbSession,
     principal: Actor,
 ) -> CustomerReplyOptimizationView:
-    ensure_ticket_writer(principal)
+    ensure_service_workbench(principal)
     _conversation_for_access(
         CustomerConversationService(db),
         conversation_id,

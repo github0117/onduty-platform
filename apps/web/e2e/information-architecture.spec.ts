@@ -55,11 +55,11 @@ test("页头可直接切换演示视角，业务单元仍在 5 步演示设置",
 
   await page.getByRole("button", { name: "切换视角" }).click();
   await page
-    .getByText("管理者 · 查看运营指标并处理写操作审批", { exact: true })
+    .getByText("客服主管 · 查看运营指标并处理写操作审批", { exact: true })
     .click();
   await expect(page).toHaveURL(/\/customer-service\/admin$/);
   await expect(
-    page.getByText("当前视角：管理者", { exact: true }),
+    page.getByText("当前视角：客服主管", { exact: true }),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "5 步技术演示" }).click();
@@ -88,19 +88,19 @@ test("5 步演示中的视角菜单可切换角色并进入对应首页", async 
     })
     .click();
   await expect(
-    page.getByText("业务执行者 · 处理客户服务和接管会话", {
+    page.getByText("客服坐席 · 处理客户服务和接管会话", {
       exact: true,
     }),
   ).toBeVisible();
   await page
-    .getByText("业务执行者 · 处理客户服务和接管会话", {
+    .getByText("客服坐席 · 处理客户服务和接管会话", {
       exact: true,
     })
     .click();
 
   await expect(page).toHaveURL(/\/customer-service\/workbench$/);
   await expect(
-    page.getByText("当前视角：业务执行者", { exact: true }),
+    page.getByText("当前视角：客服坐席", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("已切换为客服坐席。", { exact: true }),
@@ -160,7 +160,7 @@ test("客服聊天明确区分操作人和对话双方并适配平板与手机",
   ).toBe(true);
 });
 
-test("客服坐席测试身份不显示平台管理菜单", async ({ page }) => {
+test("客服坐席测试身份不显示管理员菜单", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.clear();
     window.localStorage.setItem(
@@ -178,9 +178,21 @@ test("客服坐席测试身份不显示平台管理菜单", async ({ page }) => 
   ).toBeVisible();
   await expect(
     page.getByRole("menuitem", { name: "平台管理", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "知识与评测", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "员工、Skill 与 MCP", exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByText("当前视角：业务执行者", { exact: true }),
+    page.getByRole("menuitem", { name: "模型与连接", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("当前视角：客服坐席", { exact: true }),
   ).toBeVisible();
 });
 
@@ -207,7 +219,7 @@ test("业务经理测试身份只看到业务演示和审批审计", async ({ pa
     page.getByRole("menuitem", { name: "员工、Skill 与 MCP", exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByText("当前视角：管理者", { exact: true }),
+    page.getByText("当前视角：业务经理", { exact: true }),
   ).toBeVisible();
 });
 

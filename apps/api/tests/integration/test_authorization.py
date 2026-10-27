@@ -190,6 +190,79 @@ def test_knowledge_operator_can_manage_knowledge_but_not_tickets(
     assert takeover.status_code == 403
 
 
+def _role_headers(role: str) -> dict[str, str]:
+    return {
+        "X-Actor-Id": f"{role}-1",
+        "X-Actor-Role": role,
+        "X-Business-Unit-Id": "bu_demo",
+    }
+
+
+def test_ecommerce_read_does_not_grant_operate(client: TestClient) -> None:
+    for role in ("agent", "business_manager", "knowledge_operator"):
+        listing = client.get(
+            "/api/v1/ecommerce/categories?business_unit_id=bu_demo",
+            headers=_role_headers(role),
+        )
+        assert listing.status_code == 200, (role, listing.text)
+
+    for role in ("agent", "business_manager", "knowledge_operator"):
+        operate = client.post(
+            "/api/v1/ecommerce/channels/pinduoduo/test",
+            headers=_role_headers(role),
+        )
+        assert operate.status_code == 403, (role, operate.text)
+
+    supervisor = client.post(
+        "/api/v1/ecommerce/channels/pinduoduo/test",
+        headers=_role_headers("supervisor"),
+    )
+    assert supervisor.status_code == 200
+
+    requester = client.get(
+        "/api/v1/ecommerce/categories?business_unit_id=bu_demo",
+        headers=_role_headers("requester"),
+    )
+    assert requester.status_code == 403
+
+
+def test_mcp_oversight_read_is_separate_from_decide(client: TestClient) -> None:
+    for role in ("supervisor", "business_manager", "auditor"):
+        approvals = client.get(
+            "/api/v1/mcp/tool-approvals?business_unit_id=bu_demo",
+            headers=_role_headers(role),
+        )
+        incidents = client.get(
+            "/api/v1/mcp/action-incidents?business_unit_id=bu_demo",
+            headers=_role_headers(role),
+        )
+        assert approvals.status_code == 200, (role, approvals.text)
+        assert incidents.status_code == 200, (role, incidents.text)
+
+    agent = client.get(
+        "/api/v1/mcp/tool-approvals?business_unit_id=bu_demo",
+        headers=_role_headers("agent"),
+    )
+    assert agent.status_code == 403
+
+
+def test_customer_service_metrics_require_service_admin(
+    client: TestClient,
+) -> None:
+    supervisor = client.get(
+        "/api/v1/customer-service/metrics?business_unit_id=bu_demo",
+        headers=_role_headers("supervisor"),
+    )
+    assert supervisor.status_code == 200
+
+    for role in ("agent", "auditor", "business_manager"):
+        denied = client.get(
+            "/api/v1/customer-service/metrics?business_unit_id=bu_demo",
+            headers=_role_headers(role),
+        )
+        assert denied.status_code == 403, (role, denied.text)
+
+
 def test_requester_cannot_create_ticket_for_another_customer(client: TestClient) -> None:
     response = client.post(
         "/api/v1/tickets",

@@ -32,6 +32,8 @@ from ticket_agent.identity.dependencies import (
     tenant_query_guard,
 )
 from ticket_agent.identity.models import Principal
+from ticket_agent.identity.policy import require_capability
+from ticket_agent.identity.router import router as identity_router
 from ticket_agent.integrations.metrics import SyncMetricsService
 from ticket_agent.integrations.router import router as integration_router
 from ticket_agent.knowledge.metrics import RagMetricsService
@@ -208,6 +210,11 @@ def health_ready() -> HealthResponse:
 
 tenant_dependencies = [Depends(tenant_query_guard)]
 app.include_router(
+    identity_router,
+    prefix=settings.api_prefix,
+    dependencies=tenant_dependencies,
+)
+app.include_router(
     router,
     prefix=settings.api_prefix,
     dependencies=tenant_dependencies,
@@ -338,13 +345,12 @@ def reset_demo_data(
     business_unit_id: Annotated[str | None, Query()] = None,
     x_demo_reset_confirm: Annotated[str | None, Header()] = None,
 ) -> dict[str, str]:
-    if principal.role != "admin":
-        raise ApiProblem(
-            status_code=403,
-            code="FORBIDDEN",
-            title="Administrator role required",
-            detail="Demo reset is restricted to platform administrators.",
-        )
+    require_capability(
+        principal,
+        "demo.reset",
+        title="Administrator role required",
+        detail="Demo reset is restricted to platform administrators.",
+    )
     if (
         not settings.demo_reset_enabled
         or settings.app_env not in {"development", "test"}

@@ -6,8 +6,8 @@ from fastapi import APIRouter, BackgroundTasks, Header, Query, Request, Response
 from ticket_agent.api.dependencies import Actor, DbSession, correlation_id
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
-    ensure_sync_batch_operator,
     ensure_ticket_creator,
+    ensure_ticket_sync,
     ensure_ticket_view,
     ensure_ticket_writer,
     resolve_business_unit,
@@ -270,7 +270,7 @@ def retry_external_sync_batch(
     db: DbSession,
     principal: Actor,
 ) -> SyncBatchRetryResponse:
-    ensure_sync_batch_operator(principal)
+    ensure_ticket_sync(principal)
     items, event_ids = TicketService(db).batch_request_sync_retry(
         payload=payload,
         principal=principal,

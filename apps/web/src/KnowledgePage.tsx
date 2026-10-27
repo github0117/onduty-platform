@@ -58,8 +58,7 @@ import type {
   KnowledgeSpace,
   KnowledgeVersion,
 } from "./types";
-import { getActiveTestIdentity } from "./auth";
-import { hasCapability } from "./capabilities";
+import { useAuth } from "./auth";
 import { message } from "./feedback";
 import {
   channelLabels,
@@ -424,10 +423,8 @@ export default function KnowledgePage({
   onNavigate: (path: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const canWriteKnowledge = hasCapability(
-    getActiveTestIdentity().role,
-    "knowledge.write",
-  );
+  const { hasCapability } = useAuth();
+  const canWriteKnowledge = hasCapability("knowledge.write");
   const [selected, setSelected] = useState<KnowledgeDocument | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);

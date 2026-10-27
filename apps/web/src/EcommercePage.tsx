@@ -70,6 +70,8 @@ import type {
   EcommerceProductImportRow,
   DigitalEmployee,
 } from "./types";
+import { useAuth } from "./auth";
+import ReadOnlyBanner from "./ReadOnlyBanner";
 import { message } from "./feedback";
 import {
   assetStatusLabels,
@@ -136,6 +138,10 @@ export default function EcommercePage({
   onNavigate: (path: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
+  const canOperate = hasCapability("ecommerce.operate");
+  const canMaintainCatalog = hasCapability("ecommerce.catalog.write");
+  const canWriteKnowledge = hasCapability("knowledge.write");
   const requestedListingId = new URLSearchParams(window.location.search).get(
     "listing",
   );
@@ -285,9 +291,11 @@ export default function EcommercePage({
           <Button type="link" onClick={() => setAssetProduct(product)}>
             素材
           </Button>
-          <Button type="link" onClick={() => setGenerateProduct(product)}>
-            AI 主图
-          </Button>
+          {canOperate && (
+            <Button type="link" onClick={() => setGenerateProduct(product)}>
+              AI 主图
+            </Button>
+          )}
         </Space>
       ),
     },
@@ -379,18 +387,26 @@ export default function EcommercePage({
           </Tag>
           {section === "products" && (
             <>
-              <Button
-                loading={syncProductKnowledge.isPending}
-                onClick={() => syncProductKnowledge.mutate()}
-              >
-                同步商品知识
-              </Button>
-              <Button onClick={() => setProductOpen(true)}>新增商品</Button>
-              <Button onClick={() => setCategoryOpen(true)}>品类档案</Button>
-              <Button onClick={() => setImportOpen(true)}>批量导入 CSV</Button>
+              {canWriteKnowledge && (
+                <Button
+                  loading={syncProductKnowledge.isPending}
+                  onClick={() => syncProductKnowledge.mutate()}
+                >
+                  同步商品知识
+                </Button>
+              )}
+              {canMaintainCatalog && (
+                <>
+                  <Button onClick={() => setProductOpen(true)}>新增商品</Button>
+                  <Button onClick={() => setCategoryOpen(true)}>品类档案</Button>
+                  <Button onClick={() => setImportOpen(true)}>
+                    批量导入 CSV
+                  </Button>
+                </>
+              )}
             </>
           )}
-          {section === "listings" && (
+          {section === "listings" && canOperate && (
             <>
               <Button
                 disabled={!products.data?.length}
@@ -416,6 +432,19 @@ export default function EcommercePage({
         message="当前业务入口：国内电商运营入口"
         description="商品上架数字员工负责资料校验和上架内容，视觉内容数字员工负责主图、分镜与视频，电商运营主管数字员工负责质量、返工和异常复核。"
       />
+
+      {!canOperate && (
+        <ReadOnlyBanner
+          title={
+            canMaintainCatalog ? "当前角色可维护商品目录" : "当前角色为只读访问"
+          }
+          description={
+            canMaintainCatalog
+              ? "可以新增商品、维护品类和批量导入；上架任务、素材生成、审核发布与视频渲染需要电商运营权限。"
+              : "可以查看商品、上架任务、素材和运营看板；所有写操作和审核动作都需要相应权限。"
+          }
+        />
+      )}
 
       <Menu
         className="knowledge-subnav"
@@ -1355,6 +1384,8 @@ function ListingDrawer({
   onReviewed: () => Promise<void>;
 }) {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
+  const canOperate = hasCapability("ecommerce.operate");
   const [editOpen, setEditOpen] = useState(false);
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] =
     useState<string>();
@@ -1536,17 +1567,19 @@ function ListingDrawer({
             >
               下载上架包
             </Button>
-            <Button
-              size="small"
-              disabled={
-                !["PENDING_REVIEW", "NEEDS_HUMAN", "REJECTED"].includes(
-                  task.status,
-                )
-              }
-              onClick={() => setEditOpen(true)}
-            >
-              编辑内容
-            </Button>
+            {canOperate && (
+              <Button
+                size="small"
+                disabled={
+                  !["PENDING_REVIEW", "NEEDS_HUMAN", "REJECTED"].includes(
+                    task.status,
+                  )
+                }
+                onClick={() => setEditOpen(true)}
+              >
+                编辑内容
+              </Button>
+            )}
             <Tag color={statusColor(task.status)}>
               {listingStatusLabels[task.status] ?? task.status}
             </Tag>
@@ -1615,6 +1648,8 @@ function ListingDrawer({
             title="短视频脚本"
             extra={
               <Space wrap>
+                {canOperate && (
+                  <>
                 <Select
                   allowClear
                   size="small"
@@ -1674,6 +1709,8 @@ function ListingDrawer({
                           ? "重新生成预览"
                           : "生成竖屏预览"}
                 </Button>
+                  </>
+                )}
               </Space>
             }
           >
@@ -1745,7 +1782,11 @@ function ListingDrawer({
                       <StoryboardAssetCard
                         asset={asset}
                         key={asset.id}
-                        onAcceptVisual={() => acceptVisual.mutate(asset.id)}
+                        onAcceptVisual={
+                          canOperate
+                            ? () => acceptVisual.mutate(asset.id)
+                            : undefined
+                        }
                       />
                     ))}
                 </div>
@@ -1780,7 +1821,9 @@ function ListingDrawer({
               {!task.citations.length && <Text type="secondary">未检索到规则</Text>}
             </Space>
           </Card>
-          {(task.status === "PENDING_REVIEW" || task.status === "NEEDS_HUMAN") && (
+          {canOperate &&
+            (task.status === "PENDING_REVIEW" ||
+              task.status === "NEEDS_HUMAN") && (
             <Space>
               <Button
                 type="primary"
@@ -1805,9 +1848,11 @@ function ListingDrawer({
               message="渠道发布失败"
               description={task.error_message ?? "请检查渠道配置后重试。"}
               action={
-                <Button loading={retry.isPending} onClick={() => retry.mutate()}>
-                  重新发布
-                </Button>
+                canOperate ? (
+                  <Button loading={retry.isPending} onClick={() => retry.mutate()}>
+                    重新发布
+                  </Button>
+                ) : undefined
               }
             />
           )}
@@ -1947,6 +1992,8 @@ function ProductAssetDrawer({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
+  const canOperate = hasCapability("ecommerce.operate");
   const [generateOpen, setGenerateOpen] = useState(false);
   const [archiveTarget, setArchiveTarget] =
     useState<EcommerceProductAsset | null>(null);
@@ -2027,21 +2074,25 @@ function ProductAssetDrawer({
       onClose={onClose}
       title={product ? `商品素材 · ${product.name}` : "商品素材"}
       extra={
-        <Space>
-          <Button onClick={() => setGenerateOpen(true)}>AI 生成主图</Button>
-          <Upload
-            accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,audio/wav,audio/mpeg,audio/mp3"
-            showUploadList={false}
-            beforeUpload={(file) => {
-              upload.mutate(file);
-              return Upload.LIST_IGNORE;
-            }}
-          >
-            <Button type="primary" loading={upload.isPending}>
-              上传素材
-            </Button>
-          </Upload>
-        </Space>
+        canOperate ? (
+          <Space>
+            <Button onClick={() => setGenerateOpen(true)}>AI 生成主图</Button>
+            <Upload
+              accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,audio/wav,audio/mpeg,audio/mp3"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                upload.mutate(file);
+                return Upload.LIST_IGNORE;
+              }}
+            >
+              <Button type="primary" loading={upload.isPending}>
+                上传素材
+              </Button>
+            </Upload>
+          </Space>
+        ) : (
+          <Tag>只读查看</Tag>
+        )
       }
     >
       <Space direction="vertical" size="large" className="page-stack">
@@ -2070,9 +2121,15 @@ function ProductAssetDrawer({
                   )?.name ?? "未分配数字员工"
                 }
                 key={asset.id}
-                onPrimary={() => setPrimary.mutate(asset.id)}
-                onAcceptVisual={() => acceptVisual.mutate(asset.id)}
-                onArchive={() => setArchiveTarget(asset)}
+                onPrimary={
+                  canOperate ? () => setPrimary.mutate(asset.id) : undefined
+                }
+                onAcceptVisual={
+                  canOperate ? () => acceptVisual.mutate(asset.id) : undefined
+                }
+                onArchive={
+                  canOperate ? () => setArchiveTarget(asset) : undefined
+                }
               />
             ))}
           </div>
@@ -2197,9 +2254,9 @@ function AssetCard({
 }: {
   asset: EcommerceProductAsset;
   ownerName: string;
-  onPrimary: () => void;
-  onAcceptVisual: () => void;
-  onArchive: () => void;
+  onPrimary?: () => void;
+  onAcceptVisual?: () => void;
+  onArchive?: () => void;
 }) {
   const objectUrl = useObjectUrl(asset.id);
   return (
@@ -2249,24 +2306,31 @@ function AssetCard({
           <Tag color="green">人工确认视觉</Tag>
         )}
       </Space>
-      <Space style={{ marginTop: 10 }}>
-        {asset.asset_type === "IMAGE" && asset.metadata.is_primary !== true && (
-          <Button size="small" onClick={onPrimary}>
-            设为主图
-          </Button>
-        )}
-        {asset.asset_type === "IMAGE" &&
-          ["NEEDS_REVIEW", "ERROR"].includes(
-            String(asset.metadata.visual_audit_status ?? ""),
-          ) && (
-            <Button size="small" onClick={onAcceptVisual}>
-              确认视觉可用
+      {(onPrimary || onAcceptVisual || onArchive) && (
+        <Space style={{ marginTop: 10 }}>
+          {onPrimary &&
+            asset.asset_type === "IMAGE" &&
+            asset.metadata.is_primary !== true && (
+              <Button size="small" onClick={onPrimary}>
+                设为主图
+              </Button>
+            )}
+          {onAcceptVisual &&
+            asset.asset_type === "IMAGE" &&
+            ["NEEDS_REVIEW", "ERROR"].includes(
+              String(asset.metadata.visual_audit_status ?? ""),
+            ) && (
+              <Button size="small" onClick={onAcceptVisual}>
+                确认视觉可用
+              </Button>
+            )}
+          {onArchive && (
+            <Button size="small" danger onClick={onArchive}>
+              归档
             </Button>
           )}
-        <Button size="small" danger onClick={onArchive}>
-          归档
-        </Button>
-      </Space>
+        </Space>
+      )}
     </Card>
   );
 }
@@ -2276,7 +2340,7 @@ function StoryboardAssetCard({
   onAcceptVisual,
 }: {
   asset: EcommerceProductAsset;
-  onAcceptVisual: () => void;
+  onAcceptVisual?: () => void;
 }) {
   const objectUrl = useObjectUrl(asset.id);
   return (
@@ -2303,13 +2367,14 @@ function StoryboardAssetCard({
         )}
         <Text strong>{String(asset.metadata.scene_visual ?? "")}</Text>
         <Text type="secondary">{String(asset.metadata.scene_line ?? "")}</Text>
-        {["NEEDS_REVIEW", "ERROR"].includes(
-          String(asset.metadata.visual_audit_status ?? ""),
-        ) && (
-          <Button size="small" onClick={onAcceptVisual}>
-            确认视觉可用
-          </Button>
-        )}
+        {onAcceptVisual &&
+          ["NEEDS_REVIEW", "ERROR"].includes(
+            String(asset.metadata.visual_audit_status ?? ""),
+          ) && (
+            <Button size="small" onClick={onAcceptVisual}>
+              确认视觉可用
+            </Button>
+          )}
       </Space>
     </Card>
   );

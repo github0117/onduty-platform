@@ -4,6 +4,7 @@ from fastapi import Depends, Header, Request
 
 from ticket_agent.identity.models import Principal
 from ticket_agent.identity.oidc import get_oidc_authenticator, normalize_role
+from ticket_agent.identity.policy import has_capability, require_capability
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 
@@ -106,34 +107,33 @@ def _business_units_from_header(
 
 
 def ensure_ticket_writer(principal: Principal) -> None:
-    if principal.role not in {"agent", "supervisor", "admin"}:
-        raise ApiProblem(
-            status_code=403,
-            code="FORBIDDEN",
-            title="Operation not permitted",
-            detail="This operation requires a support agent or supervisor role.",
-        )
+    require_capability(
+        principal,
+        "tickets.write",
+        detail="This operation requires a support agent or supervisor role.",
+    )
+
+
+def ensure_ticket_sync(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "tickets.sync",
+        title="Batch sync operation denied",
+        detail="Batch sync retry requires a supervisor or administrator role.",
+    )
 
 
 def ensure_workspace_viewer(principal: Principal) -> None:
-    if principal.role not in {
-        "agent",
-        "supervisor",
-        "knowledge_operator",
-        "business_manager",
-        "admin",
-        "auditor",
-    }:
-        raise ApiProblem(
-            status_code=403,
-            code="FORBIDDEN",
-            title="Workspace access denied",
-            detail="This operation requires a workspace viewer role.",
-        )
+    require_capability(
+        principal,
+        "knowledge.view",
+        title="Workspace access denied",
+        detail="This operation requires a workspace viewer role.",
+    )
 
 
 def ensure_ticket_creator(principal: Principal, requester_ref: str) -> None:
-    if principal.role in {"agent", "supervisor", "admin"}:
+    if has_capability(principal, "tickets.write"):
         return
     if principal.role != "requester":
         raise ApiProblem(
@@ -152,13 +152,7 @@ def ensure_ticket_creator(principal: Principal, requester_ref: str) -> None:
 
 
 def ensure_ticket_view(principal: Principal, requester_ref: str) -> None:
-    if principal.role in {
-        "agent",
-        "supervisor",
-        "business_manager",
-        "admin",
-        "auditor",
-    }:
+    if has_capability(principal, "tickets.view"):
         return
     if principal.customer_ref != requester_ref:
         raise ApiProblem(
@@ -170,62 +164,110 @@ def ensure_ticket_view(principal: Principal, requester_ref: str) -> None:
 
 
 def ensure_knowledge_admin(principal: Principal) -> None:
-    if principal.role not in {"admin", "knowledge_operator"}:
-        raise ApiProblem(
-            status_code=403,
-            code="FORBIDDEN",
-            title="Knowledge operation denied",
-            detail="Knowledge publishing requires an administrator role.",
-        )
+    require_capability(
+        principal,
+        "knowledge.write",
+        title="Knowledge operation denied",
+        detail="Knowledge publishing requires an administrator role.",
+    )
 
 
 def ensure_knowledge_worker(principal: Principal) -> None:
-    if principal.role not in {
-        "agent",
-        "supervisor",
-        "knowledge_operator",
-        "admin",
-    }:
-        raise ApiProblem(
-            status_code=403,
-            code="FORBIDDEN",
-            title="Knowledge operation denied",
-            detail="This operation requires a knowledge operator or support role.",
-        )
+    require_capability(
+        principal,
+        "knowledge.use",
+        title="Knowledge operation denied",
+        detail="This operation requires a knowledge operator or support role.",
+    )
 
 
 def ensure_metrics_viewer(principal: Principal) -> None:
-    if principal.role not in {
-        "supervisor",
-        "knowledge_operator",
-        "business_manager",
-        "admin",
-        "auditor",
-    }:
-        raise ApiProblem(
-            status_code=403,
-            code="FORBIDDEN",
-            title="Metrics access denied",
-            detail="Metrics require a supervisor, administrator or auditor role.",
-        )
+    require_capability(
+        principal,
+        "operations.view",
+        title="Metrics access denied",
+        detail="Metrics require a supervisor, administrator or auditor role.",
+    )
 
 
 def ensure_sync_batch_operator(principal: Principal) -> None:
-    if principal.role not in {"supervisor", "admin"}:
-        raise ApiProblem(
-            status_code=403,
-            code="FORBIDDEN",
-            title="Batch sync operation denied",
-            detail="Batch sync retry requires a supervisor or administrator role.",
-        )
+    require_capability(
+        principal,
+        "operations.manage",
+        title="Batch sync operation denied",
+        detail="Batch sync retry requires a supervisor or administrator role.",
+    )
+
+
+def ensure_service_chat(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "service.chat",
+        title="Customer service access denied",
+        detail="This operation requires a customer service role.",
+    )
+
+
+def ensure_service_workbench(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "service.workbench",
+        title="Workbench access denied",
+        detail="This operation requires a human service workbench role.",
+    )
+
+
+def ensure_service_admin(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "service.admin",
+        title="Service console access denied",
+        detail="This operation requires a supervisor or administrator role.",
+    )
+
+
+def ensure_ecommerce_viewer(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "ecommerce.view",
+        title="E-commerce access denied",
+        detail="This operation requires read access to e-commerce resources.",
+    )
+
+
+def ensure_ecommerce_operator(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "ecommerce.operate",
+        title="E-commerce operation denied",
+        detail="This operation requires a supervisor or administrator role.",
+    )
+
+
+def ensure_ecommerce_catalog_admin(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "ecommerce.catalog.write",
+        title="E-commerce catalog operation denied",
+        detail="Catalog maintenance requires a knowledge operator or administrator.",
+    )
+
+
+def ensure_mcp_viewer(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "service.approvals.view",
+        title="Approval access denied",
+        detail="This operation requires a supervisor, business manager or auditor role.",
+    )
 
 
 def ensure_mcp_approver(principal: Principal) -> None:
-    if principal.role not in {"supervisor", "admin"}:
-        raise ApiProblem(
-            status_code=403,
-            code="MCP_APPROVAL_ROLE_REQUIRED",
-            title="Supervisor approval required",
-            detail="MCP write approvals require a supervisor or administrator.",
-        )
+    require_capability(
+        principal,
+        "service.approvals.decide",
+        code="MCP_APPROVAL_ROLE_REQUIRED",
+        title="Supervisor approval required",
+        detail="MCP write approvals require a supervisor or administrator.",
+    )
 

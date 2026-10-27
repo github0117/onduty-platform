@@ -32,6 +32,8 @@ import {
   takeOverTicket,
 } from "./api";
 import type { TicketListItem } from "./types";
+import { useAuth } from "./auth";
+import ReadOnlyBanner from "./ReadOnlyBanner";
 import { message } from "./feedback";
 import {
   draftStateLabels,
@@ -87,6 +89,8 @@ function DraftReviewDrawer({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
+  const canWrite = hasCapability("tickets.write");
   const [editedText, setEditedText] = useState("");
   const detail = useQuery({
     queryKey: ["ticket", ticketId],
@@ -240,6 +244,7 @@ function DraftReviewDrawer({
                   </Space>
                 </div>
               )}
+              {canWrite && (
               <Space style={{ marginTop: 16 }}>
                 <Button
                   type="primary"
@@ -272,6 +277,12 @@ function DraftReviewDrawer({
                   </Button>
                 )}
               </Space>
+              )}
+              {!canWrite && (
+                <Text type="secondary" style={{ display: "block", marginTop: 16 }}>
+                  当前角色只能查看工单，不能审核草稿、接管或重试外部同步。
+                </Text>
+              )}
             </Card>
           ) : (
             <Alert
@@ -280,13 +291,15 @@ function DraftReviewDrawer({
               message="该工单需要人工处理"
               description="高风险、低置信度或未分类工单不会自动生成首响。请人工接管并继续处理。"
               action={
-                <Button
-                  danger
-                  loading={takeover.isPending}
-                  onClick={() => takeover.mutate()}
-                >
-                  人工接管
-                </Button>
+                canWrite ? (
+                  <Button
+                    danger
+                    loading={takeover.isPending}
+                    onClick={() => takeover.mutate()}
+                  >
+                    人工接管
+                  </Button>
+                ) : undefined
               }
             />
           )}
@@ -397,6 +410,8 @@ export default function TicketsPage({
   technicalMode?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
+  const canWrite = hasCapability("tickets.write");
   const [selectedTicket, setSelectedTicket] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const tickets = useQuery({
@@ -497,7 +512,9 @@ export default function TicketsPage({
         </div>
         <Space>
           {technicalMode && <Tag color="cyan">TECH</Tag>}
-          <Button onClick={() => setCreateOpen(true)}>创建演示工单</Button>
+          {canWrite && (
+            <Button onClick={() => setCreateOpen(true)}>创建演示工单</Button>
+          )}
           <Button
             type="primary"
             loading={tickets.isFetching}
@@ -516,6 +533,9 @@ export default function TicketsPage({
         message="当前为受控演示模式"
         description="数字员工只生成分类、路由和草稿。首响由人工确认；高风险工单强制人工接管。"
       />
+      {!canWrite && (
+        <ReadOnlyBanner description="可以查看工单、草稿和同步状态；审核、接管、重试同步和创建工单都需要工单处理权限。" />
+      )}
       {technicalMode && (
         <Card
           className="section-card"

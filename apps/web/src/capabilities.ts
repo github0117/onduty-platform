@@ -1,118 +1,130 @@
+/**
+ * Capability names and path → capability mapping.
+ *
+ * The role → capability table lives only on the server
+ * (`ticket_agent.identity.policy`). This module never re-derives permissions
+ * from a role; callers pass the capability set returned by `GET /api/v1/me`.
+ */
+
 export type Capability =
   | "platform.overview"
-  | "platform.management"
+  | "tickets.view_self"
+  | "tickets.view"
+  | "tickets.write"
+  | "tickets.sync"
   | "service.chat"
   | "service.workbench"
   | "service.admin"
-  | "service.approvals"
-  | "service.incidents"
-  | "ecommerce.view"
-  | "tickets.view"
+  | "service.approvals.view"
+  | "service.approvals.decide"
+  | "service.incidents.view"
+  | "service.incidents.manage"
   | "knowledge.view"
+  | "knowledge.use"
   | "knowledge.write"
   | "employees.view"
   | "employees.write"
+  | "ecommerce.view"
+  | "ecommerce.operate"
+  | "ecommerce.catalog.write"
+  | "operations.view"
+  | "operations.manage"
+  | "mcp.connectors.view"
+  | "mcp.connectors.write"
   | "models.view"
-  | "operations.view";
+  | "demo.reset";
 
-const capabilitiesByRole: Record<string, readonly Capability[]> = {
-  agent: [
-    "service.chat",
-    "service.workbench",
-    "ecommerce.view",
-    "tickets.view",
-    "knowledge.view",
-  ],
-  supervisor: [
-    "platform.management",
-    "service.chat",
-    "service.workbench",
-    "service.admin",
-    "service.approvals",
-    "service.incidents",
-    "ecommerce.view",
-    "tickets.view",
-    "knowledge.view",
-    "operations.view",
-  ],
-  knowledge_operator: [
-    "platform.management",
-    "knowledge.view",
-    "knowledge.write",
-    "employees.view",
-    "employees.write",
-  ],
-  business_manager: [
-    "platform.management",
-    "service.chat",
-    "ecommerce.view",
-    "tickets.view",
-    "knowledge.view",
-    "operations.view",
-  ],
-  admin: [
-    "platform.overview",
-    "platform.management",
-    "service.chat",
-    "service.workbench",
-    "service.admin",
-    "service.approvals",
-    "service.incidents",
-    "ecommerce.view",
-    "tickets.view",
-    "knowledge.view",
-    "knowledge.write",
-    "employees.view",
-    "employees.write",
-    "models.view",
-    "operations.view",
-  ],
-  auditor: [
-    "platform.management",
-    "service.admin",
-    "service.approvals",
-    "service.incidents",
-    "knowledge.view",
-    "operations.view",
-  ],
+export const capabilityLabels: Record<Capability, string> = {
+  "platform.overview": "平台总览",
+  "tickets.view_self": "查看自己的工单",
+  "tickets.view": "查看工单",
+  "tickets.write": "处理工单",
+  "tickets.sync": "批量重试同步",
+  "service.chat": "客服对话",
+  "service.workbench": "人工客服工作台",
+  "service.admin": "客服主管看板",
+  "service.approvals.view": "查看写操作审批",
+  "service.approvals.decide": "审批写操作",
+  "service.incidents.view": "查看执行异常",
+  "service.incidents.manage": "处理执行异常",
+  "knowledge.view": "查看知识",
+  "knowledge.use": "使用知识",
+  "knowledge.write": "维护知识",
+  "employees.view": "查看数字员工",
+  "employees.write": "配置数字员工",
+  "ecommerce.view": "查看电商运营",
+  "ecommerce.operate": "执行电商运营",
+  "ecommerce.catalog.write": "维护商品目录",
+  "operations.view": "查看运行与审计",
+  "operations.manage": "运维管理",
+  "mcp.connectors.view": "查看外部连接",
+  "mcp.connectors.write": "维护外部连接",
+  "models.view": "查看模型配置",
+  "demo.reset": "恢复演示数据",
 };
 
 const pathCapabilities: Array<{
   prefix: string;
-  capability: Capability;
+  anyOf: readonly Capability[];
 }> = [
-  { prefix: "/overview", capability: "platform.overview" },
-  { prefix: "/customer-service/workbench", capability: "service.workbench" },
-  { prefix: "/customer-service/admin", capability: "service.admin" },
-  { prefix: "/customer-service/approvals", capability: "service.approvals" },
-  { prefix: "/customer-service/incidents", capability: "service.incidents" },
-  { prefix: "/customer-service", capability: "service.chat" },
-  { prefix: "/ecommerce", capability: "ecommerce.view" },
-  { prefix: "/tickets", capability: "tickets.view" },
-  { prefix: "/knowledge", capability: "knowledge.view" },
-  { prefix: "/employees", capability: "employees.view" },
-  { prefix: "/models", capability: "models.view" },
-  { prefix: "/operations", capability: "operations.view" },
+  { prefix: "/demo", anyOf: [] },
+  { prefix: "/overview", anyOf: ["platform.overview"] },
+  { prefix: "/customer-service/workbench", anyOf: ["service.workbench"] },
+  { prefix: "/customer-service/admin", anyOf: ["service.admin"] },
+  {
+    prefix: "/customer-service/approvals",
+    anyOf: ["service.approvals.view"],
+  },
+  {
+    prefix: "/customer-service/incidents",
+    anyOf: ["service.incidents.view"],
+  },
+  { prefix: "/customer-service", anyOf: ["service.chat"] },
+  { prefix: "/ecommerce", anyOf: ["ecommerce.view"] },
+  { prefix: "/tickets", anyOf: ["tickets.view", "tickets.view_self"] },
+  { prefix: "/knowledge", anyOf: ["knowledge.view"] },
+  { prefix: "/employees", anyOf: ["employees.view"] },
+  { prefix: "/models", anyOf: ["models.view"] },
+  { prefix: "/operations", anyOf: ["operations.view"] },
 ];
 
-export function hasCapability(
-  role: string,
-  capability: Capability,
-): boolean {
-  return capabilitiesByRole[role]?.includes(capability) ?? false;
+type CapabilityCollection = ReadonlySet<string> | readonly string[];
+
+function isCapabilityArray(
+  capabilities: CapabilityCollection,
+): capabilities is readonly string[] {
+  return Array.isArray(capabilities);
 }
 
-export function canAccessPath(role: string, path: string): boolean {
+export function hasCapability(
+  capabilities: CapabilityCollection,
+  capability: Capability,
+): boolean {
+  if (isCapabilityArray(capabilities)) {
+    return capabilities.includes(capability);
+  }
+  return capabilities.has(capability);
+}
+
+function capabilitiesForPath(path: string): readonly Capability[] | null {
   const matched = pathCapabilities.find(
     (item) => path === item.prefix || path.startsWith(`${item.prefix}/`),
   );
-  return matched ? hasCapability(role, matched.capability) : false;
+  return matched ? matched.anyOf : null;
 }
 
-export function capabilityForPath(path: string): Capability | null {
-  return (
-    pathCapabilities.find(
-      (item) => path === item.prefix || path.startsWith(`${item.prefix}/`),
-    )?.capability ?? null
-  );
+export function canAccessPath(
+  capabilities: CapabilityCollection,
+  path: string,
+): boolean {
+  const required = capabilitiesForPath(path);
+  if (required === null) return false;
+  if (required.length === 0) return true;
+  return required.some((capability) => hasCapability(capabilities, capability));
+}
+
+export function requiredCapabilitiesForPath(
+  path: string,
+): readonly Capability[] | null {
+  return capabilitiesForPath(path);
 }

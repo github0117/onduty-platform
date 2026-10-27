@@ -347,7 +347,7 @@ def test_mcp_runtime_executes_read_and_blocks_write(
         approval_id = str(write_approval_required.approval_id)
         approvals = client.get(
             "/api/v1/mcp/tool-approvals?business_unit_id=bu_demo",
-            headers=AGENT,
+            headers=ADMIN,
         )
         assert approvals.status_code == 200, approvals.text
         assert approvals.json()["items"][0]["id"] == approval_id
@@ -473,7 +473,7 @@ def test_mcp_runtime_executes_read_and_blocks_write(
 
         incidents = client.get(
             "/api/v1/mcp/action-incidents?business_unit_id=bu_demo&status=OPEN",
-            headers=AGENT,
+            headers=ADMIN,
         )
         assert incidents.status_code == 200, incidents.text
         assert incidents.json()["total"] == 1

@@ -10,17 +10,14 @@ import type { KnowledgeSection } from "./KnowledgePage";
 import { message } from "./feedback";
 import {
   consumeIdentitySwitchNotice,
-  getActiveBusinessUnitId,
-  getActiveTestIdentity,
   isTestIdentityMode,
   switchTestIdentity,
   testIdentityProfiles,
+  useAuth,
 } from "./auth";
-import { canAccessPath, hasCapability } from "./capabilities";
-import {
-  demoPerspectiveIds,
-  demoPerspectiveLabels,
-} from "./demoPerspectives";
+import AccessDenied from "./AccessDenied";
+import type { Capability } from "./capabilities";
+import { demoPerspectiveLabels } from "./demoPerspectives";
 
 const OverviewPage = lazy(() => import("./OverviewPage"));
 const DemoGuideDrawer = lazy(() => import("./DemoGuideDrawer"));
@@ -249,11 +246,6 @@ const customerServicePageNavigation = [
   { key: "/customer-service/incidents", label: "执行异常" },
 ] as const;
 
-function identityCanAccessPath(profileId: string, path: string): boolean {
-  const profile = testIdentityProfiles.find((item) => item.id === profileId);
-  return profile ? canAccessPath(profile.role, path) : false;
-}
-
 const legacyPagePaths: Record<string, string> = {
   overview: "/overview",
   tickets: "/tickets",
@@ -272,8 +264,15 @@ function cleanRouteSearch(searchParams: URLSearchParams): URLSearchParams {
   return searchParams;
 }
 
-function resolveInitialPath(): string {
-  if (typeof window === "undefined") return "/customer-service";
+/**
+ * Resolve the path requested by the URL without consulting an identity.
+ *
+ * The landing path depends on the server capability snapshot, which is not
+ * available until ``AuthGate`` finishes ``GET /api/v1/me``. An empty result
+ * means "no explicit path"; the component chooses a landing page after auth.
+ */
+function resolveRequestedPath(): string {
+  if (typeof window === "undefined") return "";
   const currentPath = window.location.pathname;
   if (routeMeta[currentPath]) return currentPath;
   const url = new URL(window.location.href);
@@ -283,22 +282,33 @@ function resolveInitialPath(): string {
     return "/employees/roster";
   }
   const page = url.searchParams.get("page");
-  let target = page
-    ? legacyPagePaths[page] ?? "/customer-service"
-    : getActiveTestIdentity().landingPath;
-  if (
-    page === "employees" &&
-    url.searchParams.get("mode") === "advanced"
-  ) {
+  if (!page) return "";
+  let target = legacyPagePaths[page] ?? "";
+  if (page === "employees" && url.searchParams.get("mode") === "advanced") {
     target =
       url.searchParams.get("drafts") === "1"
         ? "/employees/drafts"
         : "/employees/skills";
   }
+  if (!target) return "";
   url.pathname = target;
   url.search = cleanRouteSearch(url.searchParams).toString();
   window.history.replaceState({}, document.title, url);
   return target;
+}
+
+function landingPathFor(hasCapability: (capability: Capability) => boolean): string {
+  if (hasCapability("platform.overview")) return "/overview";
+  if (hasCapability("service.chat")) return "/customer-service";
+  if (hasCapability("operations.view")) return "/operations";
+  if (hasCapability("knowledge.view")) return "/knowledge";
+  if (
+    hasCapability("tickets.view") ||
+    hasCapability("tickets.view_self")
+  ) {
+    return "/tickets";
+  }
+  return "/demo";
 }
 
 function routeForTarget(target: string): string {
@@ -309,43 +319,37 @@ function routeForTarget(target: string): string {
 
 export default function App() {
   const queryClient = useQueryClient();
-  const [activePath, setActivePath] = useState(resolveInitialPath);
+  const {
+    me,
+    roleLabel,
+    activeBusinessUnitId,
+    activeBusinessUnitLabel,
+    capabilities,
+    isTestMode,
+    testIdentity,
+    hasCapability,
+    canAccessPath,
+  } = useAuth();
+  const [activePath, setActivePath] = useState(resolveRequestedPath);
   const [routeRevision, setRouteRevision] = useState(0);
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideStep, setGuideStep] = useState(0);
-  const current = routeMeta[activePath] ?? routeMeta["/customer-service"];
-  const activeIdentity = getActiveTestIdentity();
-  const activeBusinessUnit = getActiveBusinessUnitId();
-  const visiblePlatformKeys = new Set(
-    [
-      "/employees/roster",
-      "/knowledge",
-      "/models",
-      "/operations",
-    ].filter((path) => canAccessPath(activeIdentity.role, path)),
-  );
-  const showOverview = hasCapability(
-    activeIdentity.role,
-    "platform.overview",
-  );
-  const showPlatformManagement = hasCapability(
-    activeIdentity.role,
-    "platform.management",
-  );
+  const homePath = landingPathFor(hasCapability);
+  const current =
+    routeMeta[activePath] ?? routeMeta[homePath] ?? routeMeta["/customer-service"];
+  const pathAllowed = Boolean(activePath) && canAccessPath(activePath);
   const visibleCustomerServiceNavigation = customerServicePageNavigation.filter(
-    (item) => canAccessPath(activeIdentity.role, item.key),
+    (item) => canAccessPath(item.key),
   );
   const visibleEmployeeNavigation = employeePageNavigation.filter((item) =>
-    canAccessPath(activeIdentity.role, item.key),
+    canAccessPath(item.key),
   );
 
   useEffect(() => {
-    if (identityCanAccessPath(activeIdentity.id, activePath)) return;
-    const landing = activeIdentity.landingPath;
-    window.history.replaceState({}, document.title, landing);
-    setActivePath(landing);
-    message.info("当前测试身份无权访问该页面，已返回角色首页");
-  }, [activeIdentity.id, activeIdentity.landingPath, activePath]);
+    if (activePath) return;
+    window.history.replaceState({}, document.title, homePath);
+    setActivePath(homePath);
+  }, [activePath, homePath]);
 
   useEffect(() => {
     const switchedIdentity = consumeIdentitySwitchNotice();
@@ -358,7 +362,7 @@ export default function App() {
     const onPopState = () => {
       const path = routeMeta[window.location.pathname]
         ? window.location.pathname
-        : "/customer-service";
+        : "";
       setActivePath(path);
       setRouteRevision((value) => value + 1);
     };
@@ -394,7 +398,13 @@ export default function App() {
     { key: "/customer-service", label: "企业服务台 Agent" },
     { key: "/ecommerce", label: "电商运营复用" },
     { key: "/tickets", label: "内部工单 / HR" },
-  ].filter((item) => canAccessPath(activeIdentity.role, item.key));
+  ].filter((item) => canAccessPath(item.key));
+  const platformChildren = [
+    { key: "/employees/roster", label: "员工、Skill 与 MCP" },
+    { key: "/knowledge", label: "知识与评测" },
+    { key: "/models", label: "模型与连接" },
+    { key: "/operations", label: "运行与审计" },
+  ].filter((item) => canAccessPath(item.key));
   const scenarioMenu = {
     key: "demo-scenarios",
     label: "Agent 演示",
@@ -403,21 +413,14 @@ export default function App() {
   const platformMenu = {
     key: "platform-management",
     label: "平台管理",
-    children: [
-      { key: "/employees/roster", label: "员工、Skill 与 MCP" },
-      { key: "/knowledge", label: "知识与评测" },
-      { key: "/models", label: "模型与连接" },
-      { key: "/operations", label: "运行与审计" },
-    ].filter((item) => visiblePlatformKeys.has(item.key)),
+    children: platformChildren,
   };
   const menuItems = [
-    ...(showOverview
+    ...(hasCapability("platform.overview")
       ? [{ key: "/overview", label: "平台总览" }]
       : []),
     ...(scenarioMenu.children.length ? [scenarioMenu] : []),
-    ...(showPlatformManagement && platformMenu.children.length
-      ? [platformMenu]
-      : []),
+    ...(platformMenu.children.length ? [platformMenu] : []),
   ];
 
   return (
@@ -456,7 +459,9 @@ export default function App() {
         />
         <div className="app-sidebar-footer">
           <Tag color="gold">演示环境</Tag>
-          <Text>{activeBusinessUnit} · 沙盒数据 · 非生产</Text>
+          <Text>
+            {activeBusinessUnitId} · {activeBusinessUnitLabel}
+          </Text>
         </div>
       </Sider>
       <Layout>
@@ -475,7 +480,10 @@ export default function App() {
             </Title>
           </div>
           <Space wrap>
-            {isTestIdentityMode() && (
+            <Tag color="cyan">
+              {activeBusinessUnitLabel} · {roleLabel}
+            </Tag>
+            {isTestMode && testIdentity && (
               <>
                 {activePath === "/customer-service" ? (
                   <Tag color="cyan">
@@ -489,25 +497,19 @@ export default function App() {
                 ) : (
                   <Tag color="cyan">
                     当前视角：
-                    {demoPerspectiveLabels[activeIdentity.id] ??
-                      activeIdentity.label}
+                    {demoPerspectiveLabels[testIdentity.id] ??
+                      testIdentity.label}
                   </Tag>
                 )}
                 <Dropdown
                   trigger={["click"]}
                   menu={{
                     selectable: true,
-                    selectedKeys: [activeIdentity.id],
-                    items: testIdentityProfiles
-                      .filter((profile) =>
-                        demoPerspectiveIds.includes(
-                          profile.id as (typeof demoPerspectiveIds)[number],
-                        ),
-                      )
-                      .map((profile) => ({
-                        key: profile.id,
-                        label: `${demoPerspectiveLabels[profile.id] ?? profile.label} · ${profile.description}`,
-                      })),
+                    selectedKeys: [testIdentity.id],
+                    items: testIdentityProfiles.map((profile) => ({
+                      key: profile.id,
+                      label: `${demoPerspectiveLabels[profile.id] ?? profile.label} · ${profile.description}`,
+                    })),
                     onClick: ({ key }) => {
                       window.location.assign(switchTestIdentity(key));
                     },
@@ -529,7 +531,7 @@ export default function App() {
           </Space>
         </Header>
         <Content className="app-content">
-          {employeeSection && (
+          {pathAllowed && employeeSection && (
             <Menu
               className="knowledge-subnav"
               mode="horizontal"
@@ -538,7 +540,7 @@ export default function App() {
               items={[...visibleEmployeeNavigation]}
             />
           )}
-          {customerServiceSection && (
+          {pathAllowed && customerServiceSection && (
             <Menu
               className="knowledge-subnav"
               mode="horizontal"
@@ -547,6 +549,17 @@ export default function App() {
               items={[...visibleCustomerServiceNavigation]}
             />
           )}
+          {!activePath ? (
+            <div className="route-loading">
+              <Spin size="large" />
+            </div>
+          ) : !pathAllowed ? (
+            <AccessDenied
+              roleLabel={roleLabel}
+              capabilities={capabilities}
+              onBackHome={() => navigate(homePath)}
+            />
+          ) : (
           <Suspense
             fallback={
               <div className="route-loading">
@@ -605,6 +618,7 @@ export default function App() {
             )}
             {activePath === "/operations" && <OperationsPage />}
           </Suspense>
+          )}
         </Content>
       </Layout>
       {guideOpen && (

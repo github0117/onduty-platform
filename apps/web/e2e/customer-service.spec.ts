@@ -494,6 +494,25 @@ test("聊天发送后立即清空输入并显示发送中气泡", async ({
 }) => {
   const { conversationId, ticketId } =
     await createProductConversation(request);
+  // Wait for the opening turn to finish before sending a second message.
+  // Otherwise the reply and the new buyer message race for the next sequence
+  // number, and the second insert can hit the unique sequence constraint.
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(
+          `/api/v1/customer-service/conversations/${conversationId}`,
+          { headers: apiHeaders },
+        );
+        if (!response.ok()) return false;
+        const body = (await response.json()) as {
+          messages: Array<{ role: string }>;
+        };
+        return body.messages.some((item) => item.role === "ASSISTANT");
+      },
+      { timeout: 90_000 },
+    )
+    .toBe(true);
   let releaseMessage: (() => void) | undefined;
   const messageGate = new Promise<void>((resolve) => {
     releaseMessage = resolve;

@@ -3,28 +3,9 @@ import { resolve } from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
-const screenshotDir = resolve("test-results/pilot");
+import { useIdentity } from "./helpers/identity";
 
-async function useIdentity(
-  page: Page,
-  profileId: string,
-  businessUnit = "bu_demo",
-): Promise<void> {
-  await page.addInitScript(
-    ({ profileId, businessUnit }) => {
-      window.localStorage.clear();
-      window.localStorage.setItem(
-        "digital-workforce:test-identity",
-        profileId,
-      );
-      window.localStorage.setItem(
-        "digital-workforce:test-business-unit",
-        businessUnit,
-      );
-    },
-    { profileId, businessUnit },
-  );
-}
+const screenshotDir = resolve("test-results/pilot");
 
 async function capture(page: Page, name: string): Promise<void> {
   mkdirSync(screenshotDir, { recursive: true });
@@ -34,16 +15,19 @@ async function capture(page: Page, name: string): Promise<void> {
   });
 }
 
-test("客服坐席可从角色首页进入工作台", async ({ page }) => {
+test("客服坐席可从角色首页进入主演示", async ({ page }) => {
   await useIdentity(page, "service-agent");
   await page.goto("/");
 
-  await expect(page).toHaveURL(/\/customer-service\/workbench$/);
+  await expect(page).toHaveURL(/\/customer-service$/);
   await expect(
-    page.getByRole("heading", { name: "人工客服工作台" }),
+    page.getByRole("heading", { name: "像员工一样问，自动分派给对的人" }),
   ).toBeVisible();
   await expect(
-    page.getByText("平台管理", { exact: true }),
+    page.getByRole("menuitem", { name: "主管看板", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("menuitem", { name: "运行与审计", exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "管理员视图" }),
@@ -55,9 +39,11 @@ test("客服主管可从角色首页进入运营看板", async ({ page }) => {
   await useIdentity(page, "service-supervisor");
   await page.goto("/");
 
+  await expect(page).toHaveURL(/\/customer-service$/);
+  await page.getByRole("menuitem", { name: "主管看板", exact: true }).click();
   await expect(page).toHaveURL(/\/customer-service\/admin$/);
   await expect(
-    page.getByRole("heading", { name: "运营看板" }),
+    page.getByRole("heading", { name: "运营看板", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("这三个页面分别做什么", { exact: true }),
@@ -81,6 +67,15 @@ test("知识运营可从角色首页进入知识文档", async ({ page }) => {
   await useIdentity(page, "knowledge-operator");
   await page.goto("/");
 
+  await expect(page).toHaveURL(/\/operations$/);
+  await expect(
+    page.getByRole("heading", { name: "运行与审计", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("员工、Skill 与 MCP", { exact: true }),
+  ).toBeVisible();
+
+  await page.goto("/knowledge/documents");
   await expect(page).toHaveURL(/\/knowledge\/documents$/);
   await expect(
     page.getByRole("heading", { name: "知识库工作台" }),
@@ -88,9 +83,6 @@ test("知识运营可从角色首页进入知识文档", async ({ page }) => {
   await expect(
     page.getByText("已归档", { exact: true }),
   ).toHaveCount(0);
-  await expect(
-    page.getByText("员工、Skill 与 MCP", { exact: true }),
-  ).toBeVisible();
   await capture(page, "03-knowledge-operator");
 });
 
@@ -117,7 +109,18 @@ test("业务经理可从角色首页查看运行与审计指标", async ({ page 
   ).toHaveCount(0);
   await expect(
     page.getByRole("menuitem", { name: "企业服务台 Agent", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("menuitem", { name: "内部工单 / HR", exact: true }),
   ).toBeVisible();
+
+  await page.goto("/customer-service/approvals");
+  await expect(
+    page.getByRole("heading", { name: "待审批操作", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "审批并执行" }),
+  ).toHaveCount(0);
   await capture(page, "04-business-manager");
 });
 

@@ -33,7 +33,7 @@ import {
   listMcpConnectors,
   resetDemoData,
 } from "./api";
-import { getActiveBusinessUnitId, getActiveTestIdentity } from "./auth";
+import { useAuth } from "./auth";
 import { message } from "./feedback";
 import type { AgentRun, ToolCall, ToolMetricItem } from "./types";
 import { eventStatusLabels, eventTypeLabels } from "./statusLabels";
@@ -67,12 +67,10 @@ export default function OperationsPage() {
   const [selectedRun, setSelectedRun] = useState<AgentRun | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetJobId, setResetJobId] = useState<string | null>(null);
-  const activeIdentity = getActiveTestIdentity();
+  const { me, hasCapability, activeBusinessUnitLabel } = useAuth();
   const canResetDemo =
-    activeIdentity.role === "admin" && getActiveBusinessUnitId() === "bu_demo";
-  const canViewMcpConnectors = ["agent", "supervisor", "admin"].includes(
-    activeIdentity.role,
-  );
+    hasCapability("demo.reset") && me.features.demo_reset.enabled;
+  const canViewMcpConnectors = hasCapability("mcp.connectors.view");
   const tools = useQuery({ queryKey: ["metrics", "tools"], queryFn: getToolMetrics });
   const calls = useQuery({ queryKey: ["tool-calls"], queryFn: () => getToolCalls(80) });
   const runs = useQuery({
@@ -572,7 +570,7 @@ export default function OperationsPage() {
             type="info"
             showIcon
             message="这是租户隔离的幂等恢复，不会删除你手工创建的数据"
-            description="任务只作用于 bu_demo，在后台执行并轮询进度；固定演示数据已存在时会更新或复用。仅演示或开发环境可执行。"
+            description={`任务只作用于 ${activeBusinessUnitLabel}，在后台执行并轮询进度；固定演示数据已存在时会更新或复用。仅演示或开发环境可执行。`}
           />
           {resetStatus.data && (
             <Alert
