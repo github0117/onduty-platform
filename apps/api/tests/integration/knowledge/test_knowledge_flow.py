@@ -1,11 +1,15 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from ticket_agent.ecommerce.models import EcommerceProduct
+from ticket_agent.knowledge.models import KnowledgeChunk, KnowledgeVersion
 from ticket_agent.knowledge.service import KnowledgeService
 from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.settings import get_settings
 from ticket_agent.workers.celery_app import celery_app
 from ticket_agent.workers.tasks import ingest_knowledge_version_task
 
@@ -340,8 +344,13 @@ def test_create_knowledge_version_from_markdown_file(client: TestClient) -> None
     assert response.status_code == 201, response.text
     version = response.json()
     assert version["source_filename"] == "guide.md"
-    assert version["parser_name"] == "plain-text"
+    assert version["parser_name"] == "markdown"
     assert version["chunk_count"] > 0
+    with SessionLocal() as session:
+        stored = session.get(KnowledgeVersion, UUID(version["id"]))
+        assert stored is not None
+        blocks = (stored.content_blocks_json or {}).get("blocks", [])
+        assert any(block["kind"] == "heading" for block in blocks)
 
 
 def test_async_upload_stores_source_and_ingests_inline(
@@ -374,7 +383,7 @@ def test_async_upload_stores_source_and_ingests_inline(
     body = version.json()
     assert body["status"] == "DRAFT"
     assert body["chunk_count"] > 0
-    assert body["parser_name"] == "plain-text"
+    assert body["parser_name"] == "markdown"
     assert body["ingestion_error"] is None
 
 
@@ -406,7 +415,7 @@ def test_knowledge_ingestion_celery_task_executes(client: TestClient) -> None:
     with SessionLocal() as session:
         version = KnowledgeService(session).get_version(document_id, version_id)
         assert version.status == "DRAFT"
-        assert version.parser_name == "plain-text"
+        assert version.parser_name == "markdown"
 
 
 def test_search_filters_by_knowledge_scope(client: TestClient) -> None:
@@ -1280,3 +1289,43 @@ def test_rag_metrics_summarize_grounded_drafts(client: TestClient) -> None:
     assert response.json()["semantic_unsupported_claim_count"] == 0
 
 
+
+
+def test_structured_chunking_metadata_when_v2_enabled(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document_id = _create_document(client)
+    monkeypatch.setenv("KNOWLEDGE_CHUNKING_VERSION", "v2")
+    get_settings.cache_clear()
+    try:
+        with SessionLocal() as session:
+            version = KnowledgeService(session).create_version_from_file(
+                UUID(document_id),
+                version_label="v2-chunks",
+                filename="sop.md",
+                content_type="text/markdown",
+                data=(
+                    "# 退款政策\n\n"
+                    "签收后七天内可以申请退款。\n\n"
+                    "| 类型 | 时限 |\n| --- | --- |\n| 仅退款 | 24 小时 |"
+                ).encode(),
+            )
+            chunks = (
+                session.execute(
+                    select(KnowledgeChunk).where(
+                        KnowledgeChunk.knowledge_version_id == version.id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    finally:
+        get_settings.cache_clear()
+
+    assert len(chunks) == 2
+    paragraph_chunk = next(chunk for chunk in chunks if "签收后" in chunk.content)
+    assert paragraph_chunk.metadata_json["section_path"] == ["退款政策"]
+    assert paragraph_chunk.metadata_json["chunking_version"] == "v2"
+    table_chunk = next(chunk for chunk in chunks if "仅退款" in chunk.content)
+    assert table_chunk.metadata_json["block_kinds"] == ["table"]

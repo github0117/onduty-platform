@@ -40,6 +40,6 @@ def test_fresh_sqlite_migrations_normalize_employee_ids(
         ).fetchone()
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert revision == ("e7a1c3d5b9f2",)
+    assert revision == ("b8f2c7a41d63",)
     assert default_employee == ("00000000000000000000000000000101",)
     assert violations == []

@@ -110,7 +110,7 @@ Ruff / mypy: passed（177 个源文件）
 TypeScript / Vite: passed
 Playwright: 148 passed, 2 skipped（25 个测试文件）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
-PostgreSQL migration: e7a1c3d5b9f2 (head)
+PostgreSQL migration: b8f2c7a41d63 (head)
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
 ```
 

@@ -19,6 +19,7 @@ dependencies = [
   "PyJWT[crypto]>=2.9,<3",
   "langgraph>=0.6,<2",
   "mcp>=1.30,<2",
+  "pypdf>=5,<7",
 ]
 
 [dependency-groups]

@@ -13,7 +13,12 @@ from sqlalchemy.orm import Session
 
 from ticket_agent.audit.service import record_audit
 from ticket_agent.digital_employees.models import DigitalEmployee
-from ticket_agent.knowledge.document_parser import DocumentParseError, parse_document
+from ticket_agent.knowledge.chunking import ChunkDraft, chunk_blocks
+from ticket_agent.knowledge.document_parser import (
+    DocumentParseError,
+    parse_document,
+    serialize_blocks,
+)
 from ticket_agent.knowledge.embedding_factory import get_embedding_provider
 from ticket_agent.knowledge.embedding_types import EmbeddingProvider
 from ticket_agent.knowledge.models import (
@@ -368,6 +373,7 @@ class KnowledgeService:
         source_object_key: str | None = None,
         parser_name: str | None = None,
         parser_version: str | None = None,
+        content_blocks: dict[str, Any] | None = None,
         correlation_id: str | None = None,
     ) -> KnowledgeVersion:
         document = self._get_document(document_id)
@@ -398,6 +404,7 @@ class KnowledgeService:
             source_object_key=source_object_key,
             parser_name=parser_name,
             parser_version=parser_version,
+            content_blocks_json=content_blocks,
         )
         self.session.add(version)
         try:
@@ -416,6 +423,7 @@ class KnowledgeService:
             document,
             payload.content,
             correlation_id=correlation_id,
+            content_blocks=content_blocks,
         )
         self.session.commit()
         self.session.refresh(version)
@@ -530,6 +538,7 @@ class KnowledgeService:
             source_size_bytes=len(data),
             parser_name=parsed.parser_name,
             parser_version=parsed.parser_version,
+            content_blocks=serialize_blocks(parsed.blocks, parsed.warnings),
             correlation_id=correlation_id,
         )
 
@@ -671,6 +680,7 @@ class KnowledgeService:
         version.content_hash = hashlib.sha256(parsed.text.encode("utf-8")).hexdigest()
         version.parser_name = parsed.parser_name
         version.parser_version = parsed.parser_version
+        version.content_blocks_json = serialize_blocks(parsed.blocks, parsed.warnings)
         version.ingestion_error = None
         version.processed_at = datetime.now(UTC)
         self._add_chunks(
@@ -678,6 +688,7 @@ class KnowledgeService:
             document,
             parsed.text,
             correlation_id=correlation_id,
+            content_blocks=version.content_blocks_json,
         )
         version.status = "DRAFT"
         record_audit(
@@ -1243,23 +1254,54 @@ class KnowledgeService:
         content: str,
         *,
         correlation_id: str | None = None,
+        content_blocks: dict[str, Any] | None = None,
     ) -> None:
         self._ensure_embedding_usage_scope(
             business_unit_id=document.business_unit_id,
             correlation_id=correlation_id,
         )
-        chunks = self._chunk_text(content)
-        embeddings = self.embedding_provider.embed_texts(chunks)
-        for ordinal, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=True)):
+        drafts = self._chunk_drafts(content, content_blocks)
+        embeddings = self.embedding_provider.embed_texts(
+            [draft.embedding_text for draft in drafts]
+        )
+        for ordinal, (draft, embedding) in enumerate(zip(drafts, embeddings, strict=True)):
+            metadata: dict[str, Any] = {
+                "title": document.title,
+                "ordinal": ordinal,
+            }
+            if draft.section_path:
+                metadata["section_path"] = list(draft.section_path)
+            if draft.block_kinds:
+                metadata["block_kinds"] = list(draft.block_kinds)
+                metadata["chunking_version"] = "v2"
             self.session.add(
                 KnowledgeChunk(
                     knowledge_version_id=version.id,
                     ordinal=ordinal,
-                    content=chunk,
-                    metadata_json={"title": document.title, "ordinal": ordinal},
+                    content=draft.content,
+                    metadata_json=metadata,
                     embedding=embedding,
                 )
             )
+
+    def _chunk_drafts(
+        self,
+        content: str,
+        content_blocks: dict[str, Any] | None,
+    ) -> list[ChunkDraft]:
+        if content_blocks and self.settings.knowledge_chunking_version == "v2":
+            blocks = content_blocks.get("blocks") or []
+            drafts = chunk_blocks(
+                blocks,
+                target_chars=self.settings.knowledge_chunk_target_chars,
+                max_chars=self.settings.knowledge_chunk_max_chars,
+            )
+            if drafts:
+                return drafts
+        return [
+            ChunkDraft(content=chunk, embedding_text=chunk)
+            for chunk in self._chunk_text(content)
+        ]
 
     def _ensure_embedding_usage_scope(
         self,

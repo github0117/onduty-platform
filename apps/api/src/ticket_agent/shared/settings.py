@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     embedding_fallback_to_local: bool = True
     knowledge_chunk_size: int = 800
     knowledge_chunk_overlap: int = 100
+    knowledge_chunking_version: Literal["v1", "v2"] = "v1"
+    knowledge_chunk_target_chars: int = 800
+    knowledge_chunk_max_chars: int = 1200
     knowledge_search_top_k: int = 5
     knowledge_min_score: float = 0.15
     knowledge_max_file_bytes: int = 20 * 1024 * 1024

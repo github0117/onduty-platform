@@ -138,6 +138,7 @@ class KnowledgeVersion(Base):
     source_object_key: Mapped[str | None] = mapped_column(String(500))
     parser_name: Mapped[str | None] = mapped_column(String(64))
     parser_version: Mapped[str | None] = mapped_column(String(32))
+    content_blocks_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     ingestion_error: Mapped[str | None] = mapped_column(Text)
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
