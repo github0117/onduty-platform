@@ -36,6 +36,14 @@
   供后续分块与重建索引复用。
 - 结构化分块（`KNOWLEDGE_CHUNKING_VERSION=v2`，默认关闭）按章节组织，表格
   不拆行、单独成块，块元数据记录章节路径与块类型；关闭时沿用字符窗口分块。
+- 重建索引（`POST /knowledge/reindex`）按业务单元或文档重建向量，不依赖对象
+  存储：按 `(embedding_model, chunking_version)` 判定是否已是最新，重复请求复用
+  未完成任务，失败按次重试并在 3 次后进入死信；任务状态可在
+  `GET /knowledge/reindex-jobs` 查询，全程留存审计。
+- 嵌入不再静默回退：关闭 `embedding_fallback_to_local` 时远端失败直接报错、
+  版本不落库；开启时按真实使用的本地模型名与 `embedding_fallback_used` 标记
+  写入，避免向量空间混用。`/metrics/rag` 增加 `embedding_model` 与
+  `reindex_pending_versions`，模型切换后未重建的版本可被观测。
 - 数字员工可绑定多个知识空间，检索与工作流执行均校验空间授权。
 - 商品新增或变化后自动生成静态商品知识卡，使用内容哈希避免重复索引。
 - 知识评测中心支持召回率、MRR、无答案检测和失败修复任务。

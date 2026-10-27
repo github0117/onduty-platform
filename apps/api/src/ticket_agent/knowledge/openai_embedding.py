@@ -2,7 +2,10 @@ from math import isfinite
 
 import httpx
 
-from ticket_agent.knowledge.embedding_types import EmbeddingProviderError
+from ticket_agent.knowledge.embedding_types import (
+    EmbeddingBatch,
+    EmbeddingProviderError,
+)
 from ticket_agent.knowledge.local_embedding import LocalEmbeddingProvider
 from ticket_agent.model_gateway.types import ModelGatewayError
 from ticket_agent.model_gateway.usage import ModelUsageGuard, TokenUsage
@@ -31,28 +34,17 @@ class OpenAICompatibleEmbeddingProvider:
     def dimensions(self) -> int:
         return self.settings.embedding_dimensions
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str]) -> EmbeddingBatch:
         try:
             started_monotonic = (
                 self._usage_guard.start(purpose="embedding")
                 if self._usage_guard
                 else None
             )
-        except ModelGatewayError:
-            if self.settings.embedding_fallback_to_local:
-                return self._local.embed_texts(texts)
-            raise
+        except ModelGatewayError as exc:
+            return self._fallback(texts, exc)
         try:
-            embeddings, usage = self._embed_remote(texts)
-            if self._usage_guard and started_monotonic is not None:
-                self._usage_guard.succeed(
-                    purpose="embedding",
-                    provider="openai_compatible",
-                    model_name=self.settings.embedding_model_name,
-                    usage=usage,
-                    started_monotonic=started_monotonic,
-                )
-            return embeddings
+            vectors, usage = self._embed_remote(texts)
         except (httpx.HTTPError, EmbeddingProviderError, ValueError) as exc:
             if self._usage_guard and started_monotonic is not None:
                 self._usage_guard.fail(
@@ -62,9 +54,33 @@ class OpenAICompatibleEmbeddingProvider:
                     started_monotonic=started_monotonic,
                     error_code=type(exc).__name__,
                 )
-            if not self.settings.embedding_fallback_to_local:
-                raise EmbeddingProviderError(str(exc)) from exc
-            return self._local.embed_texts(texts)
+            return self._fallback(texts, exc)
+        if self._usage_guard and started_monotonic is not None:
+            self._usage_guard.succeed(
+                purpose="embedding",
+                provider="openai_compatible",
+                model_name=self.settings.embedding_model_name,
+                usage=usage,
+                started_monotonic=started_monotonic,
+            )
+        return EmbeddingBatch(vectors=vectors, model_name=self.name)
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts).vectors
+
+    def _fallback(
+        self,
+        texts: list[str],
+        exc: Exception,
+    ) -> EmbeddingBatch:
+        """Fall back only when explicitly enabled, and never claim the remote name."""
+        if not self.settings.embedding_fallback_to_local:
+            raise EmbeddingProviderError(str(exc)) from exc
+        return EmbeddingBatch(
+            vectors=self._local.embed_texts(texts),
+            model_name=self._local.name,
+            fallback_used=True,
+        )
 
     def _embed_remote(
         self,
@@ -100,7 +116,9 @@ class OpenAICompatibleEmbeddingProvider:
                 raise EmbeddingProviderError("Embedding response item is invalid")
             embedding = item.get("embedding")
             if not isinstance(embedding, list) or len(embedding) != self.dimensions:
-                raise EmbeddingProviderError("Embedding dimension is invalid")
+                raise EmbeddingProviderError(
+                    "Embedding dimension does not match embedding_dimensions"
+                )
             values = [float(value) for value in embedding]
             if not all(isfinite(value) for value in values):
                 raise EmbeddingProviderError("Embedding contains non-finite values")
@@ -119,4 +137,3 @@ class OpenAICompatibleEmbeddingProvider:
             )
             usage = TokenUsage(input_tokens=tokens)
         return embeddings, usage
-

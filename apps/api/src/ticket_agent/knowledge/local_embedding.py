@@ -2,6 +2,8 @@ import hashlib
 import math
 import re
 
+from ticket_agent.knowledge.embedding_types import EmbeddingBatch
+
 _TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]+|[A-Za-z0-9_]+")
 
 
@@ -19,8 +21,14 @@ class LocalEmbeddingProvider:
     def dimensions(self) -> int:
         return self._dimensions
 
+    def embed(self, texts: list[str]) -> EmbeddingBatch:
+        return EmbeddingBatch(
+            vectors=[self._embed(text) for text in texts],
+            model_name=self.name,
+        )
+
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        return [self._embed(text) for text in texts]
+        return self.embed(texts).vectors
 
     def _embed(self, text: str) -> list[float]:
         vector = [0.0] * self._dimensions

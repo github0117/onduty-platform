@@ -140,6 +140,7 @@ class KnowledgeVersion(Base):
     parser_version: Mapped[str | None] = mapped_column(String(32))
     content_blocks_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     ingestion_error: Mapped[str | None] = mapped_column(Text)
+    embedding_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -385,4 +386,52 @@ class KnowledgeFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+REINDEX_STATUSES = (
+    "PENDING",
+    "RUNNING",
+    "SUCCEEDED",
+    "FAILED",
+    "DEAD_LETTER",
+)
+
+
+class KnowledgeReindexJob(Base):
+    __tablename__ = "knowledge_reindex_jobs"
+    __table_args__ = (
+        Index(
+            "ix_knowledge_reindex_jobs_unit_status",
+            "business_unit_id",
+            "status",
+        ),
+        Index("ix_knowledge_reindex_jobs_document", "document_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
+    )
+    target_embedding_model: Mapped[str] = mapped_column(String(160), nullable=False)
+    target_chunking_version: Mapped[str] = mapped_column(
+        String(16),
+        default="v1",
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
+    total_versions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed_versions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped_versions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_versions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import Float, bindparam, func, select, update
+from sqlalchemy import Float, bindparam, delete, func, select, update
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,7 +20,11 @@ from ticket_agent.knowledge.document_parser import (
     serialize_blocks,
 )
 from ticket_agent.knowledge.embedding_factory import get_embedding_provider
-from ticket_agent.knowledge.embedding_types import EmbeddingProvider
+from ticket_agent.knowledge.embedding_types import (
+    EmbeddingBatch,
+    EmbeddingProvider,
+    EmbeddingProviderError,
+)
 from ticket_agent.knowledge.models import (
     DigitalEmployeeKnowledgeBinding,
     KnowledgeChunk,
@@ -683,13 +687,17 @@ class KnowledgeService:
         version.content_blocks_json = serialize_blocks(parsed.blocks, parsed.warnings)
         version.ingestion_error = None
         version.processed_at = datetime.now(UTC)
-        self._add_chunks(
-            version,
-            document,
-            parsed.text,
-            correlation_id=correlation_id,
-            content_blocks=version.content_blocks_json,
-        )
+        try:
+            self._add_chunks(
+                version,
+                document,
+                parsed.text,
+                correlation_id=correlation_id,
+                content_blocks=version.content_blocks_json,
+            )
+        except ApiProblem as exc:
+            self._fail_ingestion(version, exc.code)
+            return version
         version.status = "DRAFT"
         record_audit(
             self.session,
@@ -1255,25 +1263,130 @@ class KnowledgeService:
         *,
         correlation_id: str | None = None,
         content_blocks: dict[str, Any] | None = None,
+        chunking_version: str | None = None,
     ) -> None:
         self._ensure_embedding_usage_scope(
             business_unit_id=document.business_unit_id,
             correlation_id=correlation_id,
         )
-        drafts = self._chunk_drafts(content, content_blocks)
-        embeddings = self.embedding_provider.embed_texts(
-            [draft.embedding_text for draft in drafts]
+        resolved_chunking_version = self._resolve_chunking_version(
+            content_blocks,
+            chunking_version,
         )
-        for ordinal, (draft, embedding) in enumerate(zip(drafts, embeddings, strict=True)):
+        drafts = self._chunk_drafts(
+            content,
+            content_blocks,
+            chunking_version=resolved_chunking_version,
+        )
+        batch = self._embed_drafts(drafts)
+        self._write_chunks(
+            version,
+            document,
+            drafts,
+            batch,
+            chunking_version=resolved_chunking_version,
+        )
+        version.embedding_model = batch.model_name
+        version.embedding_indexed_at = datetime.now(UTC)
+
+    def rebuild_version_chunks(
+        self,
+        version_id: UUID,
+        *,
+        chunking_version: str | None = None,
+        correlation_id: str | None = None,
+    ) -> bool:
+        """Rebuild chunks for one version without touching object storage."""
+        version = self.session.scalar(
+            select(KnowledgeVersion)
+            .where(KnowledgeVersion.id == version_id)
+            .with_for_update()
+        )
+        if version is None:
+            return False
+        document = self.session.get(KnowledgeDocument, version.document_id)
+        if document is None or not version.content_text.strip():
+            return False
+        self._ensure_embedding_usage_scope(
+            business_unit_id=document.business_unit_id,
+            correlation_id=correlation_id,
+        )
+        resolved_chunking_version = self._resolve_chunking_version(
+            version.content_blocks_json,
+            chunking_version,
+        )
+        drafts = self._chunk_drafts(
+            version.content_text,
+            version.content_blocks_json,
+            chunking_version=resolved_chunking_version,
+        )
+        if not drafts:
+            return False
+        batch = self._embed_drafts(drafts)
+        self.session.execute(
+            delete(KnowledgeChunk).where(
+                KnowledgeChunk.knowledge_version_id == version.id
+            )
+        )
+        self._write_chunks(
+            version,
+            document,
+            drafts,
+            batch,
+            chunking_version=resolved_chunking_version,
+        )
+        version.embedding_model = batch.model_name
+        version.embedding_indexed_at = datetime.now(UTC)
+        self.session.flush()
+        return True
+
+    def _embed_drafts(self, drafts: list[ChunkDraft]) -> EmbeddingBatch:
+        try:
+            batch = self.embedding_provider.embed(
+                [draft.embedding_text for draft in drafts]
+            )
+        except EmbeddingProviderError as exc:
+            raise ApiProblem(
+                status_code=503,
+                code="EMBEDDING_UNAVAILABLE",
+                title="Embedding provider is unavailable",
+                detail="Embedding generation failed; no vectors were stored.",
+                retryable=True,
+            ) from exc
+        if len(batch.vectors) != len(drafts):
+            raise ApiProblem(
+                status_code=503,
+                code="EMBEDDING_UNAVAILABLE",
+                title="Embedding provider is unavailable",
+                detail="Embedding count does not match the chunk count.",
+                retryable=True,
+            )
+        return batch
+
+    def _write_chunks(
+        self,
+        version: KnowledgeVersion,
+        document: KnowledgeDocument,
+        drafts: list[ChunkDraft],
+        batch: EmbeddingBatch,
+        *,
+        chunking_version: str,
+    ) -> None:
+        for ordinal, (draft, embedding) in enumerate(
+            zip(drafts, batch.vectors, strict=True)
+        ):
             metadata: dict[str, Any] = {
                 "title": document.title,
                 "ordinal": ordinal,
+                "chunking_version": chunking_version,
+                "embedding_model": batch.model_name,
             }
+            if batch.fallback_used:
+                metadata["embedding_fallback_used"] = True
             if draft.section_path:
                 metadata["section_path"] = list(draft.section_path)
             if draft.block_kinds:
                 metadata["block_kinds"] = list(draft.block_kinds)
-                metadata["chunking_version"] = "v2"
             self.session.add(
                 KnowledgeChunk(
                     knowledge_version_id=version.id,
@@ -1284,12 +1397,29 @@ class KnowledgeService:
                 )
             )
 
+    def _resolve_chunking_version(
+        self,
+        content_blocks: dict[str, Any] | None,
+        requested: str | None,
+    ) -> str:
+        version = requested or self.settings.knowledge_chunking_version
+        if version != "v2":
+            return "v1"
+        blocks = (content_blocks or {}).get("blocks") or []
+        return "v2" if blocks else "v1"
+
     def _chunk_drafts(
         self,
         content: str,
         content_blocks: dict[str, Any] | None,
+        *,
+        chunking_version: str | None = None,
     ) -> list[ChunkDraft]:
-        if content_blocks and self.settings.knowledge_chunking_version == "v2":
+        resolved = chunking_version or self._resolve_chunking_version(
+            content_blocks,
+            None,
+        )
+        if resolved == "v2" and content_blocks:
             blocks = content_blocks.get("blocks") or []
             drafts = chunk_blocks(
                 blocks,

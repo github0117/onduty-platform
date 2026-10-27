@@ -71,6 +71,20 @@ def dispatch_outbox_event(event_id: UUID) -> DispatchResult:
                     args=[version_id, correlation_id, str(event_id)],
                     task_id=f"knowledge-ingest:{event_id}",
                 )
+        elif event_type == "knowledge.reindex":
+            job_id = payload["job_id"]
+            correlation_id = payload.get("correlation_id", str(event_id))
+            if settings.task_mode == "inline":
+                from ticket_agent.knowledge.worker import reindex_knowledge_job
+
+                reindex_knowledge_job(UUID(job_id), correlation_id)
+            else:
+                from ticket_agent.workers.tasks import reindex_knowledge_task
+
+                reindex_knowledge_task.apply_async(
+                    args=[job_id, correlation_id, str(event_id)],
+                    task_id=f"knowledge-reindex:{event_id}",
+                )
         elif event_type == "ticket.sync_external":
             ticket_id = payload["ticket_id"]
             correlation_id = payload.get("correlation_id", str(event_id))

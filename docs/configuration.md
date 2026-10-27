@@ -120,3 +120,36 @@ uv run pytest tests/unit/test_rate_limit.py tests/integration/test_rate_limiting
 cd apps/api
 uv run pytest tests/integration/test_request_body_limit.py -v
 ```
+
+## 知识库嵌入与重建索引
+
+```text
+EMBEDDING_PROVIDER=openai_compatible
+EMBEDDING_BASE_URL=https://embedding.example/v1
+EMBEDDING_MODEL_NAME=BAAI/bge-m3
+EMBEDDING_API_KEY=<local-secret>
+EMBEDDING_DIMENSIONS=1024
+EMBEDDING_FALLBACK_TO_LOCAL=false
+KNOWLEDGE_CHUNKING_VERSION=v2
+KNOWLEDGE_CHUNK_TARGET_CHARS=800
+KNOWLEDGE_CHUNK_MAX_CHARS=1200
+```
+
+- `EMBEDDING_DIMENSIONS` 必须与模型真实维度一致，响应维度不符时请求失败。
+- `EMBEDDING_FALLBACK_TO_LOCAL=false` 时远端失败直接报错，版本不落库；
+  设为 `true` 时按真实使用的本地模型名写入，并在 chunk 元数据标
+  `embedding_fallback_used=true`，避免把本地向量记成远端模型。
+- 切换模型或分块版本后，调用管理员接口重建：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/knowledge/reindex \
+  -H "X-Actor-Id: admin-1" -H "X-Actor-Role: admin" \
+  -H "Content-Type: application/json" \
+  -d '{"business_unit_id": "bu_demo", "chunking_version": "v2"}'
+```
+
+`GET /api/v1/knowledge/reindex-jobs` 查询任务状态；`/api/v1/metrics/rag` 的
+`reindex_pending_versions` 表示仍是旧模型、尚未重建的版本数。
+
+- 迁移顺序：先 `alembic upgrade head` 再启动应用。开发模式启动会执行
+  `init_db()` 建表，顺序颠倒会出现 `DuplicateTable`。

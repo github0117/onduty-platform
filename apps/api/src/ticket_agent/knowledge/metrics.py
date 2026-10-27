@@ -17,6 +17,8 @@ class RagMetricsService:
         business_unit_id: str | None = None,
         from_at: datetime | None = None,
         to_at: datetime | None = None,
+        embedding_model: str = "",
+        reindex_pending_versions: int = 0,
     ) -> dict[str, object]:
         statement = select(AnswerDraft, Ticket).join(
             Ticket,
@@ -83,5 +85,7 @@ class RagMetricsService:
             "semantic_verified_claim_count": semantic_verified_claim_count,
             "semantic_unsupported_claim_count": semantic_unsupported_claim_count,
             "provider_counts": dict(providers),
+            "embedding_model": embedding_model,
+            "reindex_pending_versions": reindex_pending_versions,
         }
 

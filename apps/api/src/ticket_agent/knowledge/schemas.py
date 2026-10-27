@@ -409,4 +409,35 @@ class RagMetricsResponse(BaseModel):
     semantic_verified_claim_count: int
     semantic_unsupported_claim_count: int
     provider_counts: dict[str, int]
+    embedding_model: str
+    reindex_pending_versions: int
+
+
+class KnowledgeReindexRequest(BaseModel):
+    business_unit_id: str = Field(min_length=1, max_length=64)
+    document_id: UUID | None = None
+    chunking_version: str | None = Field(default=None, pattern="^v[12]$")
+
+
+class KnowledgeReindexJobView(BaseModel):
+    id: UUID
+    business_unit_id: str
+    document_id: UUID | None
+    target_embedding_model: str
+    target_chunking_version: str
+    status: str
+    total_versions: int
+    processed_versions: int
+    skipped_versions: int
+    failed_versions: int
+    attempt_count: int
+    last_error: str | None
+    requested_by: str
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class KnowledgeReindexJobList(BaseModel):
+    items: list[KnowledgeReindexJobView]
 

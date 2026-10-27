@@ -16,7 +16,10 @@ from ticket_agent.ecommerce.worker import (
     render_ecommerce_video_job,
 )
 from ticket_agent.integrations.worker import sync_ticket_job
-from ticket_agent.knowledge.worker import ingest_knowledge_version_job
+from ticket_agent.knowledge.worker import (
+    ingest_knowledge_version_job,
+    reindex_knowledge_job,
+)
 from ticket_agent.mcp_connectors.incidents import McpActionIncidentService
 from ticket_agent.outbox.service import dispatch_pending_events
 from ticket_agent.shared.db import SessionLocal
@@ -116,6 +119,26 @@ def ingest_knowledge_version_task(
     del outbox_event_id
     try:
         ingest_knowledge_version_job(UUID(version_id), correlation_id)
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=min(30, 2 ** (self.request.retries + 1))) from exc
+
+
+@celery_app.task(
+    name="ticket_agent.knowledge.reindex",
+    bind=True,
+    max_retries=3,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def reindex_knowledge_task(
+    self: Task,
+    job_id: str,
+    correlation_id: str,
+    outbox_event_id: str,
+) -> None:
+    del outbox_event_id
+    try:
+        reindex_knowledge_job(UUID(job_id), correlation_id)
     except Exception as exc:
         raise self.retry(exc=exc, countdown=min(30, 2 ** (self.request.retries + 1))) from exc
 

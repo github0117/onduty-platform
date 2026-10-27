@@ -24,9 +24,11 @@ from ticket_agent.knowledge.models import (
     KnowledgeDocument,
     KnowledgeEvaluationCase,
     KnowledgeEvaluationRun,
+    KnowledgeReindexJob,
     KnowledgeRepairTask,
 )
 from ticket_agent.knowledge.product_sync import sync_product_knowledge_batch
+from ticket_agent.knowledge.reindex import KnowledgeReindexService
 from ticket_agent.knowledge.repair_service import KnowledgeRepairService
 from ticket_agent.knowledge.schemas import (
     EmployeeKnowledgeBindingReplace,
@@ -46,6 +48,9 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeFeedbackView,
     KnowledgeHitView,
     KnowledgePublishRequest,
+    KnowledgeReindexJobList,
+    KnowledgeReindexJobView,
+    KnowledgeReindexRequest,
     KnowledgeRepairTaskList,
     KnowledgeRepairTaskUpdate,
     KnowledgeRepairTaskView,
@@ -65,6 +70,7 @@ from ticket_agent.knowledge.service import KnowledgeService
 from ticket_agent.outbox.service import dispatch_outbox_event
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.rate_limit import rate_limited
+from ticket_agent.tickets.models import OutboxEvent
 
 router = APIRouter()
 
@@ -914,10 +920,119 @@ def get_rag_metrics(
 ) -> RagMetricsResponse:
     ensure_metrics_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
+    knowledge_service = KnowledgeService(db)
+    reindex_service = KnowledgeReindexService(
+        db,
+        embedding_provider=knowledge_service.embedding_provider,
+    )
     payload = RagMetricsService(db).summary(
         business_unit_id=business_unit_id,
         from_at=from_at,
         to_at=to_at,
+        embedding_model=knowledge_service.embedding_provider.name,
+        reindex_pending_versions=reindex_service.pending_version_count(
+            business_unit_id
+        ),
     )
     return RagMetricsResponse.model_validate(payload)
+
+
+def _reindex_job_view(job: KnowledgeReindexJob) -> KnowledgeReindexJobView:
+    return KnowledgeReindexJobView.model_validate(job, from_attributes=True)
+
+
+@router.post(
+    "/knowledge/reindex",
+    response_model=KnowledgeReindexJobView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_knowledge_reindex(
+    payload: KnowledgeReindexRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    principal: Actor,
+) -> KnowledgeReindexJobView:
+    ensure_knowledge_admin(principal)
+    business_unit_id = resolve_business_unit(principal, payload.business_unit_id)
+    if payload.document_id is not None:
+        document = KnowledgeService(db).get_document(payload.document_id)
+        ensure_business_unit_access(principal, document.business_unit_id)
+        if document.business_unit_id != business_unit_id:
+            raise ApiProblem(
+                status_code=422,
+                code="SCHEMA_VALIDATION_FAILED",
+                title="Document belongs to another business unit",
+                detail="document_id must belong to business_unit_id.",
+            )
+    submission = KnowledgeReindexService(db).create_job(
+        business_unit_id=business_unit_id,
+        document_id=payload.document_id,
+        chunking_version=payload.chunking_version,
+        requested_by=principal.actor_id,
+        correlation_id=correlation_id(request),
+    )
+    job = submission.job
+    record_audit(
+        db,
+        correlation_id=correlation_id(request),
+        event_type="knowledge.reindex.requested",
+        actor_type="USER",
+        actor_id=principal.actor_id,
+        resource_type="knowledge_reindex_job",
+        resource_id=job.id,
+        action="request_reindex",
+        decision="EXECUTED",
+        payload={
+            "business_unit_id": business_unit_id,
+            "document_id": str(payload.document_id) if payload.document_id else None,
+            "target_embedding_model": job.target_embedding_model,
+            "target_chunking_version": job.target_chunking_version,
+            "created": submission.created,
+        },
+    )
+    # Dispatch even when the job was reused: a reused FAILED job needs the
+    # retry to be handed to a worker, and re-dispatching a running or finished
+    # job is a no-op inside the worker.
+    outbox_event = OutboxEvent(
+        aggregate_type="knowledge_reindex_job",
+        aggregate_id=job.id,
+        event_type="knowledge.reindex",
+        payload_json={
+            "job_id": str(job.id),
+            "correlation_id": correlation_id(request),
+        },
+    )
+    db.add(outbox_event)
+    db.commit()
+    db.refresh(job)
+    background_tasks.add_task(dispatch_outbox_event, outbox_event.id)
+    return _reindex_job_view(job)
+
+
+@router.get("/knowledge/reindex-jobs", response_model=KnowledgeReindexJobList)
+def list_knowledge_reindex_jobs(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+) -> KnowledgeReindexJobList:
+    ensure_knowledge_admin(principal)
+    resolved = resolve_business_unit(principal, business_unit_id)
+    jobs = KnowledgeReindexService(db).list_jobs(resolved)
+    return KnowledgeReindexJobList(items=[_reindex_job_view(job) for job in jobs])
+
+
+@router.get(
+    "/knowledge/reindex-jobs/{job_id}",
+    response_model=KnowledgeReindexJobView,
+)
+def get_knowledge_reindex_job(
+    job_id: UUID,
+    db: DbSession,
+    principal: Actor,
+) -> KnowledgeReindexJobView:
+    ensure_knowledge_admin(principal)
+    job = KnowledgeReindexService(db).get_job(job_id)
+    ensure_business_unit_access(principal, job.business_unit_id)
+    return _reindex_job_view(job)
 
