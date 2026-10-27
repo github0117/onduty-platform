@@ -58,6 +58,8 @@ import type {
   KnowledgeSpace,
   KnowledgeVersion,
 } from "./types";
+import { getActiveTestIdentity } from "./auth";
+import { hasCapability } from "./capabilities";
 import { message } from "./feedback";
 import {
   channelLabels,
@@ -113,10 +115,13 @@ function statusColor(status: string): string {
 function KnowledgeVersions({
   document,
   readOnly = false,
+  canWrite = true,
 }: {
   document: KnowledgeDocument;
   readOnly?: boolean;
+  canWrite?: boolean;
 }) {
+  const writeBlocked = readOnly || !canWrite;
   const queryClient = useQueryClient();
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionLabel, setVersionLabel] = useState("");
@@ -208,7 +213,7 @@ function KnowledgeVersions({
       title: "操作",
       width: 120,
       render: (_value, record) =>
-        !readOnly && record.status === "DRAFT" ? (
+        !writeBlocked && record.status === "DRAFT" ? (
           <Button
             size="small"
             type="primary"
@@ -224,7 +229,7 @@ function KnowledgeVersions({
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Space wrap>
-        {!readOnly && (
+        {!writeBlocked && (
           <>
             <Button type="primary" onClick={() => setVersionOpen(true)}>
               新建文本版本
@@ -251,9 +256,11 @@ function KnowledgeVersions({
             </Upload>
           </>
         )}
-        {readOnly && (
+        {writeBlocked && (
           <Text type="secondary">
-            当前为只读状态，恢复文档后才能新增或发布版本。
+            {canWrite
+              ? "当前为只读状态，恢复文档后才能新增或发布版本。"
+              : "当前角色可以查看知识内容和版本，但不能新增或发布版本。"}
           </Text>
         )}
       </Space>
@@ -417,6 +424,10 @@ export default function KnowledgePage({
   onNavigate: (path: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const canWriteKnowledge = hasCapability(
+    getActiveTestIdentity().role,
+    "knowledge.write",
+  );
   const [selected, setSelected] = useState<KnowledgeDocument | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -1079,20 +1090,23 @@ export default function KnowledgePage({
     {
       title: "操作",
       width: 90,
-      render: (_value, record) => (
-        <Button
-          type="link"
-          loading={updateEvaluationCase.isPending}
-          onClick={() =>
-            updateEvaluationCase.mutate({
-              caseId: record.id,
-              enabled: !record.enabled,
-            })
-          }
-        >
-          {record.enabled ? "停用" : "启用"}
-        </Button>
-      ),
+      render: (_value, record) =>
+        canWriteKnowledge ? (
+          <Button
+            type="link"
+            loading={updateEvaluationCase.isPending}
+            onClick={() =>
+              updateEvaluationCase.mutate({
+                caseId: record.id,
+                enabled: !record.enabled,
+              })
+            }
+          >
+            {record.enabled ? "停用" : "启用"}
+          </Button>
+        ) : (
+          <Text type="secondary">只读</Text>
+        ),
     },
   ];
   const repairColumns: ColumnsType<KnowledgeRepairTask> = [
@@ -1149,6 +1163,9 @@ export default function KnowledgePage({
       title: "操作",
       width: 240,
       render: (_value, record) => {
+        if (!canWriteKnowledge) {
+          return <Text type="secondary">只读</Text>;
+        }
         if (record.status === "CLOSED") return null;
         if (record.status === "VERIFIED") {
           return (
@@ -1318,6 +1335,15 @@ export default function KnowledgePage({
         />
       </div>
 
+      {!canWriteKnowledge && (
+        <Alert
+          type="info"
+          showIcon
+          message="当前角色为知识只读视图"
+          description="可以查看空间、文档、版本、检索和评测结果；创建、发布、归档和修复操作仅对知识运营或平台管理员开放。"
+        />
+      )}
+
       {section === "overview" && (
         <>
           <Alert
@@ -1418,9 +1444,11 @@ export default function KnowledgePage({
               ]}
               style={{ width: 130 }}
             />
-            <Button type="primary" onClick={() => setSpaceOpen(true)}>
-              新建知识空间
-            </Button>
+            {canWriteKnowledge && (
+              <Button type="primary" onClick={() => setSpaceOpen(true)}>
+                新建知识空间
+              </Button>
+            )}
           </Space>
         }
       >
@@ -1459,16 +1487,20 @@ export default function KnowledgePage({
             title="资料接入方式"
             extra={
               <Space>
-                <Button onClick={() => setFaqImportOpen(true)}>
-                  批量导入 FAQ CSV
-                </Button>
-                <Button
-                  type="primary"
-                  disabled={!activeSpaces.length}
-                  onClick={() => setCreateOpen(true)}
-                >
-                  新建文档
-                </Button>
+                {canWriteKnowledge && (
+                  <>
+                    <Button onClick={() => setFaqImportOpen(true)}>
+                      批量导入 FAQ CSV
+                    </Button>
+                    <Button
+                      type="primary"
+                      disabled={!activeSpaces.length}
+                      onClick={() => setCreateOpen(true)}
+                    >
+                      新建文档
+                    </Button>
+                  </>
+                )}
               </Space>
             }
           >
@@ -1645,25 +1677,29 @@ export default function KnowledgePage({
             <Tag color={enabledEvaluationCases.length ? "green" : "default"}>
               已启用 {enabledEvaluationCases.length}
             </Tag>
-            <Button
-              onClick={() => {
-                setEvaluationFromRepair(false);
-                setEvaluationOpen(true);
-              }}
-            >
-              新建评测案例
-            </Button>
-            <Button
-              type="primary"
-              loading={runEvaluation.isPending}
-              disabled={
-                evaluationCases.isLoading ||
-                enabledEvaluationCases.length === 0
-              }
-              onClick={() => runEvaluation.mutate()}
-            >
-              运行全部评测
-            </Button>
+            {canWriteKnowledge && (
+              <>
+                <Button
+                  onClick={() => {
+                    setEvaluationFromRepair(false);
+                    setEvaluationOpen(true);
+                  }}
+                >
+                  新建评测案例
+                </Button>
+                <Button
+                  type="primary"
+                  loading={runEvaluation.isPending}
+                  disabled={
+                    evaluationCases.isLoading ||
+                    enabledEvaluationCases.length === 0
+                  }
+                  onClick={() => runEvaluation.mutate()}
+                >
+                  运行全部评测
+                </Button>
+              </>
+            )}
           </Space>
         }
       >
@@ -1779,35 +1815,37 @@ export default function KnowledgePage({
               <Tag color={selected.status === "ARCHIVED" ? "default" : "green"}>
                 {knowledgeDocumentStatusLabels[selected.status] ?? "未知状态"}
               </Tag>
-              {selected.status === "ARCHIVED" ? (
-                <Button
-                  type="primary"
-                  loading={restoreDocument.isPending}
-                  onClick={() => restoreDocument.mutate()}
-                >
-                  恢复使用
-                </Button>
-              ) : (
-                <>
+              {!canWriteKnowledge && <Tag>只读</Tag>}
+              {canWriteKnowledge &&
+                (selected.status === "ARCHIVED" ? (
                   <Button
-                    onClick={() => {
-                      setTitle(selected.title);
-                      setDocType(selected.doc_type);
-                      setSpaceId(selected.space_id ?? "");
-                      setEditOpen(true);
-                    }}
+                    type="primary"
+                    loading={restoreDocument.isPending}
+                    onClick={() => restoreDocument.mutate()}
                   >
-                    编辑
+                    恢复使用
                   </Button>
-                  <Button
-                    danger
-                    loading={archiveDocument.isPending}
-                    onClick={() => setArchiveOpen(true)}
-                  >
-                    归档
-                  </Button>
-                </>
-              )}
+                ) : (
+                  <>
+                    <Button
+                      onClick={() => {
+                        setTitle(selected.title);
+                        setDocType(selected.doc_type);
+                        setSpaceId(selected.space_id ?? "");
+                        setEditOpen(true);
+                      }}
+                    >
+                      编辑
+                    </Button>
+                    <Button
+                      danger
+                      loading={archiveDocument.isPending}
+                      onClick={() => setArchiveOpen(true)}
+                    >
+                      归档
+                    </Button>
+                  </>
+                ))}
             </Space>
           }
         >
@@ -1823,6 +1861,7 @@ export default function KnowledgePage({
             <KnowledgeVersions
               document={selected}
               readOnly={selected.status === "ARCHIVED"}
+              canWrite={canWriteKnowledge}
             />
           </Space>
         </Drawer>

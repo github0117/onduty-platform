@@ -16,11 +16,13 @@ import {
   switchTestIdentity,
   testIdentityProfiles,
 } from "./auth";
+import { canAccessPath, hasCapability } from "./capabilities";
 import {
   demoPerspectiveIds,
   demoPerspectiveLabels,
 } from "./demoPerspectives";
 
+const OverviewPage = lazy(() => import("./OverviewPage"));
 const DemoGuideDrawer = lazy(() => import("./DemoGuideDrawer"));
 const TicketsPage = lazy(() => import("./TicketsPage"));
 const EcommercePage = lazy(() => import("./EcommercePage"));
@@ -40,6 +42,11 @@ type RouteMeta = {
 };
 
 const routeMeta: Record<string, RouteMeta> = {
+  "/overview": {
+    title: "平台总览 · 从场景到治理",
+    description: "先看平台全景，再进入企业服务台主演示或具体配置",
+    category: "平台管理",
+  },
   "/tickets": {
     title: "应用场景 · 内部工单与 HR 演示",
     description: "演示内部服务请求、HR 入职任务、人工审核和外部同步",
@@ -243,41 +250,12 @@ const customerServicePageNavigation = [
 ] as const;
 
 function identityCanAccessPath(profileId: string, path: string): boolean {
-  const businessPath =
-    path.startsWith("/customer-service") ||
-    path.startsWith("/ecommerce") ||
-    path === "/tickets";
-  if (profileId === "platform-admin") return true;
-  if (profileId === "service-agent") {
-    return (
-      path === "/customer-service" ||
-      path === "/customer-service/workbench" ||
-      path.startsWith("/ecommerce") ||
-      path === "/tickets" ||
-      path.startsWith("/knowledge")
-    );
-  }
-  if (profileId === "service-supervisor") {
-    return (
-      businessPath ||
-      path.startsWith("/knowledge") ||
-      path === "/operations"
-    );
-  }
-  if (profileId === "knowledge-operator") {
-    return (
-      path.startsWith("/knowledge") ||
-      path.startsWith("/employees")
-    );
-  }
-  if (profileId === "business-manager") {
-    return businessPath || path === "/operations";
-  }
-  return false;
+  const profile = testIdentityProfiles.find((item) => item.id === profileId);
+  return profile ? canAccessPath(profile.role, path) : false;
 }
 
 const legacyPagePaths: Record<string, string> = {
-  overview: "/customer-service",
+  overview: "/overview",
   tickets: "/tickets",
   "customer-service": "/customer-service",
   ecommerce: "/ecommerce",
@@ -338,21 +316,28 @@ export default function App() {
   const current = routeMeta[activePath] ?? routeMeta["/customer-service"];
   const activeIdentity = getActiveTestIdentity();
   const activeBusinessUnit = getActiveBusinessUnitId();
-  const platformKeysByProfile: Record<string, Set<string>> = {
-    "service-agent": new Set(),
-    "service-supervisor": new Set(["/operations", "/knowledge"]),
-    "knowledge-operator": new Set(["/employees/roster", "/knowledge"]),
-    "business-manager": new Set(["/operations"]),
-    "platform-admin": new Set([
+  const visiblePlatformKeys = new Set(
+    [
       "/employees/roster",
       "/knowledge",
       "/models",
       "/operations",
-    ]),
-  };
-  const visiblePlatformKeys =
-    platformKeysByProfile[activeIdentity.id] ??
-    platformKeysByProfile["platform-admin"];
+    ].filter((path) => canAccessPath(activeIdentity.role, path)),
+  );
+  const showOverview = hasCapability(
+    activeIdentity.role,
+    "platform.overview",
+  );
+  const showPlatformManagement = hasCapability(
+    activeIdentity.role,
+    "platform.management",
+  );
+  const visibleCustomerServiceNavigation = customerServicePageNavigation.filter(
+    (item) => canAccessPath(activeIdentity.role, item.key),
+  );
+  const visibleEmployeeNavigation = employeePageNavigation.filter((item) =>
+    canAccessPath(activeIdentity.role, item.key),
+  );
 
   useEffect(() => {
     if (identityCanAccessPath(activeIdentity.id, activePath)) return;
@@ -405,14 +390,15 @@ export default function App() {
   const ecommerceSection = ecommerceSections[activePath];
   const modelSection = modelSections[activePath];
   const customerServiceSection = customerServiceSections[activePath];
+  const scenarioChildren = [
+    { key: "/customer-service", label: "企业服务台 Agent" },
+    { key: "/ecommerce", label: "电商运营复用" },
+    { key: "/tickets", label: "内部工单 / HR" },
+  ].filter((item) => canAccessPath(activeIdentity.role, item.key));
   const scenarioMenu = {
     key: "demo-scenarios",
     label: "Agent 演示",
-    children: [
-      { key: "/customer-service", label: "企业服务台 Agent" },
-      { key: "/ecommerce", label: "电商运营复用" },
-      { key: "/tickets", label: "内部工单 / HR" },
-    ],
+    children: scenarioChildren,
   };
   const platformMenu = {
     key: "platform-management",
@@ -425,8 +411,13 @@ export default function App() {
     ].filter((item) => visiblePlatformKeys.has(item.key)),
   };
   const menuItems = [
-    scenarioMenu,
-    ...(platformMenu.children.length ? [platformMenu] : []),
+    ...(showOverview
+      ? [{ key: "/overview", label: "平台总览" }]
+      : []),
+    ...(scenarioMenu.children.length ? [scenarioMenu] : []),
+    ...(showPlatformManagement && platformMenu.children.length
+      ? [platformMenu]
+      : []),
   ];
 
   return (
@@ -544,7 +535,7 @@ export default function App() {
               mode="horizontal"
               selectedKeys={[activePath]}
               onClick={({ key }) => navigate(key)}
-              items={[...employeePageNavigation]}
+              items={[...visibleEmployeeNavigation]}
             />
           )}
           {customerServiceSection && (
@@ -553,7 +544,7 @@ export default function App() {
               mode="horizontal"
               selectedKeys={[activePath]}
               onClick={({ key }) => navigate(key)}
-              items={[...customerServicePageNavigation]}
+              items={[...visibleCustomerServiceNavigation]}
             />
           )}
           <Suspense
@@ -563,6 +554,13 @@ export default function App() {
               </div>
             }
           >
+            {activePath === "/overview" && (
+              <OverviewPage
+                key="overview"
+                onNavigate={navigate}
+                onOpenGuide={() => setGuideOpen(true)}
+              />
+            )}
             {activePath === "/tickets" && <TicketsPage key="business" />}
             {ecommerceSection && (
               <EcommercePage

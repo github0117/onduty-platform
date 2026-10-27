@@ -83,6 +83,7 @@ import type {
 } from "./types";
 import { message } from "./feedback";
 import { getActiveBusinessUnitId, getActiveTestIdentity } from "./auth";
+import { hasCapability } from "./capabilities";
 import {
   conversationStatusLabels,
   draftStateLabels,
@@ -2135,11 +2136,10 @@ export default function CustomerServicePage({
 }) {
   const queryClient = useQueryClient();
   const [stored] = useState(loadSandboxState);
-  const canOpenAdmin = ![
-    "service-agent",
-    "knowledge-operator",
-    "business-manager",
-  ].includes(getActiveTestIdentity().id);
+  const canOpenAdmin = hasCapability(
+    getActiveTestIdentity().role,
+    "service.admin",
+  );
   const [demoScenario, setDemoScenario] = useState<CustomerDemoScenario>(() =>
     new URLSearchParams(window.location.search).get("scenario") === "ecommerce"
       ? "ecommerce"
@@ -2287,46 +2287,57 @@ export default function CustomerServicePage({
     window.localStorage.setItem(viewModeStorageKey, viewMode);
   }, [viewMode]);
 
+  const isAdminSurface = viewMode === "admin" && canOpenAdmin;
+
   const employees = useQuery({
     queryKey: ["digital-employees"],
     queryFn: listDigitalEmployees,
+    enabled: isAdminSurface,
   });
   const categories = useQuery({
     queryKey: ["ecommerce-categories"],
     queryFn: listEcommerceCategoryProfiles,
+    enabled: isAdminSurface,
   });
   const products = useQuery({
     queryKey: ["ecommerce-products"],
     queryFn: listEcommerceProducts,
+    enabled: isAdminSurface,
   });
   const spaces = useQuery({
     queryKey: ["knowledge", "spaces"],
     queryFn: listKnowledgeSpaces,
+    enabled: isAdminSurface,
   });
   const conversations = useQuery({
     queryKey: ["customer-conversations"],
     queryFn: listCustomerConversations,
     refetchInterval: 5_000,
+    enabled: isAdminSurface,
   });
   const presence = useQuery({
     queryKey: ["customer-agent-presence"],
     queryFn: listCustomerAgentPresence,
     refetchInterval: 15_000,
+    enabled: isAdminSurface,
   });
   const assignmentQueue = useQuery({
     queryKey: ["customer-assignment-queue"],
     queryFn: getCustomerAssignmentQueue,
     refetchInterval: 5_000,
+    enabled: isAdminSurface,
   });
   const serviceAlerts = useQuery({
     queryKey: ["customer-service-alerts"],
     queryFn: listCustomerServiceAlerts,
     refetchInterval: 10_000,
+    enabled: isAdminSurface,
   });
   const notifications = useQuery({
     queryKey: ["customer-service-notifications"],
     queryFn: listCustomerServiceNotifications,
     refetchInterval: 15_000,
+    enabled: isAdminSurface,
   });
   const mcpApprovals = useQuery({
     queryKey: ["mcp-tool-approvals", approvalFilter],
@@ -2335,6 +2346,7 @@ export default function CustomerServicePage({
         approvalFilter === "ALL" ? undefined : approvalFilter,
       ),
     refetchInterval: 10_000,
+    enabled: isAdminSurface && section === "approvals",
   });
   const mcpIncidents = useQuery({
     queryKey: ["mcp-action-incidents", incidentFilter],
@@ -2343,25 +2355,29 @@ export default function CustomerServicePage({
         incidentFilter === "ALL" ? undefined : incidentFilter,
       ),
     refetchInterval: 10_000,
+    enabled: isAdminSurface && section === "incidents",
   });
   const metrics = useQuery({
     queryKey: ["customer-service-metrics"],
     queryFn: getCustomerServiceMetrics,
     refetchInterval: 10_000,
+    enabled: isAdminSurface && section === "admin",
   });
   const historyMetrics = useQuery({
     queryKey: ["customer-service-history-metrics"],
     queryFn: () => getCustomerServiceHistoryMetrics(7),
     refetchInterval: 60_000,
+    enabled: isAdminSurface && section === "admin",
   });
   const runtime = useQuery({
     queryKey: ["system-runtime"],
     queryFn: getRuntimeConfig,
+    enabled: isAdminSurface,
   });
   const detail = useQuery({
     queryKey: ["ticket", ticketId],
     queryFn: () => getTicket(ticketId),
-    enabled: Boolean(ticketId),
+    enabled: isAdminSurface && Boolean(ticketId),
     refetchInterval: (query) =>
       terminalStates.has(query.state.data?.workflow_state ?? "")
         ? false
@@ -2370,7 +2386,7 @@ export default function CustomerServicePage({
   const conversationDetail = useQuery({
     queryKey: ["customer-conversation", conversationId],
     queryFn: () => getCustomerConversation(conversationId),
-    enabled: Boolean(conversationId),
+    enabled: isAdminSurface && Boolean(conversationId),
     refetchInterval: 10_000,
   });
   const knowledgeBindings = useQuery({
@@ -2380,7 +2396,8 @@ export default function CustomerServicePage({
     ],
     queryFn: () =>
       listEmployeeKnowledgeBindings(detail.data?.employee.id ?? employeeId),
-    enabled: Boolean(detail.data?.employee.id || employeeId),
+    enabled:
+      isAdminSurface && Boolean(detail.data?.employee.id || employeeId),
   });
 
   const selectedCategory = categories.data?.find(
@@ -3506,16 +3523,28 @@ export default function CustomerServicePage({
 
       {viewMode === "admin" && section === "admin" && (
         <>
+      {metrics.isError && (
+        <Alert
+          type="error"
+          showIcon
+          message="运营指标加载失败"
+          description="当前无法确认会话负载和 SLA 状态，指标不会以 0 代替。请检查权限或后端服务。"
+        />
+      )}
       <Row gutter={[12, 12]}>
         {[
-          ["活动会话", metrics.data?.active_conversations ?? 0],
-          ["待接管", metrics.data?.unassigned_conversations ?? 0],
-          ["在线客服", metrics.data?.online_agents ?? 0],
-          ["SLA 超时", metrics.data?.sla_overdue ?? 0],
-          ["主管告警", metrics.data?.open_supervisor_notifications ?? 0],
+          ["活动会话", metrics.isError ? "-" : metrics.isLoading ? "…" : metrics.data?.active_conversations ?? 0],
+          ["待接管", metrics.isError ? "-" : metrics.isLoading ? "…" : metrics.data?.unassigned_conversations ?? 0],
+          ["在线客服", metrics.isError ? "-" : metrics.isLoading ? "…" : metrics.data?.online_agents ?? 0],
+          ["SLA 超时", metrics.isError ? "-" : metrics.isLoading ? "…" : metrics.data?.sla_overdue ?? 0],
+          ["主管告警", metrics.isError ? "-" : metrics.isLoading ? "…" : metrics.data?.open_supervisor_notifications ?? 0],
           [
             "平均等待",
-            `${Math.floor((metrics.data?.average_waiting_seconds ?? 0) / 60)} 分钟`,
+            metrics.isError
+              ? "-"
+              : metrics.isLoading
+                ? "…"
+                : `${Math.floor((metrics.data?.average_waiting_seconds ?? 0) / 60)} 分钟`,
           ],
         ].map(([label, value]) => (
           <Col xs={12} md={8} xl={4} key={String(label)}>
@@ -3531,8 +3560,13 @@ export default function CustomerServicePage({
         title="活动会话风险分布"
         extra={
           <Text type="secondary">
-            待评估 {metrics.data?.risk_counts?.UNKNOWN ?? 0} · 风险决定授权边界，
-            优先级决定处理时效
+            待评估{" "}
+            {metrics.isError
+              ? "-"
+              : metrics.isLoading
+                ? "…"
+                : metrics.data?.risk_counts?.UNKNOWN ?? 0}{" "}
+            · 风险决定授权边界，优先级决定处理时效
           </Text>
         }
       >
@@ -3546,7 +3580,11 @@ export default function CustomerServicePage({
                     <Text strong>{level.label}</Text>
                   </Space>
                   <Title level={3} style={{ margin: 0 }}>
-                    {metrics.data?.risk_counts?.[level.code] ?? 0}
+                    {metrics.isError
+                      ? "-"
+                      : metrics.isLoading
+                        ? "…"
+                        : metrics.data?.risk_counts?.[level.code] ?? 0}
                   </Title>
                   <Text type="secondary">{level.description}</Text>
                 </Space>
@@ -3571,6 +3609,15 @@ export default function CustomerServicePage({
           </Text>
         }
       >
+        {historyMetrics.isError && (
+          <Alert
+            type="error"
+            showIcon
+            message="近 7 天趋势加载失败"
+            description="趋势数据不可用，不代表新增会话或首响时间为 0。"
+            style={{ marginBottom: 12 }}
+          />
+        )}
         <Table
           rowKey="date"
           size="small"

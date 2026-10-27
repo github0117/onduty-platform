@@ -218,12 +218,24 @@ async function mockOperations(page: Page): Promise<void> {
   );
 }
 
-test("根路径按测试身份进入角色首页", async ({ page }) => {
+test("根路径默认以平台管理员进入平台总览", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
   await page.goto("/");
-  await expect(page).toHaveURL(/\/employees\/roster$/);
+  await expect(page).toHaveURL(/\/overview$/);
   await expect(
-    page.getByRole("heading", { name: "数字员工名单", exact: true }),
+    page.getByRole("button", { name: "进入 60 秒主演示" }),
+  ).toBeVisible();
+});
+
+test("平台总览的主演示入口进入企业服务台", async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/overview");
+  await page.getByRole("button", { name: "进入 60 秒主演示" }).click();
+  await expect(page).toHaveURL(/\/customer-service$/);
+  await expect(
+    page.getByRole("heading", {
+      name: "像员工一样问，自动分派给对的人",
+    }),
   ).toBeVisible();
 });
 
@@ -240,23 +252,50 @@ test("企业服务台 Agent 主演示可直接访问", async ({ page }) => {
   );
 });
 
-test("运行与审计可以检查并恢复演示数据且阻止重复提交", async ({ page }) => {
+test("运行与审计提交后台恢复任务并轮询完成状态", async ({ page }) => {
   let resetCalls = 0;
+  let statusCalls = 0;
   let releaseReset: (() => void) | undefined;
   const resetGate = new Promise<void>((resolve) => {
     releaseReset = resolve;
   });
-  await page.route("**/api/v1/demo/reset", async (route) => {
-    resetCalls += 1;
-    await resetGate;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        status: "ok",
-        message: "演示数据已检查并恢复",
-      }),
-    });
+  await page.route("**/api/v1/demo/reset**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST" && pathname.endsWith("/demo/reset")) {
+      resetCalls += 1;
+      await resetGate;
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "reset-e2e",
+          business_unit_id: "bu_demo",
+          status: "QUEUED",
+          message: "演示数据恢复任务已排队。",
+        }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && pathname.endsWith("/reset-e2e")) {
+      statusCalls += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "reset-e2e",
+          business_unit_id: "bu_demo",
+          status: "SUCCEEDED",
+          code: null,
+          message: "演示数据已检查并恢复。",
+          created_at: now,
+          updated_at: now,
+          finished_at: now,
+        }),
+      });
+      return;
+    }
+    await route.continue();
   });
   await page.addInitScript(() => window.localStorage.clear());
   await page.goto("/operations");
@@ -265,18 +304,22 @@ test("运行与审计可以检查并恢复演示数据且阻止重复提交", as
     .click();
   const dialog = page.getByRole("dialog", { name: "检查并恢复演示数据？" });
   await expect(dialog).toBeVisible();
-  const confirm = dialog.getByRole("button", { name: "开始恢复" });
-  await confirm.click();
-  await expect(confirm).toBeDisabled();
+  await dialog.getByRole("button", { name: "开始恢复" }).click();
+  await expect(
+    dialog.getByRole("button", { name: "恢复中…" }),
+  ).toBeDisabled();
   await expect.poll(() => resetCalls).toBe(1);
   releaseReset?.();
-  await expect(page.getByText("演示数据已检查并恢复")).toBeVisible();
+  await expect(
+    page.locator(".action-feedback").getByText("演示数据已检查并恢复。"),
+  ).toBeVisible();
   await expect(dialog).toBeHidden();
   expect(resetCalls).toBe(1);
+  expect(statusCalls).toBeGreaterThan(0);
 });
 
 test("演示数据恢复失败时显示可执行中文提示", async ({ page }) => {
-  await page.route("**/api/v1/demo/reset", async (route) => {
+  await page.route("**/api/v1/demo/reset**", async (route) => {
     await route.fulfill({
       status: 500,
       contentType: "application/json",

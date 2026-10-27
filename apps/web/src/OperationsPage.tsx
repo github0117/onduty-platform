@@ -18,11 +18,12 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   getAgentRunTrace,
   getAgentRuns,
+  getDemoResetStatus,
   getModelMetrics,
   getRagMetrics,
   getSyncMetrics,
@@ -32,7 +33,7 @@ import {
   listMcpConnectors,
   resetDemoData,
 } from "./api";
-import { getActiveTestIdentity } from "./auth";
+import { getActiveBusinessUnitId, getActiveTestIdentity } from "./auth";
 import { message } from "./feedback";
 import type { AgentRun, ToolCall, ToolMetricItem } from "./types";
 import { eventStatusLabels, eventTypeLabels } from "./statusLabels";
@@ -65,8 +66,10 @@ export default function OperationsPage() {
   const queryClient = useQueryClient();
   const [selectedRun, setSelectedRun] = useState<AgentRun | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
+  const [resetJobId, setResetJobId] = useState<string | null>(null);
   const activeIdentity = getActiveTestIdentity();
-  const canResetDemo = activeIdentity.id === "platform-admin";
+  const canResetDemo =
+    activeIdentity.role === "admin" && getActiveBusinessUnitId() === "bu_demo";
   const canViewMcpConnectors = ["agent", "supervisor", "admin"].includes(
     activeIdentity.role,
   );
@@ -99,13 +102,40 @@ export default function OperationsPage() {
   });
   const resetDemo = useMutation({
     mutationFn: resetDemoData,
-    onSuccess: async (result) => {
-      setResetOpen(false);
-      message.success(result.message);
-      await queryClient.invalidateQueries();
+    onSuccess: (result) => {
+      setResetJobId(result.job_id);
+      message.info("已提交后台任务，正在恢复演示数据…");
     },
     onError: (error: Error) => message.error(error.message),
   });
+  const resetStatus = useQuery({
+    queryKey: ["demo-reset", resetJobId],
+    queryFn: () => getDemoResetStatus(resetJobId!),
+    enabled: Boolean(resetJobId),
+    refetchInterval: (query) => {
+      if (query.state.error) return false;
+      const status = query.state.data?.status;
+      return status === "SUCCEEDED" || status === "FAILED" ? false : 1_500;
+    },
+  });
+  const resetStatusFailed =
+    resetStatus.isError || resetStatus.isRefetchError;
+  const resetBusy =
+    resetDemo.isPending || (Boolean(resetJobId) && !resetStatusFailed);
+
+  useEffect(() => {
+    const job = resetStatus.data;
+    if (!job) return;
+    if (job.status === "SUCCEEDED") {
+      message.success(job.message);
+      setResetJobId(null);
+      setResetOpen(false);
+      queryClient.invalidateQueries().catch(() => undefined);
+    } else if (job.status === "FAILED") {
+      message.error(job.message);
+      setResetJobId(null);
+    }
+  }, [queryClient, resetStatus.data]);
   const activeEmployeeCount =
     employees.data?.filter((employee) => employee.status === "ACTIVE")
       .length ?? 0;
@@ -288,7 +318,7 @@ export default function OperationsPage() {
         <Space wrap>
           {canResetDemo && (
             <Button
-              loading={resetDemo.isPending}
+              loading={resetBusy}
               onClick={() => setResetOpen(true)}
             >
               检查并恢复演示数据
@@ -525,14 +555,14 @@ export default function OperationsPage() {
         title="检查并恢复演示数据？"
         open={resetOpen}
         onCancel={() => {
-          if (!resetDemo.isPending) setResetOpen(false);
+          if (!resetBusy) setResetOpen(false);
         }}
         onOk={() => resetDemo.mutate()}
-        okText="开始恢复"
-        cancelText="取消"
-        confirmLoading={resetDemo.isPending}
-        okButtonProps={{ disabled: resetDemo.isPending }}
-        cancelButtonProps={{ disabled: resetDemo.isPending }}
+        okText={resetBusy ? "恢复中…" : "开始恢复"}
+        cancelText="关闭"
+        confirmLoading={resetBusy}
+        okButtonProps={{ disabled: resetBusy }}
+        cancelButtonProps={{ disabled: resetBusy }}
       >
         <Space direction="vertical" size="middle">
           <Text>
@@ -541,9 +571,43 @@ export default function OperationsPage() {
           <Alert
             type="info"
             showIcon
-            message="这是幂等恢复，不会删除你手工创建的数据"
-            description="固定演示数据已存在时会更新或复用；执行过程可能需要几十秒。仅演示或开发环境可执行。"
+            message="这是租户隔离的幂等恢复，不会删除你手工创建的数据"
+            description="任务只作用于 bu_demo，在后台执行并轮询进度；固定演示数据已存在时会更新或复用。仅演示或开发环境可执行。"
           />
+          {resetStatus.data && (
+            <Alert
+              type={
+                resetStatus.data.status === "FAILED" ? "error" : "info"
+              }
+              showIcon
+              message={
+                resetStatus.data.status === "QUEUED"
+                  ? "任务已排队"
+                  : resetStatus.data.status === "RUNNING"
+                    ? "正在恢复演示数据"
+                    : resetStatus.data.status === "FAILED"
+                      ? "恢复失败"
+                      : "恢复完成"
+              }
+              description={resetStatus.data.message}
+            />
+          )}
+          {resetStatusFailed && (
+            <Alert
+              type="warning"
+              showIcon
+              message="暂时无法获取任务状态"
+              description="后台任务可能仍在运行，请重新查询或稍后刷新页面查看结果。"
+              action={
+                <Button
+                  size="small"
+                  onClick={() => resetStatus.refetch()}
+                >
+                  重新查询
+                </Button>
+              }
+            />
+          )}
         </Space>
       </Modal>
     </Space>

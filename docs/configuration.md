@@ -23,6 +23,22 @@ ECOMMERCE_TTS_VOICE=Cherry
 
 未配置密钥时继续使用本地模板，页面和素材元数据会标明实际 Provider。
 
+## 演示数据恢复
+
+“运行与审计”中的恢复操作只对 `bu_demo` 生效，并要求管理员身份、演示/测试环境
+以及显式确认请求头 `X-Demo-Reset-Confirm: reset-bu_demo`。接口先返回 `202` 和
+`job_id`，恢复脚本在后台执行；前端轮询 `GET /api/v1/demo/reset/{job_id}` 直到
+`SUCCEEDED` 或 `FAILED`。
+
+```text
+DEMO_RESET_ENABLED=true
+DEMO_RESET_BASE_URL=http://127.0.0.1:8000
+```
+
+`DEMO_RESET_BASE_URL` 是后台任务调用种子脚本时使用的 API 地址，默认取 Compose
+栈内的本地端口。生产环境即使误设 `DEMO_RESET_ENABLED=true`，也会因为
+`APP_ENV` 非 `development`/`test` 而拒绝执行。
+
 ## 物流状态查询
 
 物流状态必须来自订单或物流系统，不能由大模型推断。配置企业 OMS、WMS

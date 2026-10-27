@@ -69,10 +69,14 @@ make build     # 构建前端到 apps/web/dist
 docker compose -f infra/compose/docker-compose.yml --profile app up -d
 ```
 
-首次打开演示环境，进入“运行与审计”点击“检查并恢复演示数据”；
-也可以直接执行 `make seed-demo`。
+首次打开演示环境会以平台管理员进入“平台总览”，可先查看各类内容的真实数量，
+再点击“进入 60 秒主演示”。需要补齐固定数据时，进入“运行与审计”点击
+“检查并恢复演示数据”；任务只作用于 `bu_demo`，在后台执行并轮询状态，也可以
+直接执行 `make seed-demo`。
 
-- 工作台：<http://127.0.0.1:5173/>
+- 平台总览：<http://127.0.0.1:5173/overview>
+- 主演示 · 企业服务台：<http://127.0.0.1:5173/customer-service>
+- 人工工作台：<http://127.0.0.1:5173/customer-service/workbench>
 - 电商运营：<http://127.0.0.1:5173/ecommerce>
 - 数字员工：<http://127.0.0.1:5173/employees/roster>
 - API 文档：<http://127.0.0.1:5173/docs>
@@ -96,12 +100,12 @@ make acceptance-final
 当前基线：
 
 ```text
-后端: 345 passed, 1 skipped
+后端: 352 passed, 1 skipped
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
 Ruff / mypy: passed（175 个源文件）
 TypeScript / Vite: passed
-Playwright: 140 passed, 2 skipped（24 个测试文件）
+Playwright: 141 passed, 2 skipped（24 个测试文件）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
 PostgreSQL migration: e7a1c3d5b9f2 (head)
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）

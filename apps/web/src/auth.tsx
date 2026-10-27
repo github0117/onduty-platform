@@ -59,7 +59,7 @@ export const testIdentityProfiles: TestIdentityProfile[] = [
     description: "配置员工、模型、连接器和治理规则",
     actorId: "demo.admin",
     role: "admin",
-    landingPath: "/employees/roster",
+    landingPath: "/overview",
   },
 ];
 

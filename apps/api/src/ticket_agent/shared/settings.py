@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     rate_limit_requests_per_minute: int = 120
     rate_limit_key_prefix: str = "ticket-agent:rate-limit"
     task_mode: Literal["inline", "celery"] = "inline"
+    demo_reset_enabled: bool = True
+    demo_reset_base_url: str = "http://127.0.0.1:8000"
     cors_origins: list[str] = ["http://localhost:5173"]
     classification_confidence_threshold: float = 0.80
     customer_service_auto_reply_enabled: bool = True

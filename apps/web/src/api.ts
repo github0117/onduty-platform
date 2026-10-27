@@ -162,6 +162,12 @@ const friendlyApiErrors: Record<string, string> = {
     "演示数据正在恢复，请等待当前任务完成后再试。",
   DEMO_RESET_TIMEOUT:
     "演示数据恢复超时，请稍后重试或联系管理员。",
+  DEMO_RESET_UNIT_UNSUPPORTED:
+    "演示数据恢复只作用于 bu_demo，请先切换到主要演示单元。",
+  DEMO_RESET_CONFIRMATION_REQUIRED:
+    "需要显式确认后才可恢复演示数据。",
+  DEMO_RESET_JOB_NOT_FOUND:
+    "恢复任务不存在或服务已重启，请重新提交。",
   SCHEMA_VALIDATION_FAILED:
     "提交内容不符合要求，请检查必填项和格式。",
   RESOURCE_NOT_FOUND:
@@ -246,15 +252,31 @@ export function listTickets(): Promise<TicketList> {
   return request<TicketList>("/api/v1/tickets?business_unit_id=bu_demo&limit=50");
 }
 
-export function resetDemoData(): Promise<{
-  status: string;
+export interface DemoResetJob {
+  job_id: string;
+  business_unit_id: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
   message: string;
-}> {
-  return request("/api/v1/demo/reset", {
+  code: string | null;
+  created_at?: string;
+  updated_at?: string;
+  finished_at?: string | null;
+}
+
+export function resetDemoData(): Promise<DemoResetJob> {
+  return request("/api/v1/demo/reset?business_unit_id=bu_demo", {
     method: "POST",
+    headers: { "X-Demo-Reset-Confirm": "reset-bu_demo" },
     body: "{}",
-    signal: AbortSignal.timeout(240_000),
+    signal: AbortSignal.timeout(30_000),
   });
+}
+
+export function getDemoResetStatus(jobId: string): Promise<DemoResetJob> {
+  return request(
+    `/api/v1/demo/reset/${encodeURIComponent(jobId)}`,
+    { signal: AbortSignal.timeout(15_000) },
+  );
 }
 
 export function getTicket(id: string): Promise<TicketDetail> {
