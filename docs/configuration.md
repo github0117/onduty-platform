@@ -129,13 +129,22 @@ EMBEDDING_BASE_URL=https://embedding.example/v1
 EMBEDDING_MODEL_NAME=BAAI/bge-m3
 EMBEDDING_API_KEY=<local-secret>
 EMBEDDING_DIMENSIONS=1024
+# 端点支持 OpenAI dimensions 参数时开启；DashScope text-embedding-v3 需要。
+EMBEDDING_SEND_DIMENSIONS=true
 EMBEDDING_FALLBACK_TO_LOCAL=false
 KNOWLEDGE_CHUNKING_VERSION=v2
 KNOWLEDGE_CHUNK_TARGET_CHARS=800
 KNOWLEDGE_CHUNK_MAX_CHARS=1200
 ```
 
+- DashScope 可用 `EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`、
+  `EMBEDDING_MODEL_NAME=text-embedding-v3`、`EMBEDDING_DIMENSIONS=256`、
+  `EMBEDDING_SEND_DIMENSIONS=true`；该组合已在公开评测集上完成 reindex 与
+  质量 A/B，但默认配置仍使用本地 `local-hash-256`。
 - `EMBEDDING_DIMENSIONS` 必须与模型真实维度一致，响应维度不符时请求失败。
+- `EMBEDDING_SEND_DIMENSIONS=true` 时请求体带 `"dimensions"`。部分服务默认
+  返回 1024 维，只有显式传参才能得到 256 维；不支持该参数的端点保持默认
+  `false`，避免被服务端拒绝。
 - `EMBEDDING_FALLBACK_TO_LOCAL=false` 时远端失败直接报错，版本不落库；
   设为 `true` 时按真实使用的本地模型名写入，并在 chunk 元数据标
   `embedding_fallback_used=true`，避免把本地向量记成远端模型。
@@ -211,7 +220,53 @@ KNOWLEDGE_RERANK_MAX_CANDIDATES=30
   计入 Prometheus 计数器 `ticket_worker_rag_rerank_fallbacks_total`；设为
   `false` 则检索返回 `503 RERANK_UNAVAILABLE`（可重试），不返回未重排结果。
   默认回退，因此检索不会因重排失败而整体失败。
+- DashScope 原生 rerank：
+
+```text
+KNOWLEDGE_RERANK_PROVIDER=dashscope
+RERANK_MODEL_NAME=gte-rerank-v2
+# 留空时继承 MODEL_API_KEY
+RERANK_API_KEY=<local-secret>
+```
+
+  该模式固定请求
+  `https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank`
+  （`RERANK_BASE_URL` 可覆盖），body 为
+  `{model, input:{query, documents}, parameters:{return_documents:false, top_n}}`，
+  解析 `output.results`。公开评测集上全量重排提升了调参集但降低了留出集，
+  因此默认仍为 `local`；生产启用前需在内部工单留出集重新评估。
 - 数字员工档案里配置的 rerank 端点会覆盖全局设置，并额外记录
   `usage_guard` 的 token 与耗时。
 - compose 栈通过 `.env` 透传上述变量（默认 `local`），`RERANK_API_KEY` 默认为空，
   密钥只在运行时从本机 `.env` 注入，不写入镜像或 compose 文件。
+
+## 查询改写（多轮消解 + LLM 多查询）
+
+```text
+KNOWLEDGE_QUERY_CONTEXT_ENABLED=true
+KNOWLEDGE_QUERY_CONTEXT_HISTORY_TURNS=3
+KNOWLEDGE_QUERY_REWRITE_ENABLED=false
+KNOWLEDGE_QUERY_REWRITE_VARIANTS=2
+KNOWLEDGE_QUERY_REWRITE_TRIGGER_SCORE=0.3
+KNOWLEDGE_QUERY_REWRITE_TIMEOUT_SECONDS=2
+QUERY_REWRITE_BASE_URL=
+QUERY_REWRITE_API_KEY=
+QUERY_REWRITE_MODEL_NAME=
+```
+
+- `KNOWLEDGE_QUERY_CONTEXT_ENABLED`（默认开，无模型）：客服会话中只把**当前买家
+  问题**作为查询，最近 `KNOWLEDGE_QUERY_CONTEXT_HISTORY_TURNS` 轮买家消息作为
+  上下文。查询含“它/这个/那个/那/该”等指代时，优先替换为历史中的型号、订单号
+  （如 `HX-9080B`）；没有可替换实体时把上一轮问题拼到前面。原始问题仍作为
+  第二路召回参与 RRF，消解错误不会让原本命中的结果掉出。
+- `KNOWLEDGE_QUERY_REWRITE_ENABLED`（默认关）：开启后仅在最高分低于
+  `KNOWLEDGE_QUERY_REWRITE_TRIGGER_SCORE` 时调用 OpenAI 兼容
+  `POST {QUERY_REWRITE_BASE_URL}/chat/completions` 生成
+  `KNOWLEDGE_QUERY_REWRITE_VARIANTS` 条替代查询，与原始候选再 RRF 融合。
+- `QUERY_REWRITE_*` 为空且 `MODEL_PROVIDER=openai_compatible` 时自动继承
+  `MODEL_BASE_URL` / `MODEL_API_KEY` / `MODEL_NAME`；密钥同样只从本机 `.env`
+  注入。总超时为 `KNOWLEDGE_QUERY_REWRITE_TIMEOUT_SECONDS`（默认 2s）。
+- 远端超时、5xx、空结果或非法响应时静默保留本地排序并计数
+  `ticket_worker_rag_query_rewrite_fallbacks_total`；成功扩展计入
+  `ticket_worker_rag_query_rewrites_total`。检索不会因改写失败而失败。
+- 关闭两个开关后，检索行为与升级前完全一致：单查询、单次嵌入，不读取历史。

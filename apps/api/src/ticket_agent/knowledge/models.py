@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -233,10 +234,34 @@ class KnowledgeEvaluationCase(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     query: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset: Mapped[str] = mapped_column(
+        String(16),
+        default="TUNING",
+        server_default="TUNING",
+        nullable=False,
+    )
     expected_titles_json: Mapped[list[str]] = mapped_column(
         JSON,
         default=list,
         nullable=False,
+    )
+    expected_chunk_ids_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+        server_default=text("'[]'"),
+    )
+    expected_document_ids_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+        server_default=text("'[]'"),
+    )
+    negative_document_ids_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+        server_default=text("'[]'"),
     )
     expect_no_grounding: Mapped[bool] = mapped_column(
         Boolean,
@@ -270,6 +295,12 @@ class KnowledgeEvaluationRun(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    dataset: Mapped[str] = mapped_column(
+        String(16),
+        default="TUNING",
+        server_default="TUNING",
+        nullable=False,
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     verdict: Mapped[str] = mapped_column(String(24), nullable=False)
     top_k: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -279,10 +310,21 @@ class KnowledgeEvaluationRun(Base):
     recall_at_k: Mapped[float | None] = mapped_column(Float)
     mrr: Mapped[float | None] = mapped_column(Float)
     no_grounding_accuracy: Mapped[float | None] = mapped_column(Float)
+    chunk_recall_at_k: Mapped[float | None] = mapped_column(Float)
+    chunk_mrr: Mapped[float | None] = mapped_column(Float)
+    document_recall_at_k: Mapped[float | None] = mapped_column(Float)
+    document_mrr: Mapped[float | None] = mapped_column(Float)
+    context_precision: Mapped[float | None] = mapped_column(Float)
+    negative_violation_rate: Mapped[float | None] = mapped_column(Float)
     thresholds_json: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         default=dict,
         nullable=False,
+    )
+    baseline_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        default=dict,
+        nullable=True,
     )
     results_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON,

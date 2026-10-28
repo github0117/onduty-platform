@@ -249,7 +249,12 @@ test("新建评测案例按钮提交预期文档", async ({ page }) => {
   await dialog
     .getByPlaceholder("案例名称，例如 制度条款召回")
     .fill("E2E 评测");
-  await dialog.locator(".ant-select").click();
+  await dialog
+    .locator(".ant-select")
+    .filter({
+      has: page.getByRole("combobox", { name: "评测知识空间" }),
+    })
+    .click();
   await page
     .getByText("E2E 知识空间 · e2e_space", { exact: true })
     .last()

@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model_name: str = ""
     embedding_dimensions: int = 256
+    embedding_send_dimensions: bool = False
     embedding_timeout_seconds: float = 20.0
     embedding_fallback_to_local: bool = True
     knowledge_chunk_size: int = 800
@@ -75,6 +76,15 @@ class Settings(BaseSettings):
     knowledge_chunk_max_chars: int = 1200
     knowledge_retrieval_mode: Literal["dense", "hybrid"] = "dense"
     knowledge_rrf_k: int = 60
+    knowledge_query_context_enabled: bool = True
+    knowledge_query_context_history_turns: int = 3
+    knowledge_query_rewrite_enabled: bool = False
+    knowledge_query_rewrite_variants: int = 2
+    knowledge_query_rewrite_trigger_score: float = 0.3
+    knowledge_query_rewrite_timeout_seconds: float = 2.0
+    query_rewrite_base_url: str = ""
+    query_rewrite_api_key: str = ""
+    query_rewrite_model_name: str = ""
     knowledge_search_top_k: int = 5
     knowledge_min_score: float = 0.15
     knowledge_max_file_bytes: int = 20 * 1024 * 1024
@@ -82,7 +92,7 @@ class Settings(BaseSettings):
     knowledge_vector_weight: float = 0.6
     knowledge_lexical_weight: float = 0.4
     knowledge_candidate_multiplier: int = 5
-    knowledge_rerank_provider: Literal["local", "external"] = "local"
+    knowledge_rerank_provider: Literal["local", "external", "dashscope"] = "local"
     knowledge_rerank_min_candidates: int = 1
     knowledge_rerank_trigger_score: float = 0.0
     knowledge_rerank_max_candidates: int = 30
@@ -178,6 +188,20 @@ class Settings(BaseSettings):
                 self.model_api_key = self.ecommerce_content_api_key
             if not self.model_name and self.ecommerce_content_model_name:
                 self.model_name = self.ecommerce_content_model_name
+        return self
+
+    @model_validator(mode="after")
+    def inherit_query_rewrite_credentials(self) -> "Settings":
+        # Query rewriting is an LLM call; reuse the configured model endpoint
+        # when no dedicated rewrite endpoint is set. Keys are never defaulted
+        # to a literal, only inherited from the runtime environment.
+        if self.model_provider == "openai_compatible":
+            if not self.query_rewrite_base_url:
+                self.query_rewrite_base_url = self.model_base_url
+            if not self.query_rewrite_api_key:
+                self.query_rewrite_api_key = self.model_api_key
+            if not self.query_rewrite_model_name:
+                self.query_rewrite_model_name = self.model_name
         return self
 
     @model_validator(mode="after")

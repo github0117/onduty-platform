@@ -28,16 +28,25 @@ def main() -> None:
 
     tickets = [_ticket(index) for index in range(1, 121)]
     knowledge = [_knowledge(index) for index in range(1, 31)]
-    evaluations = [_evaluation(index) for index in range(1, 61)]
+    tuning = [_evaluation(index, "TUNING") for index in range(1, 81)]
+    holdout = [_evaluation(index, "HOLDOUT") for index in range(1, 51)]
 
     _write_jsonl(output_dir / "tickets.jsonl", tickets)
     _write_jsonl(output_dir / "knowledge.jsonl", knowledge)
-    _write_jsonl(output_dir / "evaluations.jsonl", evaluations)
+    _write_jsonl(output_dir / "tuning_evaluations.jsonl", tuning)
+    _write_jsonl(output_dir / "holdout_evaluations.jsonl", holdout)
+    # Legacy filename kept as the tuning set for older tooling.
+    _write_jsonl(output_dir / "evaluations.jsonl", tuning)
 
     summary = {
         "tickets": len(tickets),
         "knowledge_documents": len(knowledge),
-        "evaluation_questions": len(evaluations),
+        "evaluation_questions": len(tuning) + len(holdout),
+        "tuning_evaluation_questions": len(tuning),
+        "holdout_evaluation_questions": len(holdout),
+        "holdout_negative_questions": sum(
+            bool(item["should_refuse"]) for item in holdout
+        ),
         "enterprise_cases": sum(
             item["scenario"] == "enterprise" for item in tickets
         ),
@@ -101,23 +110,41 @@ def _knowledge(index: int) -> dict[str, object]:
     }
 
 
-def _evaluation(index: int) -> dict[str, object]:
+def _evaluation(index: int, dataset: str) -> dict[str, object]:
     document_index = ((index - 1) % 30) + 1
     document = _knowledge(document_index)
-    no_answer = index % 10 == 0
-    return {
-        "id": f"ACCEPT-EVAL-{index:03d}",
-        "business_unit_id": "bu_acceptance",
-        "query": (
+    holdout = dataset == "HOLDOUT"
+    no_answer = index % 5 == 0 if holdout else index % 10 == 0
+    if holdout:
+        query = (
+            f"公司是否报销月球基地住宿补贴 H{index:03d}"
+            if no_answer
+            else (
+                f"请说明《{document['title']}》的关键结论"
+                f"（留出验证 {index:03d}）"
+            )
+        )
+    else:
+        query = (
             f"公司是否报销火星基地差旅补贴 {index:03d}"
             if no_answer
-            else f"请查找《{document['title']}》并说明处理流程"
-        ),
+            else (
+                f"请查找《{document['title']}》并说明处理流程"
+                f"（调参验证 {index:03d}）"
+            )
+        )
+    return {
+        "id": f"ACCEPT-EVAL-{dataset[0]}-{index:03d}",
+        "business_unit_id": "bu_acceptance",
+        "dataset": dataset,
+        "query": query,
         "expected_space": "模拟验收知识空间",
         "expected_document_id": (
             None if no_answer else document["id"]
         ),
+        "expect_chunk": not no_answer and index % 3 == 0,
         "should_refuse": no_answer,
+        "synthetic": True,
     }
 
 

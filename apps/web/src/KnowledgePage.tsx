@@ -51,6 +51,7 @@ import {
 import type {
   KnowledgeDocument,
   KnowledgeEvaluationCase,
+  KnowledgeEvaluationDataset,
   KnowledgeFeedback,
   KnowledgeFeedbackCluster,
   KnowledgeHit,
@@ -66,6 +67,7 @@ import {
   feedbackReasonLabels,
   knowledgeDocumentStatusLabels,
   knowledgeDocumentTypeLabels,
+  knowledgeEvaluationDatasetLabels,
   knowledgeSyncStatusLabels,
   knowledgeVersionStatusLabels,
   localizedLabel,
@@ -73,6 +75,13 @@ import {
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
+
+function splitMultiline(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 const knowledgeDomainLabels: Record<string, string> = {
   enterprise_service: "企业服务",
@@ -436,8 +445,16 @@ export default function KnowledgePage({
   const [evaluationQuery, setEvaluationQuery] = useState("");
   const [evaluationSpaceId, setEvaluationSpaceId] = useState("");
   const [evaluationExpectedTitles, setEvaluationExpectedTitles] = useState("");
+  const [evaluationExpectedChunkIds, setEvaluationExpectedChunkIds] =
+    useState("");
+  const [evaluationExpectedDocumentIds, setEvaluationExpectedDocumentIds] =
+    useState("");
+  const [evaluationNegativeDocumentIds, setEvaluationNegativeDocumentIds] =
+    useState("");
   const [evaluationScope, setEvaluationScope] = useState("{}");
   const [evaluationNoGrounding, setEvaluationNoGrounding] = useState(false);
+  const [evaluationDataset, setEvaluationDataset] =
+    useState<KnowledgeEvaluationDataset>("TUNING");
   const [title, setTitle] = useState("");
   const [docType, setDocType] = useState("SOP");
   const [spaceId, setSpaceId] = useState("");
@@ -487,12 +504,17 @@ export default function KnowledgePage({
     queryFn: () => listKnowledgeDocuments(),
   });
   const evaluationCases = useQuery({
-    queryKey: ["knowledge", "evaluation-cases"],
-    queryFn: listKnowledgeEvaluationCases,
+    queryKey: ["knowledge", "evaluation-cases", evaluationDataset],
+    queryFn: () => listKnowledgeEvaluationCases(evaluationDataset),
   });
   const evaluationRuns = useQuery({
-    queryKey: ["knowledge", "evaluation-runs"],
-    queryFn: listKnowledgeEvaluationRuns,
+    queryKey: ["knowledge", "evaluation-runs", evaluationDataset],
+    queryFn: () => listKnowledgeEvaluationRuns(evaluationDataset),
+  });
+  const repairHoldoutCases = useQuery({
+    queryKey: ["knowledge", "evaluation-cases", "HOLDOUT"],
+    queryFn: () => listKnowledgeEvaluationCases("HOLDOUT"),
+    enabled: section === "repairs",
   });
   const repairTasks = useQuery({
     queryKey: ["knowledge", "repair-tasks"],
@@ -635,10 +657,15 @@ export default function KnowledgePage({
         name: evaluationName,
         query: evaluationQuery,
         knowledgeSpaceId: evaluationSpaceId,
-        expectedTitles: evaluationExpectedTitles
-          .split("\n")
-          .map((title) => title.trim())
-          .filter(Boolean),
+        dataset: evaluationFromRepair ? "TUNING" : evaluationDataset,
+        expectedTitles: splitMultiline(evaluationExpectedTitles),
+        expectedChunkIds: splitMultiline(evaluationExpectedChunkIds),
+        expectedDocumentIds: splitMultiline(
+          evaluationExpectedDocumentIds,
+        ),
+        negativeDocumentIds: splitMultiline(
+          evaluationNegativeDocumentIds,
+        ),
         expectNoGrounding: evaluationNoGrounding,
         scope,
       });
@@ -655,8 +682,12 @@ export default function KnowledgePage({
       setEvaluationName("");
       setEvaluationQuery("");
       setEvaluationExpectedTitles("");
+      setEvaluationExpectedChunkIds("");
+      setEvaluationExpectedDocumentIds("");
+      setEvaluationNegativeDocumentIds("");
       setEvaluationScope("{}");
       setEvaluationNoGrounding(false);
+      if (returnToEvaluation) setEvaluationDataset("TUNING");
       queryClient.invalidateQueries({
         queryKey: ["knowledge", "evaluation-cases"],
       });
@@ -665,12 +696,15 @@ export default function KnowledgePage({
     onError: (error: Error) => message.error(error.message),
   });
   const runEvaluation = useMutation({
-    mutationFn: () => runKnowledgeEvaluation(),
+    mutationFn: () => runKnowledgeEvaluation(undefined, evaluationDataset),
     onSuccess: (run) => {
+      const datasetLabel =
+        knowledgeEvaluationDatasetLabels[run.dataset] ??
+        knowledgeEvaluationDatasetLabels.TUNING;
       message[
         run.verdict === "PASS" ? "success" : "warning"
       ](
-        `评测${run.verdict === "PASS" ? "通过" : "未通过"}：${run.passed_cases}/${run.case_count}`,
+        `${datasetLabel}评测${run.verdict === "PASS" ? "通过" : "未通过"}：${run.passed_cases}/${run.case_count}`,
       );
       queryClient.invalidateQueries({
         queryKey: ["knowledge", "evaluation-runs"],
@@ -685,7 +719,7 @@ export default function KnowledgePage({
         error.code === "KNOWLEDGE_EVALUATION_CASES_EMPTY"
       ) {
         message.warning(
-          "至少启用一个评测案例后才能运行评测，请先启用案例或新建案例。",
+          `${knowledgeEvaluationDatasetLabels[evaluationDataset]}还没有启用的评测案例，请先创建或启用。`,
         );
         queryClient.invalidateQueries({
           queryKey: ["knowledge", "evaluation-cases"],
@@ -758,12 +792,37 @@ export default function KnowledgePage({
         queryKey: ["knowledge", "evaluation-cases"],
       });
     },
-    onError: (error: Error) => message.error(error.message),
+    onError: (error: Error) => {
+      if (
+        error instanceof ApiError &&
+        error.code === "HOLDOUT_CASE_IMMUTABLE"
+      ) {
+        message.warning(
+          "留出集案例已冻结，不能修改或停用；请改用调参集案例。",
+        );
+        return;
+      }
+      message.error(error.message);
+    },
   });
-  const openRepairVerification = (task: KnowledgeRepairTask) => {
-    const relatedCase = evaluationCases.data?.find(
-      (item) => item.id === task.evaluation_case_id,
-    );
+  const openRepairVerification = async (task: KnowledgeRepairTask) => {
+    const relatedCase = task.evaluation_case_id
+      ? repairRelatedCases.get(task.evaluation_case_id)
+      : undefined;
+    if (relatedCase?.dataset === "HOLDOUT") {
+      try {
+        if (!relatedCase.enabled) {
+          await updateKnowledgeEvaluationCase(relatedCase.id, true);
+          await queryClient.invalidateQueries({
+            queryKey: ["knowledge", "evaluation-cases"],
+          });
+        }
+        verifyRepair.mutate(task.id);
+      } catch (error) {
+        message.error((error as Error).message);
+      }
+      return;
+    }
     if (relatedCase?.enabled) {
       verifyRepair.mutate(task.id);
       return;
@@ -799,9 +858,33 @@ export default function KnowledgePage({
     if (!task || repairExpectedTitles.length === 0) return;
     setRepairVerificationRunning(true);
     try {
-      const relatedCase = evaluationCases.data?.find(
-        (item) => item.id === task.evaluation_case_id,
-      );
+      const relatedCase = task.evaluation_case_id
+        ? repairRelatedCases.get(task.evaluation_case_id)
+        : undefined;
+      if (relatedCase?.dataset === "HOLDOUT") {
+        if (!relatedCase.enabled) {
+          await updateKnowledgeEvaluationCase(relatedCase.id, true);
+        }
+        const run = await verifyKnowledgeRepairTask(task.id);
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["knowledge", "repair-tasks"],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["knowledge", "evaluation-cases"],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["knowledge", "evaluation-runs"],
+          }),
+        ]);
+        setRepairVerificationTask(null);
+        message[run.status === "VERIFIED" ? "success" : "warning"](
+          run.status === "VERIFIED"
+            ? "修复验证通过，可以关闭任务"
+            : "修复验证未通过，请继续修复知识",
+        );
+        return;
+      }
       if (relatedCase && !relatedCase.enabled) {
         await updateKnowledgeEvaluationCase(relatedCase.id, true);
       } else if (!relatedCase) {
@@ -810,13 +893,18 @@ export default function KnowledgePage({
           query: task.query,
           knowledgeSpaceId:
             task.knowledge_space_id ?? activeSpaces[0]?.id ?? "",
+          dataset: "TUNING",
           expectedTitles: repairExpectedTitles,
+          expectedChunkIds: [],
+          expectedDocumentIds: [],
+          negativeDocumentIds: [],
           expectNoGrounding: false,
           scope: {},
         });
       }
       const run = await runKnowledgeEvaluation(
         task.knowledge_space_id ?? undefined,
+        "TUNING",
       );
       const passed = run.verdict === "PASS";
       await updateKnowledgeRepairTask(task.id, {
@@ -1064,19 +1152,55 @@ export default function KnowledgePage({
       ),
     },
     {
+      title: "数据集",
+      dataIndex: "dataset",
+      width: 90,
+      render: (value: KnowledgeEvaluationDataset | undefined) => {
+        const dataset = value ?? "TUNING";
+        return (
+          <Tag color={dataset === "HOLDOUT" ? "purple" : "blue"}>
+            {knowledgeEvaluationDatasetLabels[dataset] ?? dataset}
+          </Tag>
+        );
+      },
+    },
+    {
       title: "知识空间",
       dataIndex: "knowledge_space_id",
-      width: 180,
+      width: 160,
       render: (value: string | null) =>
         value ? (spaceNames.get(value) ?? value) : "跨空间",
     },
     {
       title: "预期",
-      width: 220,
-      render: (_value, record) =>
-        record.expect_no_grounding
-          ? "应无召回"
-          : record.expected_titles.join("、"),
+      width: 240,
+      render: (_value, record) => {
+        if (record.expect_no_grounding) return "应无召回";
+        const titles = record.expected_titles ?? [];
+        const chunkIds = record.expected_chunk_ids ?? [];
+        const documentIds = record.expected_document_ids ?? [];
+        const negativeIds = record.negative_document_ids ?? [];
+        const parts = [
+          titles.length ? `${titles.length} 个标题` : "",
+          chunkIds.length ? `${chunkIds.length} 个分块` : "",
+          documentIds.length ? `${documentIds.length} 份文档` : "",
+        ].filter(Boolean);
+        return (
+          <Space direction="vertical" size={0}>
+            <Text>{parts.join(" · ") || "-"}</Text>
+            {titles.length > 0 && (
+              <Text type="secondary" ellipsis={{ tooltip: titles.join("、") }}>
+                {titles.join("、")}
+              </Text>
+            )}
+            {negativeIds.length > 0 && (
+              <Text type="secondary">
+                禁止召回 {negativeIds.length} 份文档
+              </Text>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: "状态",
@@ -1092,7 +1216,26 @@ export default function KnowledgePage({
       title: "操作",
       width: 90,
       render: (_value, record) =>
-        canWriteKnowledge ? (
+        !canWriteKnowledge ? (
+          <Text type="secondary">只读</Text>
+        ) : record.dataset === "HOLDOUT" ? (
+          record.enabled ? (
+            <Text type="secondary">已冻结</Text>
+          ) : (
+            <Button
+              type="link"
+              loading={updateEvaluationCase.isPending}
+              onClick={() =>
+                updateEvaluationCase.mutate({
+                  caseId: record.id,
+                  enabled: true,
+                })
+              }
+            >
+              恢复启用
+            </Button>
+          )
+        ) : (
           <Button
             type="link"
             loading={updateEvaluationCase.isPending}
@@ -1105,8 +1248,6 @@ export default function KnowledgePage({
           >
             {record.enabled ? "停用" : "启用"}
           </Button>
-        ) : (
-          <Text type="secondary">只读</Text>
         ),
     },
   ];
@@ -1301,6 +1442,17 @@ export default function KnowledgePage({
     },
   ];
   const latestEvaluation = evaluationRuns.data?.items[0];
+  const latestEvaluationBaseline = latestEvaluation?.baseline ?? {};
+  const repairRelatedCases = useMemo(() => {
+    const cases = new Map<string, KnowledgeEvaluationCase>();
+    for (const item of [
+      ...(evaluationCases.data ?? []),
+      ...(repairHoldoutCases.data ?? []),
+    ]) {
+      cases.set(item.id, item);
+    }
+    return cases;
+  }, [evaluationCases.data, repairHoldoutCases.data]);
   const enabledEvaluationCases =
     evaluationCases.data?.filter((item) => item.enabled) ?? [];
   const displayedEvaluationCases = (
@@ -1372,10 +1524,10 @@ export default function KnowledgePage({
                 button: "管理知识文档",
               },
               {
-                title: "已启用评测",
+                title: "调参集评测",
                 value: enabledEvaluationCases.length,
                 suffix: "条",
-                description: "用固定问题验证召回和拒答质量。",
+                description: "调参集用于日常迭代；留出集单独用于发布门禁。",
                 path: "/knowledge/evaluation",
                 button: "查看质量评测",
               },
@@ -1665,6 +1817,16 @@ export default function KnowledgePage({
         extra={
           <Space>
             <Select
+              aria-label="评测数据集"
+              value={evaluationDataset}
+              onChange={setEvaluationDataset}
+              options={[
+                { value: "TUNING", label: "调参集" },
+                { value: "HOLDOUT", label: "留出集" },
+              ]}
+              style={{ width: 110 }}
+            />
+            <Select
               aria-label="评测案例范围"
               value={evaluationCaseFilter}
               onChange={setEvaluationCaseFilter}
@@ -1708,19 +1870,47 @@ export default function KnowledgePage({
           type="info"
           showIcon
           message="测试案例怎么建"
-          description="一条案例由“业务问题、所属知识空间、预期命中文档”组成。创建并启用后，点击右上角“运行全部评测”开始测试；评测失败会自动进入修复队列。"
+          description="一条案例由“业务问题、所属知识空间、预期命中标题/分块/文档、禁止召回文档”组成。调参集用于日常迭代，留出集用于发布门禁且创建后不可修改；评测失败会自动进入修复队列。"
           style={{ marginBottom: 16 }}
         />
+        {evaluationDataset === "HOLDOUT" && (
+          <Alert
+            type="warning"
+            showIcon
+            message="留出集案例已冻结"
+            description="发布门禁只运行留出集。留出集案例创建后不能修改或停用；需要调整案例时请使用调参集。"
+            style={{ marginBottom: 16 }}
+          />
+        )}
         {latestEvaluation && (
           <Alert
             type={latestEvaluation.verdict === "PASS" ? "success" : "warning"}
             showIcon
-            message={`最近评测：${latestEvaluation.verdict} · ${latestEvaluation.passed_cases}/${latestEvaluation.case_count} 通过`}
-            description={[
-              `Recall@K ${latestEvaluation.recall_at_k?.toFixed(3) ?? "-"}`,
-              `MRR ${latestEvaluation.mrr?.toFixed(3) ?? "-"}`,
-              `正确拒答率 ${latestEvaluation.no_grounding_accuracy?.toFixed(3) ?? "-"}`,
-            ].join(" · ")}
+            message={`最近${knowledgeEvaluationDatasetLabels[latestEvaluation.dataset ?? "TUNING"] ?? "调参集"}评测：${latestEvaluation.verdict} · ${latestEvaluation.passed_cases}/${latestEvaluation.case_count} 通过`}
+            description={
+              <Space direction="vertical" size={0}>
+                <Text>
+                  {[
+                    `分块 Recall@K ${latestEvaluation.chunk_recall_at_k?.toFixed(3) ?? "-"}`,
+                    `分块 MRR ${latestEvaluation.chunk_mrr?.toFixed(3) ?? "-"}`,
+                    `文档 Recall@K ${latestEvaluation.document_recall_at_k?.toFixed(3) ?? "-"}`,
+                    `文档 MRR ${latestEvaluation.document_mrr?.toFixed(3) ?? "-"}`,
+                    `上下文精确率 ${latestEvaluation.context_precision?.toFixed(3) ?? "-"}`,
+                    `禁止召回违规率 ${latestEvaluation.negative_violation_rate?.toFixed(3) ?? "-"}`,
+                    `正确拒答率 ${latestEvaluation.no_grounding_accuracy?.toFixed(3) ?? "-"}`,
+                  ].join(" · ")}
+                </Text>
+                <Text type="secondary">
+                  配置快照：embedding {latestEvaluationBaseline.embedding_model ?? "-"}
+                  {latestEvaluationBaseline.embedding_dimensions
+                    ? `（${latestEvaluationBaseline.embedding_dimensions} 维）`
+                    : ""}
+                  {" · "}分块版本 {latestEvaluationBaseline.chunking_version ?? "-"}
+                  {" · "}检索 {latestEvaluationBaseline.retrieval_mode ?? "-"}
+                  {" · "}重排 {latestEvaluationBaseline.reranker ?? "-"}
+                </Text>
+              </Space>
+            }
             style={{ marginBottom: 16 }}
           />
         )}
@@ -1731,7 +1921,7 @@ export default function KnowledgePage({
               type="warning"
               showIcon
               message="暂无可运行的评测案例"
-              description="当前案例均已停用。请启用至少一个案例后再运行全部评测。"
+              description={`${knowledgeEvaluationDatasetLabels[evaluationDataset]}当前案例均已停用。请启用至少一个案例后再运行全部评测。`}
               style={{ marginBottom: 16 }}
             />
           )}
@@ -2070,7 +2260,10 @@ export default function KnowledgePage({
             !evaluationName.trim() ||
             !evaluationQuery.trim() ||
             !evaluationSpaceId ||
-            (!evaluationNoGrounding && !evaluationExpectedTitles.trim()),
+            (!evaluationNoGrounding &&
+              !evaluationExpectedTitles.trim() &&
+              !evaluationExpectedChunkIds.trim() &&
+              !evaluationExpectedDocumentIds.trim()),
         }}
       >
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -2079,15 +2272,28 @@ export default function KnowledgePage({
               type="info"
               showIcon
               message="这是修复任务的回归测试"
-              description="原问题和使用空间已自动带入。请补全期望命中的文档；创建后到质量评测页点击“运行全部评测”。"
+              description="原问题和使用空间已自动带入，并写入调参集。请补全期望命中的文档；创建后到质量评测页点击“运行全部评测”。"
             />
           )}
+          <Select
+            aria-label="新建案例数据集"
+            value={evaluationFromRepair ? "TUNING" : evaluationDataset}
+            onChange={(value: KnowledgeEvaluationDataset) =>
+              setEvaluationDataset(value)
+            }
+            disabled={evaluationFromRepair}
+            options={[
+              { value: "TUNING", label: "调参集 · 可修改" },
+              { value: "HOLDOUT", label: "留出集 · 发布门禁，创建后冻结" },
+            ]}
+          />
           <Input
             placeholder="案例名称，例如 制度条款召回"
             value={evaluationName}
             onChange={(event) => setEvaluationName(event.target.value)}
           />
           <Select
+            aria-label="评测知识空间"
             value={evaluationSpaceId || undefined}
             onChange={setEvaluationSpaceId}
             placeholder="选择知识空间"
@@ -2103,14 +2309,45 @@ export default function KnowledgePage({
             onChange={(event) => setEvaluationQuery(event.target.value)}
           />
           <TextArea
-            rows={3}
-            placeholder="预期命中的文档标题，一行一个"
+            rows={2}
+            placeholder="预期命中的文档标题，一行一个（可留空，改用下方分块/文档 ID）"
             value={evaluationExpectedTitles}
             onChange={(event) => setEvaluationExpectedTitles(event.target.value)}
+          />
+          <TextArea
+            rows={2}
+            placeholder="预期命中的分块 ID，一行一个（可选，用于分块级 Recall/MRR）"
+            value={evaluationExpectedChunkIds}
+            onChange={(event) =>
+              setEvaluationExpectedChunkIds(event.target.value)
+            }
+          />
+          <TextArea
+            rows={2}
+            placeholder="预期命中的文档 ID，一行一个（可选，用于文档级 Recall/MRR）"
+            value={evaluationExpectedDocumentIds}
+            onChange={(event) =>
+              setEvaluationExpectedDocumentIds(event.target.value)
+            }
+          />
+          <TextArea
+            rows={2}
+            placeholder="禁止召回的文档 ID，一行一个（可选，命中即判失败）"
+            value={evaluationNegativeDocumentIds}
+            onChange={(event) =>
+              setEvaluationNegativeDocumentIds(event.target.value)
+            }
           />
           <Checkbox
             checked={evaluationNoGrounding}
             onChange={(event) => setEvaluationNoGrounding(event.target.checked)}
+            disabled={
+              Boolean(
+                evaluationExpectedTitles.trim() ||
+                  evaluationExpectedChunkIds.trim() ||
+                  evaluationExpectedDocumentIds.trim(),
+              )
+            }
           >
             这是无答案问题，预期不应召回知识
           </Checkbox>

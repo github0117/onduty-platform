@@ -1,5 +1,9 @@
 from collections.abc import Mapping, Sequence
 
+from ticket_agent.knowledge.query_rewrite import (
+    query_rewrite_fallback_total,
+    query_rewrite_total,
+)
 from ticket_agent.knowledge.rerank import rerank_fallback_total
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.rate_limit import rate_limit_rejection_total
@@ -301,6 +305,26 @@ def render_labeled_prometheus_metrics(
     lines.append(
         "ticket_worker_rag_rerank_fallbacks_total "
         f"{rerank_fallback_total()}"
+    )
+    # Process-local counters: LLM query expansion actually used vs. failed.
+    lines.append(
+        "# HELP ticket_worker_rag_query_rewrites_total "
+        "Low-score searches expanded by the LLM query rewriter."
+    )
+    lines.append("# TYPE ticket_worker_rag_query_rewrites_total counter")
+    lines.append(
+        "ticket_worker_rag_query_rewrites_total " f"{query_rewrite_total()}"
+    )
+    lines.append(
+        "# HELP ticket_worker_rag_query_rewrite_fallbacks_total "
+        "Query rewrites that failed and kept the local result."
+    )
+    lines.append(
+        "# TYPE ticket_worker_rag_query_rewrite_fallbacks_total counter"
+    )
+    lines.append(
+        "ticket_worker_rag_query_rewrite_fallbacks_total "
+        f"{query_rewrite_fallback_total()}"
     )
     return "\n".join(lines) + "\n"
 

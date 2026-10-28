@@ -99,10 +99,16 @@ class OpenAICompatibleEmbeddingProvider:
         api_key = self.settings.embedding_api_key or self.settings.model_api_key
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        request_payload: dict[str, object] = {
+            "model": self.settings.embedding_model_name,
+            "input": redacted,
+        }
+        if self.settings.embedding_send_dimensions:
+            request_payload["dimensions"] = self.dimensions
         response = self._client.post(
             f"{base_url.rstrip('/')}/embeddings",
             headers=headers,
-            json={"model": self.settings.embedding_model_name, "input": redacted},
+            json=request_payload,
         )
         response.raise_for_status()
         payload = response.json()

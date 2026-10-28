@@ -52,6 +52,8 @@ class Reranker(Protocol):
 
 
 class ExternalHTTPReranker:
+    provider_label = "openai_compatible"
+
     def __init__(
         self,
         settings: Settings,
@@ -115,7 +117,7 @@ class ExternalHTTPReranker:
             if self._usage_guard and started_monotonic is not None:
                 self._usage_guard.succeed(
                     purpose="rerank",
-                    provider="openai_compatible",
+                    provider=self.provider_label,
                     model_name=self.settings.rerank_model_name,
                     usage=usage,
                     started_monotonic=started_monotonic,
@@ -125,7 +127,7 @@ class ExternalHTTPReranker:
             if self._usage_guard and started_monotonic is not None:
                 self._usage_guard.fail(
                     purpose="rerank",
-                    provider="openai_compatible",
+                    provider=self.provider_label,
                     model_name=self.settings.rerank_model_name,
                     started_monotonic=started_monotonic,
                     error_code=type(exc).__name__,
@@ -171,30 +173,7 @@ class ExternalHTTPReranker:
         )
         response.raise_for_status()
         payload = response.json()
-        results = payload.get("results")
-        if not isinstance(results, list) or not results:
-            raise ValueError("Reranker returned no results")
-
-        ranked: list[RankedCandidate] = []
-        used_indexes: set[int] = set()
-        for item in results:
-            if not isinstance(item, dict):
-                raise ValueError("Reranker result is invalid")
-            index = int(item["index"])
-            score = float(item["relevance_score"])
-            if index < 0 or index >= len(candidates) or index in used_indexes:
-                raise ValueError("Reranker returned an invalid index")
-            if not 0.0 <= score <= 1.0:
-                raise ValueError("Reranker score is outside [0, 1]")
-            used_indexes.add(index)
-            ranked.append(
-                RankedCandidate(
-                    candidate=candidates[index],
-                    lexical_score=0.0,
-                    final_score=score,
-                )
-            )
-        ranked.sort(key=lambda item: item.final_score, reverse=True)
+        ranked = _parse_ranked_results(payload.get("results"), candidates)
         usage_data = payload.get("usage")
         usage = TokenUsage()
         if isinstance(usage_data, dict):
@@ -209,9 +188,107 @@ class ExternalHTTPReranker:
         return ranked[:top_k], usage
 
 
+DASHSCOPE_RERANK_URL = (
+    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+)
+MAX_RERANK_DOCUMENT_CHARS = 4000
+
+
+def _parse_ranked_results(
+    results: object,
+    candidates: list[RetrievalCandidate],
+) -> list[RankedCandidate]:
+    if not isinstance(results, list) or not results:
+        raise ValueError("Reranker returned no results")
+    ranked: list[RankedCandidate] = []
+    used_indexes: set[int] = set()
+    for item in results:
+        if not isinstance(item, dict):
+            raise ValueError("Reranker result is invalid")
+        index = int(item["index"])
+        score = float(item["relevance_score"])
+        if index < 0 or index >= len(candidates) or index in used_indexes:
+            raise ValueError("Reranker returned an invalid index")
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("Reranker score is outside [0, 1]")
+        used_indexes.add(index)
+        ranked.append(
+            RankedCandidate(
+                candidate=candidates[index],
+                lexical_score=0.0,
+                final_score=score,
+            )
+        )
+    ranked.sort(key=lambda item: item.final_score, reverse=True)
+    return ranked
+
+
+class DashScopeReranker(ExternalHTTPReranker):
+    """DashScope text-rerank transport with the same fallback semantics."""
+
+    provider_label = "dashscope"
+
+    @property
+    def name(self) -> str:
+        return f"dashscope:{self.settings.rerank_model_name}"
+
+    def _remote_rerank(
+        self,
+        *,
+        query: str,
+        candidates: list[RetrievalCandidate],
+        top_k: int,
+    ) -> tuple[list[RankedCandidate], TokenUsage]:
+        if not self.settings.rerank_model_name:
+            raise ValueError("Reranker model name is required")
+        url = self.settings.rerank_base_url or DASHSCOPE_RERANK_URL
+        redact = self.settings.model_data_redaction_enabled
+        documents = [
+            (
+                redact_sensitive_text(f"{item.title}\n{item.content}")
+                if redact
+                else f"{item.title}\n{item.content}"
+            )[:MAX_RERANK_DOCUMENT_CHARS]
+            for item in candidates
+        ]
+        headers = {"Content-Type": "application/json"}
+        api_key = self.settings.rerank_api_key or self.settings.model_api_key
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        response = self._client.post(
+            url,
+            headers=headers,
+            json={
+                "model": self.settings.rerank_model_name,
+                "input": {
+                    "query": redact_sensitive_text(query) if redact else query,
+                    "documents": documents,
+                },
+                "parameters": {
+                    "return_documents": False,
+                    "top_n": min(top_k, len(documents)),
+                },
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        output = payload.get("output")
+        results = output.get("results") if isinstance(output, dict) else None
+        ranked = _parse_ranked_results(results, candidates)
+        usage_data = payload.get("usage")
+        usage = TokenUsage()
+        if isinstance(usage_data, dict):
+            total_tokens = usage_data.get("total_tokens")
+            if isinstance(total_tokens, int):
+                usage = TokenUsage(input_tokens=total_tokens)
+        return ranked[:top_k], usage
+
+
 @lru_cache
 def get_reranker() -> Reranker:
     settings = get_settings()
+    if settings.knowledge_rerank_provider == "dashscope":
+        return DashScopeReranker(settings)
     if settings.knowledge_rerank_provider == "external":
         return ExternalHTTPReranker(settings)
     return HybridReranker(

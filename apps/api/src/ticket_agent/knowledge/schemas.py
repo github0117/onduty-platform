@@ -234,15 +234,46 @@ class ProductKnowledgeSyncResult(BaseModel):
     items: list[ProductKnowledgeSyncItem]
 
 
+KnowledgeEvaluationDataset = Literal["TUNING", "HOLDOUT"]
+
+
 class KnowledgeEvaluationCaseCreate(BaseModel):
     business_unit_id: str = Field(min_length=1, max_length=64)
     knowledge_space_id: UUID | None = None
     employee_id: UUID | None = None
     name: str = Field(min_length=1, max_length=200)
     query: str = Field(min_length=1, max_length=20_000)
+    dataset: KnowledgeEvaluationDataset = "TUNING"
     expected_titles: list[str] = Field(default_factory=list, max_length=20)
+    expected_chunk_ids: list[UUID] = Field(default_factory=list, max_length=50)
+    expected_document_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    negative_document_ids: list[UUID] = Field(default_factory=list, max_length=20)
     expect_no_grounding: bool = False
     scope: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name", "query")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("name and query must not be blank")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_expectations(self) -> "KnowledgeEvaluationCaseCreate":
+        if set(self.expected_document_ids) & set(self.negative_document_ids):
+            raise ValueError(
+                "negative_document_ids must not overlap expected_document_ids"
+            )
+        if self.expect_no_grounding and (
+            self.expected_titles
+            or self.expected_chunk_ids
+            or self.expected_document_ids
+        ):
+            raise ValueError(
+                "expect_no_grounding cannot be combined with expected matches"
+            )
+        return self
 
 
 class KnowledgeEvaluationCaseView(BaseModel):
@@ -252,7 +283,11 @@ class KnowledgeEvaluationCaseView(BaseModel):
     employee_id: UUID | None
     name: str
     query: str
+    dataset: KnowledgeEvaluationDataset
     expected_titles: list[str]
+    expected_chunk_ids: list[UUID]
+    expected_document_ids: list[UUID]
+    negative_document_ids: list[UUID]
     expect_no_grounding: bool
     scope: dict[str, str]
     enabled: bool
@@ -264,10 +299,24 @@ class KnowledgeEvaluationCaseView(BaseModel):
 class KnowledgeEvaluationCaseUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     query: str | None = Field(default=None, min_length=1, max_length=20_000)
+    dataset: KnowledgeEvaluationDataset | None = None
     expected_titles: list[str] | None = Field(default=None, max_length=20)
+    expected_chunk_ids: list[UUID] | None = Field(default=None, max_length=50)
+    expected_document_ids: list[UUID] | None = Field(default=None, max_length=20)
+    negative_document_ids: list[UUID] | None = Field(default=None, max_length=20)
     expect_no_grounding: bool | None = None
     scope: dict[str, str] | None = None
     enabled: bool | None = None
+
+    @field_validator("name", "query")
+    @classmethod
+    def reject_blank_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("name and query must not be blank")
+        return cleaned
 
     @model_validator(mode="after")
     def require_change(self) -> "KnowledgeEvaluationCaseUpdate":
@@ -279,6 +328,7 @@ class KnowledgeEvaluationCaseUpdate(BaseModel):
 class KnowledgeEvaluationRunCreate(BaseModel):
     business_unit_id: str = Field(min_length=1, max_length=64)
     knowledge_space_id: UUID | None = None
+    dataset: KnowledgeEvaluationDataset = "TUNING"
     top_k: int = Field(default=5, ge=1, le=20)
     min_recall_at_k: float = Field(default=0.8, ge=0, le=1)
     min_mrr: float = Field(default=0.6, ge=0, le=1)
@@ -288,6 +338,7 @@ class KnowledgeEvaluationRunCreate(BaseModel):
 class KnowledgeEvaluationRunView(BaseModel):
     id: UUID
     business_unit_id: str
+    dataset: KnowledgeEvaluationDataset
     status: str
     verdict: str
     top_k: int
@@ -297,7 +348,14 @@ class KnowledgeEvaluationRunView(BaseModel):
     recall_at_k: float | None
     mrr: float | None
     no_grounding_accuracy: float | None
+    chunk_recall_at_k: float | None
+    chunk_mrr: float | None
+    document_recall_at_k: float | None
+    document_mrr: float | None
+    context_precision: float | None
+    negative_violation_rate: float | None
     thresholds: dict[str, Any]
+    baseline: dict[str, Any]
     results: list[dict[str, Any]]
     error_message: str | None
     created_by: str

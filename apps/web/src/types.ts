@@ -1036,6 +1036,8 @@ export interface ProductKnowledgeSyncResult {
   items: ProductKnowledgeSyncItem[];
 }
 
+export type KnowledgeEvaluationDataset = "TUNING" | "HOLDOUT";
+
 export interface KnowledgeEvaluationCase {
   id: string;
   business_unit_id: string;
@@ -1043,7 +1045,11 @@ export interface KnowledgeEvaluationCase {
   employee_id: string | null;
   name: string;
   query: string;
+  dataset: KnowledgeEvaluationDataset;
   expected_titles: string[];
+  expected_chunk_ids: string[];
+  expected_document_ids: string[];
+  negative_document_ids: string[];
   expect_no_grounding: boolean;
   scope: Record<string, string>;
   enabled: boolean;
@@ -1052,9 +1058,24 @@ export interface KnowledgeEvaluationCase {
   updated_at: string;
 }
 
+export interface KnowledgeEvaluationBaseline {
+  dataset?: KnowledgeEvaluationDataset;
+  top_k?: number;
+  embedding_model?: string;
+  embedding_dimensions?: number;
+  chunking_version?: string;
+  retrieval_mode?: string;
+  rrf_k?: number;
+  reranker?: string;
+  query_context_enabled?: boolean;
+  query_rewrite_enabled?: boolean;
+  thresholds?: Record<string, number>;
+}
+
 export interface KnowledgeEvaluationRun {
   id: string;
   business_unit_id: string;
+  dataset: KnowledgeEvaluationDataset;
   status: string;
   verdict: string;
   top_k: number;
@@ -1064,13 +1085,29 @@ export interface KnowledgeEvaluationRun {
   recall_at_k: number | null;
   mrr: number | null;
   no_grounding_accuracy: number | null;
+  chunk_recall_at_k: number | null;
+  chunk_mrr: number | null;
+  document_recall_at_k: number | null;
+  document_mrr: number | null;
+  context_precision: number | null;
+  negative_violation_rate: number | null;
   thresholds: Record<string, number>;
+  baseline: KnowledgeEvaluationBaseline;
   results: Array<{
     query: string;
+    passed?: boolean;
     recall_at_k: number;
     reciprocal_rank: number;
     returned_titles: string[];
     no_grounding_correct: boolean | null;
+    chunk_recall_at_k?: number | null;
+    chunk_reciprocal_rank?: number | null;
+    returned_chunk_ids?: string[];
+    document_recall_at_k?: number | null;
+    document_reciprocal_rank?: number | null;
+    returned_document_ids?: string[];
+    context_precision?: number | null;
+    negative_document_hit?: boolean | null;
   }>;
   error_message: string | null;
   created_by: string;

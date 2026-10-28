@@ -7,8 +7,14 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
+from ticket_agent.knowledge.models import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeEvaluationCase,
+    KnowledgeEvaluationRun,
+)
 from ticket_agent.shared.db import SessionLocal, init_db
 from ticket_agent.tickets.models import Ticket
 
@@ -22,51 +28,73 @@ ADMIN = {
 
 def main() -> None:
     init_db()
-    base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
+    arguments = [argument for argument in sys.argv[1:] if argument != "--reset"]
+    reset_evaluations = len(arguments) != len(sys.argv) - 1
+    base_url = arguments[0] if arguments else "http://127.0.0.1:8000"
     # 语料不随仓库发布，由 scripts/sync_acceptance_corpus.sh 在 api
     # 容器启动后复制到可写的 /tmp 目录。
     corpus_dir = Path(
-        sys.argv[2]
-        if len(sys.argv) > 2
-        else "/tmp/acceptance-corpus"
+        arguments[1] if len(arguments) > 1 else "/tmp/acceptance-corpus"
     ).resolve()
+    if reset_evaluations:
+        # 旧的验收案例在数据集拆分迁移后会冻结为 HOLDOUT；重建验收语料时
+        # 需要显式清理，否则同一问题无法再作为 TUNING 案例写入。
+        _reset_evaluations()
     tickets = _read_jsonl(corpus_dir / "tickets.jsonl")
     knowledge = _read_jsonl(corpus_dir / "knowledge.jsonl")
-    evaluations = _read_jsonl(corpus_dir / "evaluations.jsonl")
+    tuning_path = corpus_dir / "tuning_evaluations.jsonl"
+    if not tuning_path.exists():
+        tuning_path = corpus_dir / "evaluations.jsonl"
+    tuning = _read_jsonl(tuning_path)
+    holdout_path = corpus_dir / "holdout_evaluations.jsonl"
+    holdout = _read_jsonl(holdout_path) if holdout_path.exists() else []
 
     with httpx.Client(base_url=base_url, timeout=60) as client:
         employee = _ensure_employee(client)
-        document_titles = _seed_knowledge(client, knowledge)
+        documents = _seed_knowledge(client, knowledge)
         case_count = _seed_evaluations(
             client,
-            evaluations,
-            document_titles=document_titles,
+            [*tuning, *holdout],
+            documents=documents,
         )
-        ticket_count = _seed_tickets(tickets, employee_id=UUID(employee["id"]))
-        evaluation = _run_evaluation(client)
+        ticket_count = _seed_tickets(
+            tickets, employee_id=UUID(employee["id"])
+        )
+        tuning_run = _run_evaluation(client, "TUNING")
+        holdout_run = _run_evaluation(client, "HOLDOUT")
     print(
         json.dumps(
             {
                 "business_unit_id": BUSINESS_UNIT,
                 "tickets": ticket_count,
-                "knowledge_documents": len(document_titles),
+                "knowledge_documents": len(documents),
                 "evaluation_cases": case_count,
-                "evaluation_run": {
-                    "verdict": evaluation.get("verdict"),
-                    "case_count": evaluation.get("case_count"),
-                    "passed_cases": evaluation.get("passed_cases"),
-                    "failed_cases": evaluation.get("failed_cases"),
-                    "recall_at_k": evaluation.get("recall_at_k"),
-                    "mrr": evaluation.get("mrr"),
-                    "no_grounding_accuracy": evaluation.get(
-                        "no_grounding_accuracy"
-                    ),
-                },
+                "evaluation_run": _run_summary(tuning_run),
+                "holdout_evaluation_run": _run_summary(holdout_run),
             },
             ensure_ascii=False,
             indent=2,
         )
     )
+
+
+def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dataset": run.get("dataset"),
+        "verdict": run.get("verdict"),
+        "case_count": run.get("case_count"),
+        "passed_cases": run.get("passed_cases"),
+        "failed_cases": run.get("failed_cases"),
+        "recall_at_k": run.get("recall_at_k"),
+        "mrr": run.get("mrr"),
+        "no_grounding_accuracy": run.get("no_grounding_accuracy"),
+        "chunk_recall_at_k": run.get("chunk_recall_at_k"),
+        "chunk_mrr": run.get("chunk_mrr"),
+        "document_recall_at_k": run.get("document_recall_at_k"),
+        "document_mrr": run.get("document_mrr"),
+        "context_precision": run.get("context_precision"),
+        "negative_violation_rate": run.get("negative_violation_rate"),
+    }
 
 
 def _ensure_employee(client: httpx.Client) -> dict[str, Any]:
@@ -116,7 +144,7 @@ def _ensure_tools(
 def _seed_knowledge(
     client: httpx.Client,
     items: list[dict[str, Any]],
-) -> dict[str, str]:
+) -> dict[str, dict[str, Any]]:
     documents = client.get(
         "/api/v1/knowledge-documents",
         headers=ADMIN,
@@ -128,7 +156,7 @@ def _seed_knowledge(
         for item in documents.json()
         if item["status"] != "ARCHIVED"
     }
-    titles: dict[str, str] = {}
+    seeded: dict[str, dict[str, Any]] = {}
     for item in items:
         document = by_title.get(str(item["title"]))
         if document is None:
@@ -170,35 +198,64 @@ def _seed_knowledge(
                 json={"release_note": "模拟验收语料"},
             )
             published.raise_for_status()
-        titles[str(item["id"])] = str(item["title"])
-    return titles
+        seeded[str(item["id"])] = {
+            "title": str(item["title"]),
+            "document_id": str(document["id"]),
+            "chunk_ids": _document_chunk_ids(str(document["id"])),
+        }
+    return seeded
+
+
+def _document_chunk_ids(document_id: str) -> list[str]:
+    with SessionLocal() as session:
+        document = session.get(KnowledgeDocument, UUID(document_id))
+        if document is None or document.current_version_id is None:
+            return []
+        return [
+            str(chunk_id)
+            for chunk_id in session.scalars(
+                select(KnowledgeChunk.id)
+                .where(
+                    KnowledgeChunk.knowledge_version_id
+                    == document.current_version_id
+                )
+                .order_by(KnowledgeChunk.ordinal)
+            ).all()
+        ]
 
 
 def _seed_evaluations(
     client: httpx.Client,
     items: list[dict[str, Any]],
     *,
-    document_titles: dict[str, str],
+    documents: dict[str, dict[str, Any]],
 ) -> int:
-    existing = client.get(
-        "/api/v1/knowledge/evaluation-cases",
-        headers=ADMIN,
-        params={"business_unit_id": BUSINESS_UNIT},
-    )
-    existing.raise_for_status()
-    existing_by_name = {item["name"]: item for item in existing.json()}
+    existing_by_dataset = {
+        dataset: _existing_cases(client, dataset)
+        for dataset in ("TUNING", "HOLDOUT")
+    }
     for item in items:
+        dataset = str(item.get("dataset") or "TUNING")
         name = f"验收问题 {item['id']}"
-        expected = document_titles.get(str(item.get("expected_document_id") or ""))
+        expected = documents.get(str(item.get("expected_document_id") or ""))
         payload = {
             "name": name,
             "query": item["query"],
-            "expected_titles": [expected] if expected else [],
+            "dataset": dataset,
+            "expected_titles": [expected["title"]] if expected else [],
+            "expected_document_ids": (
+                [expected["document_id"]] if expected else []
+            ),
+            "expected_chunk_ids": (
+                expected["chunk_ids"][:1]
+                if expected and item.get("expect_chunk")
+                else []
+            ),
             "expect_no_grounding": bool(item["should_refuse"]),
             "scope": {"audience": "support_agent"},
             "enabled": True,
         }
-        existing_case = existing_by_name.get(name)
+        existing_case = existing_by_dataset[dataset].get(name)
         if existing_case is None:
             response = client.post(
                 "/api/v1/knowledge/evaluation-cases",
@@ -210,14 +267,34 @@ def _seed_evaluations(
                     **payload,
                 },
             )
+        elif dataset == "HOLDOUT":
+            # Holdout cases are immutable; a re-seed keeps the frozen case.
+            continue
         else:
             response = client.patch(
                 f"/api/v1/knowledge/evaluation-cases/{existing_case['id']}",
                 headers=ADMIN,
                 json=payload,
             )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"{response.request.method} {response.request.url} "
+                f"returned {response.status_code}: {response.text}"
+            )
     return len(items)
+
+
+def _existing_cases(
+    client: httpx.Client,
+    dataset: str,
+) -> dict[str, dict[str, Any]]:
+    response = client.get(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN,
+        params={"business_unit_id": BUSINESS_UNIT, "dataset": dataset},
+    )
+    response.raise_for_status()
+    return {item["name"]: item for item in response.json()}
 
 
 def _seed_tickets(
@@ -283,13 +360,17 @@ def _seed_tickets(
         )
 
 
-def _run_evaluation(client: httpx.Client) -> dict[str, Any]:
+def _run_evaluation(
+    client: httpx.Client,
+    dataset: str,
+) -> dict[str, Any]:
     response = client.post(
         "/api/v1/knowledge/evaluation-runs",
         headers=ADMIN,
         json={
             "business_unit_id": BUSINESS_UNIT,
             "knowledge_space_id": None,
+            "dataset": dataset,
             "top_k": 5,
             "min_recall_at_k": 0.5,
             "min_mrr": 0.3,
@@ -298,6 +379,21 @@ def _run_evaluation(client: httpx.Client) -> dict[str, Any]:
     )
     response.raise_for_status()
     return response.json()
+
+
+def _reset_evaluations() -> None:
+    with SessionLocal() as session:
+        session.execute(
+            delete(KnowledgeEvaluationRun).where(
+                KnowledgeEvaluationRun.business_unit_id == BUSINESS_UNIT
+            )
+        )
+        session.execute(
+            delete(KnowledgeEvaluationCase).where(
+                KnowledgeEvaluationCase.business_unit_id == BUSINESS_UNIT
+            )
+        )
+        session.commit()
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

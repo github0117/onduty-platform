@@ -212,6 +212,11 @@ export const providerLabels: Record<string, string> = {
   system_policy: "系统策略",
 };
 
+export const knowledgeEvaluationDatasetLabels: Record<string, string> = {
+  TUNING: "调参集",
+  HOLDOUT: "留出集",
+};
+
 export const channelLabels: Record<string, string> = {
   pinduoduo: "国内电商演示渠道",
   pinduoduo_sandbox: "国内电商演示渠道",
