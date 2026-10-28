@@ -87,6 +87,10 @@ docker compose -f infra/compose/docker-compose.yml --profile app up -d
 直接执行 `make seed-demo`。页头可切换客服坐席、客服主管、知识运营、业务经理、
 审计员和平台管理员六种演示身份，菜单、按钮和页面访问权限随身份即时变化。
 
+运行与审计页的“业务价值（近 N 天）”卡片汇总草稿审核结果与模型成本：采纳率只统计
+人工已审核草稿，自动通过与待审核单独计数，并给出单会话、单采纳草稿的模型成本，
+支持 7/30/90 天窗口切换。
+
 - 平台总览：<http://127.0.0.1:5173/overview>
 - 主演示 · 企业服务台：<http://127.0.0.1:5173/customer-service>
 - 人工工作台：<http://127.0.0.1:5173/customer-service/workbench>

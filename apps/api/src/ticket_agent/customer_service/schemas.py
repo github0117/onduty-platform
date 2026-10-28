@@ -199,6 +199,31 @@ class CustomerServiceMetrics(BaseModel):
     risk_counts: dict[str, int]
 
 
+class CustomerValueMetrics(BaseModel):
+    business_unit_id: str
+    days: int
+    from_at: datetime
+    to_at: datetime
+    tickets_created: int
+    conversations_created: int
+    drafts_total: int
+    drafts_auto_accepted: int
+    drafts_pending: int
+    drafts_accepted: int
+    drafts_edited_and_accepted: int
+    drafts_rejected: int
+    drafts_escalated: int
+    drafts_reviewed: int
+    adoption_rate: float | None
+    edit_rate: float | None
+    model_calls: int
+    model_tokens: int
+    estimated_cost: float
+    cost_per_conversation: float | None
+    cost_per_adopted_draft: float | None
+    grounding_counts: dict[str, int]
+
+
 class CustomerDailyMetric(BaseModel):
     date: str
     conversations_created: int

@@ -384,6 +384,31 @@ export interface CustomerServiceMetrics {
   risk_counts: Record<string, number>;
 }
 
+export interface CustomerValueMetrics {
+  business_unit_id: string;
+  days: number;
+  from_at: string;
+  to_at: string;
+  tickets_created: number;
+  conversations_created: number;
+  drafts_total: number;
+  drafts_auto_accepted: number;
+  drafts_pending: number;
+  drafts_accepted: number;
+  drafts_edited_and_accepted: number;
+  drafts_rejected: number;
+  drafts_escalated: number;
+  drafts_reviewed: number;
+  adoption_rate: number | null;
+  edit_rate: number | null;
+  model_calls: number;
+  model_tokens: number;
+  estimated_cost: number;
+  cost_per_conversation: number | null;
+  cost_per_adopted_draft: number | null;
+  grounding_counts: Record<string, number>;
+}
+
 export interface CustomerDailyMetric {
   date: string;
   conversations_created: number;

@@ -31,6 +31,7 @@ import type {
   CustomerServiceNotificationList,
   CustomerServiceMetrics,
   CustomerServiceHistoryMetrics,
+  CustomerValueMetrics,
   EmployeeKnowledgeBinding,
   EmployeeMcpBinding,
   EmployeeSkillBinding,
@@ -516,6 +517,14 @@ export function acknowledgeCustomerServiceNotification(
 
 export function getCustomerServiceMetrics(): Promise<CustomerServiceMetrics> {
   return request("/api/v1/customer-service/metrics?business_unit_id=bu_demo");
+}
+
+export function getCustomerValueMetrics(
+  days = 30,
+): Promise<CustomerValueMetrics> {
+  return request(
+    `/api/v1/customer-service/value-metrics?business_unit_id=bu_demo&days=${days}`,
+  );
 }
 
 export function getCustomerServiceHistoryMetrics(

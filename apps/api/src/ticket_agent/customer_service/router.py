@@ -47,6 +47,7 @@ from ticket_agent.customer_service.schemas import (
     CustomerServiceNotificationList,
     CustomerServiceNotificationView,
     CustomerTakeoverRequest,
+    CustomerValueMetrics,
     PresenceReclaimResult,
     SlaEscalationResult,
 )
@@ -58,8 +59,12 @@ from ticket_agent.customer_service.turns import (
     process_conversation_turn,
     process_conversation_turn_stream,
 )
+from ticket_agent.customer_service.value_metrics import (
+    CustomerValueMetricsService,
+)
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
+    ensure_metrics_viewer,
     ensure_service_admin,
     ensure_service_chat,
     ensure_service_workbench,
@@ -141,6 +146,26 @@ def get_customer_service_metrics(
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return CustomerConversationService(db).metrics(
         business_unit_id=business_unit_id
+    )
+
+
+@router.get(
+    "/customer-service/value-metrics",
+    response_model=CustomerValueMetrics,
+)
+def get_customer_value_metrics(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+) -> CustomerValueMetrics:
+    ensure_metrics_viewer(principal)
+    business_unit_id = resolve_business_unit(principal, business_unit_id)
+    return CustomerValueMetrics(
+        **CustomerValueMetricsService(db).summary(
+            business_unit_id=business_unit_id,
+            days=days,
+        )
     )
 
 

@@ -9,6 +9,7 @@ import {
   Modal,
   Progress,
   Row,
+  Select,
   Space,
   Statistic,
   Table,
@@ -23,6 +24,7 @@ import { useEffect, useState } from "react";
 import {
   getAgentRunTrace,
   getAgentRuns,
+  getCustomerValueMetrics,
   getDemoResetStatus,
   getModelMetrics,
   getRagMetrics,
@@ -36,7 +38,12 @@ import {
 import { useAuth } from "./auth";
 import { message } from "./feedback";
 import type { AgentRun, ToolCall, ToolMetricItem } from "./types";
-import { eventStatusLabels, eventTypeLabels } from "./statusLabels";
+import {
+  draftStateLabels,
+  eventStatusLabels,
+  eventTypeLabels,
+  groundingStatusLabels,
+} from "./statusLabels";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -62,11 +69,22 @@ function time(value: string): string {
   return new Date(value).toLocaleString();
 }
 
+function rateText(value: number | null | undefined): string {
+  return value === null || value === undefined ? "-" : percent(value);
+}
+
+function moneyText(value: number | null | undefined): string {
+  return value === null || value === undefined
+    ? "-"
+    : Number(value).toFixed(4);
+}
+
 export default function OperationsPage() {
   const queryClient = useQueryClient();
   const [selectedRun, setSelectedRun] = useState<AgentRun | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetJobId, setResetJobId] = useState<string | null>(null);
+  const [valueDays, setValueDays] = useState(30);
   const { me, hasCapability, activeBusinessUnitLabel } = useAuth();
   const canResetDemo =
     hasCapability("demo.reset") && me.features.demo_reset.enabled;
@@ -84,6 +102,10 @@ export default function OperationsPage() {
     queryFn: getModelMetrics,
   });
   const rag = useQuery({ queryKey: ["metrics", "rag"], queryFn: getRagMetrics });
+  const value = useQuery({
+    queryKey: ["metrics", "value", valueDays],
+    queryFn: () => getCustomerValueMetrics(valueDays),
+  });
   const workforce = useQuery({
     queryKey: ["metrics", "workforce"],
     queryFn: getWorkforceMetrics,
@@ -298,6 +320,7 @@ export default function OperationsPage() {
     sync,
     models,
     rag,
+    value,
     workforce,
     mcpConnectors,
   ].filter((query) => query.isError);
@@ -348,6 +371,8 @@ export default function OperationsPage() {
         {[
           ["已上岗员工", activeEmployeeCount, "名"],
           ["知识有依据率", percent(rag.data?.grounding_rate ?? 0), ""],
+          ["草稿采纳率", rateText(value.data?.adoption_rate), ""],
+          ["单会话模型成本", moneyText(value.data?.cost_per_conversation), ""],
           ...(canViewMcpConnectors
             ? [["DeepWiki 只读工具", externalMcpToolCount, "个"] as const]
             : []),
@@ -437,6 +462,102 @@ export default function OperationsPage() {
           </Card>
         </Col>
       </Row>
+
+      <Card
+        className="section-card"
+        title={`业务价值（近 ${valueDays} 天）`}
+        loading={value.isLoading}
+        extra={
+          <Select
+            size="small"
+            value={valueDays}
+            onChange={setValueDays}
+            options={[
+              { value: 7, label: "近 7 天" },
+              { value: 30, label: "近 30 天" },
+              { value: 90, label: "近 90 天" },
+            ]}
+            style={{ width: 120 }}
+            aria-label="业务价值统计窗口"
+          />
+        }
+      >
+        <Space direction="vertical" size="middle" className="page-stack">
+          <Space wrap>
+            <Tag>草稿 {value.data?.drafts_total ?? 0}</Tag>
+            <Tag color="blue">
+              {draftStateLabels.AUTO_ACCEPTED}{" "}
+              {value.data?.drafts_auto_accepted ?? 0}
+            </Tag>
+            <Tag color="gold">
+              {draftStateLabels.NEEDS_REVIEW} {value.data?.drafts_pending ?? 0}
+            </Tag>
+            <Tag color="green">
+              {draftStateLabels.ACCEPTED} {value.data?.drafts_accepted ?? 0}
+            </Tag>
+            <Tag color="cyan">
+              {draftStateLabels.EDITED_AND_ACCEPTED}{" "}
+              {value.data?.drafts_edited_and_accepted ?? 0}
+            </Tag>
+            <Tag color="red">
+              {draftStateLabels.REJECTED} {value.data?.drafts_rejected ?? 0}
+            </Tag>
+            <Tag color="purple">
+              {draftStateLabels.ESCALATED} {value.data?.drafts_escalated ?? 0}
+            </Tag>
+          </Space>
+          <Row gutter={[16, 16]}>
+            <Col xs={12} md={6}>
+              <Statistic
+                title="草稿采纳率"
+                value={rateText(value.data?.adoption_rate)}
+              />
+            </Col>
+            <Col xs={12} md={6}>
+              <Statistic
+                title="采纳后编辑率"
+                value={rateText(value.data?.edit_rate)}
+              />
+            </Col>
+            <Col xs={12} md={6}>
+              <Statistic
+                title="单会话模型成本"
+                value={moneyText(value.data?.cost_per_conversation)}
+              />
+            </Col>
+            <Col xs={12} md={6}>
+              <Statistic
+                title="单采纳草稿成本"
+                value={moneyText(value.data?.cost_per_adopted_draft)}
+              />
+            </Col>
+          </Row>
+          <Text type="secondary">
+            窗口内工单 {value.data?.tickets_created ?? 0}，会话{" "}
+            {value.data?.conversations_created ?? 0}，模型调用{" "}
+            {value.data?.model_calls ?? 0} 次、Token{" "}
+            {value.data?.model_tokens ?? 0}、估算费用{" "}
+            {Number(value.data?.estimated_cost ?? 0).toFixed(4)}。采纳率只统计人工已审核草稿（
+            {value.data?.drafts_reviewed ?? 0} 份），自动通过与待审核草稿不计入分母。
+          </Text>
+          {Object.keys(value.data?.grounding_counts ?? {}).length > 0 && (
+            <Space wrap>
+              {Object.entries(value.data?.grounding_counts ?? {}).map(
+                ([status, count]) => (
+                  <Tag key={status}>
+                    {groundingStatusLabels[status] ?? status} {count}
+                  </Tag>
+                ),
+              )}
+            </Space>
+          )}
+          {value.isError && (
+            <Text type="danger">
+              业务价值指标加载失败，请检查指标查看权限或后端服务状态。
+            </Text>
+          )}
+        </Space>
+      </Card>
 
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={13}>

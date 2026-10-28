@@ -2,6 +2,34 @@ import { expect, test, type Page } from "@playwright/test";
 
 const now = new Date().toISOString();
 
+function valueMetricsBody(days: number): Record<string, unknown> {
+  const empty = days <= 7;
+  return {
+    business_unit_id: "bu_demo",
+    days,
+    from_at: now,
+    to_at: now,
+    tickets_created: empty ? 0 : 4,
+    conversations_created: empty ? 0 : 2,
+    drafts_total: empty ? 0 : 8,
+    drafts_auto_accepted: empty ? 0 : 2,
+    drafts_pending: empty ? 0 : 2,
+    drafts_accepted: empty ? 0 : 4,
+    drafts_edited_and_accepted: empty ? 0 : 1,
+    drafts_rejected: empty ? 0 : 1,
+    drafts_escalated: 0,
+    drafts_reviewed: empty ? 0 : 6,
+    adoption_rate: empty ? null : 0.8333,
+    edit_rate: empty ? null : 0.2,
+    model_calls: empty ? 0 : 6,
+    model_tokens: empty ? 0 : 1500,
+    estimated_cost: empty ? 0 : 0.01,
+    cost_per_conversation: empty ? null : 0.005,
+    cost_per_adopted_draft: empty ? null : 0.002,
+    grounding_counts: empty ? {} : { GROUNDED: 6, NO_KNOWLEDGE: 2 },
+  };
+}
+
 async function mockOperations(page: Page): Promise<void> {
   await page.route(
     "**/api/v1/metrics/tools?business_unit_id=bu_demo",
@@ -213,6 +241,19 @@ async function mockOperations(page: Page): Promise<void> {
           judge_model: "rule",
           judge_calls: 2,
         }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/customer-service/value-metrics?**",
+    async (route) => {
+      const days = Number(
+        new URL(route.request().url()).searchParams.get("days") ?? "30",
+      );
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(valueMetricsBody(days)),
       });
     },
   );
@@ -464,6 +505,76 @@ test("运行与审计在演示嵌入模式下提示检索质量不代表语义�
   await page.goto("/operations");
   await expect(page.getByText(/检索模型 local-hash-256/)).toBeVisible();
   await expect(page.getByText(/本地哈希演示模式/)).toBeVisible();
+});
+
+test("运行与审计展示草稿采纳率与单次采纳成本", async ({ page }) => {
+  await mockOperations(page);
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/operations");
+  const card = page.locator(".section-card", {
+    hasText: "业务价值（近 30 天）",
+  });
+  await expect(card).toBeVisible();
+  await expect(card.getByText("83%", { exact: true })).toBeVisible();
+  await expect(card.getByText("20%", { exact: true })).toBeVisible();
+  await expect(card.getByText("0.0050", { exact: true })).toBeVisible();
+  await expect(card.getByText("0.0020", { exact: true })).toBeVisible();
+  await expect(card.getByText("已采纳 4")).toBeVisible();
+  await expect(card.getByText("已自动通过 2")).toBeVisible();
+  await expect(card.getByText("等待审核 2")).toBeVisible();
+  await expect(card.getByText("有知识依据 6")).toBeVisible();
+  await expect(card.getByText("无知识依据 2")).toBeVisible();
+  await expect(
+    card.getByText(/采纳率只统计人工已审核草稿（6 份）/),
+  ).toBeVisible();
+});
+
+test("运行与审计业务价值窗口为空时显示占位符", async ({ page }) => {
+  await mockOperations(page);
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/operations");
+  const card = page.locator(".section-card", {
+    hasText: "业务价值（近 30 天）",
+  });
+  await expect(card).toBeVisible();
+  await card
+    .locator(".ant-select")
+    .filter({
+      has: page.getByRole("combobox", { name: "业务价值统计窗口" }),
+    })
+    .click();
+  await page.locator('.ant-select-item-option[title="近 7 天"]').click();
+  const weekly = page.locator(".section-card", {
+    hasText: "业务价值（近 7 天）",
+  });
+  await expect(weekly).toBeVisible();
+  await expect(weekly.getByText("草稿 0", { exact: true })).toBeVisible();
+  await expect(
+    weekly.getByText("-", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(weekly.getByText(/估算费用 0.0000/)).toBeVisible();
+});
+
+test("运行与审计业务价值接口失败时提示错误", async ({ page }) => {
+  await mockOperations(page);
+  await page.route(
+    "**/api/v1/customer-service/value-metrics?**",
+    async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "value metrics unavailable" }),
+      });
+    },
+  );
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/operations");
+  await expect(
+    page.getByText(
+      "业务价值指标加载失败，请检查指标查看权限或后端服务状态。",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("部分运行数据加载失败")).toBeVisible();
 });
 
 test("运行与审计在语义嵌入模式下不显示演示提示", async ({ page }) => {
