@@ -25,11 +25,14 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   archiveKnowledgeDocument,
+  createAnswerQualityRepairTask,
   createKnowledgeDocument,
   createKnowledgeEvaluationCase,
   createKnowledgeSpace,
   createKnowledgeVersion,
   getAnswerQualitySummary,
+  getKnowledgeGaps,
+  listAnswerQualityIssues,
   listAnswerQualitySamples,
   listDigitalEmployees,
   listKnowledgeDocuments,
@@ -52,6 +55,7 @@ import {
   uploadKnowledgeVersion,
 } from "./api";
 import type {
+  AnswerQualityIssue,
   AnswerQualitySample,
   AnswerQualityVerdict,
   KnowledgeDocument,
@@ -59,6 +63,8 @@ import type {
   KnowledgeEvaluationDataset,
   KnowledgeFeedback,
   KnowledgeFeedbackCluster,
+  KnowledgeGapItem,
+  KnowledgeGapSource,
   KnowledgeHit,
   KnowledgeRepairTask,
   KnowledgeSpace,
@@ -368,6 +374,31 @@ const repairStatusLabels: Record<
   CLOSED: { label: "已关闭", color: "green" },
 };
 
+const qualityVerdictLabels: Record<
+  AnswerQualityVerdict,
+  { label: string; color: string }
+> = {
+  CORRECT: { label: "正确", color: "green" },
+  PARTIAL: { label: "部分正确", color: "gold" },
+  INCORRECT: { label: "错误", color: "red" },
+};
+
+const knowledgeGapSourceLabels: Record<
+  KnowledgeGapSource,
+  { label: string; color: string }
+> = {
+  REPAIR_TASK: { label: "修复任务", color: "blue" },
+  NEGATIVE_FEEDBACK: { label: "负反馈", color: "volcano" },
+  SPOT_CHECK: { label: "抽检未通过", color: "magenta" },
+};
+
+const gapPriorityColors: Record<string, string> = {
+  P0: "red",
+  P1: "orange",
+  P2: "gold",
+  P3: "default",
+};
+
 type FaqImportRow = {
   rowNumber: number;
   question: string;
@@ -526,6 +557,7 @@ export default function KnowledgePage({
   );
   const [qualityHallucinated, setQualityHallucinated] = useState(false);
   const [qualityNote, setQualityNote] = useState("");
+  const [gapDays, setGapDays] = useState(30);
 
   const spaces = useQuery({
     queryKey: ["knowledge", "spaces"],
@@ -565,6 +597,16 @@ export default function KnowledgePage({
     queryKey: ["knowledge", "answer-quality", "samples", qualityDays],
     queryFn: () => listAnswerQualitySamples(qualityDays, 10),
     enabled: section === "answer-quality",
+  });
+  const qualityIssues = useQuery({
+    queryKey: ["knowledge", "answer-quality", "issues", qualityDays],
+    queryFn: () => listAnswerQualityIssues(qualityDays, 10),
+    enabled: section === "answer-quality",
+  });
+  const knowledgeGaps = useQuery({
+    queryKey: ["knowledge", "gaps", gapDays],
+    queryFn: () => getKnowledgeGaps(gapDays, 10),
+    enabled: section === "repairs",
   });
   const feedback = useQuery({
     queryKey: ["knowledge", "feedback"],
@@ -858,6 +900,21 @@ export default function KnowledgePage({
       resetQualityForm();
       queryClient.invalidateQueries({
         queryKey: ["knowledge", "answer-quality"],
+      });
+      queryClient.invalidateQueries({ queryKey: ["knowledge", "gaps"] });
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+  const createRepairFromIssue = useMutation({
+    mutationFn: (draftId: string) => createAnswerQualityRepairTask(draftId),
+    onSuccess: () => {
+      message.success("已生成知识修复任务，可在“修复与反馈”中处理");
+      queryClient.invalidateQueries({
+        queryKey: ["knowledge", "answer-quality"],
+      });
+      queryClient.invalidateQueries({ queryKey: ["knowledge", "gaps"] });
+      queryClient.invalidateQueries({
+        queryKey: ["knowledge", "repair-tasks"],
       });
     },
     onError: (error: Error) => message.error(error.message),
@@ -1600,6 +1657,138 @@ export default function KnowledgePage({
         ),
     },
   ];
+  const answerQualityIssueColumns: ColumnsType<AnswerQualityIssue> = [
+    {
+      title: "工单",
+      dataIndex: "ticket_subject",
+      width: 180,
+      render: (value: string) => (
+        <Text ellipsis={{ tooltip: value }} style={{ maxWidth: 160 }}>
+          {value}
+        </Text>
+      ),
+    },
+    {
+      title: "抽检结论",
+      dataIndex: "verdict",
+      width: 100,
+      render: (value: AnswerQualityVerdict) => (
+        <Tag color={qualityVerdictLabels[value]?.color}>
+          {qualityVerdictLabels[value]?.label ?? value}
+        </Tag>
+      ),
+    },
+    {
+      title: "幻觉",
+      dataIndex: "hallucinated",
+      width: 80,
+      render: (value: boolean) =>
+        value ? <Tag color="red">有</Tag> : <Text type="secondary">无</Text>,
+    },
+    {
+      title: "备注",
+      dataIndex: "note",
+      render: (value: string | null) =>
+        value ? (
+          <Text ellipsis={{ tooltip: value }} style={{ maxWidth: 220 }}>
+            {value}
+          </Text>
+        ) : (
+          <Text type="secondary">-</Text>
+        ),
+    },
+    {
+      title: "抽检时间",
+      dataIndex: "evaluated_at",
+      width: 160,
+      render: (value: string) => new Date(value).toLocaleString("zh-CN"),
+    },
+    {
+      title: "修复任务",
+      width: 160,
+      render: (_, record) => {
+        if (record.repair_task_id) {
+          const status = repairStatusLabels[record.repair_task_status ?? ""];
+          return (
+            <Tag color={status?.color ?? "default"}>
+              {status?.label ?? record.repair_task_status ?? "已关联"}
+            </Tag>
+          );
+        }
+        return canWriteKnowledge ? (
+          <Button
+            size="small"
+            loading={
+              createRepairFromIssue.isPending &&
+              createRepairFromIssue.variables === record.draft_id
+            }
+            onClick={() => createRepairFromIssue.mutate(record.draft_id)}
+          >
+            生成修复任务
+          </Button>
+        ) : (
+          <Text type="secondary">只读</Text>
+        );
+      },
+    },
+  ];
+  const knowledgeGapColumns: ColumnsType<KnowledgeGapItem> = [
+    {
+      title: "来源",
+      dataIndex: "source",
+      width: 110,
+      render: (value: KnowledgeGapSource) => (
+        <Tag color={knowledgeGapSourceLabels[value]?.color}>
+          {knowledgeGapSourceLabels[value]?.label ?? value}
+        </Tag>
+      ),
+    },
+    {
+      title: "缺口主题",
+      dataIndex: "title",
+      render: (value: string, record) => (
+        <div>
+          <Text ellipsis={{ tooltip: value }} style={{ maxWidth: 320 }}>
+            {value}
+          </Text>
+          <Paragraph
+            type="secondary"
+            ellipsis={{ rows: 1, tooltip: record.query }}
+            style={{ marginBottom: 0, maxWidth: 320 }}
+          >
+            {record.query}
+          </Paragraph>
+        </div>
+      ),
+    },
+    {
+      title: "次数",
+      dataIndex: "count",
+      width: 70,
+    },
+    {
+      title: "优先级",
+      dataIndex: "priority",
+      width: 90,
+      render: (value: string) => (
+        <Tag color={gapPriorityColors[value] ?? "default"}>{value}</Tag>
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 100,
+      render: (value: string | null) => {
+        if (!value) return <Text type="secondary">-</Text>;
+        const status = repairStatusLabels[value];
+        return (
+          <Tag color={status?.color ?? "default"}>
+            {status?.label ?? value}
+          </Tag>
+        );
+      },
+    },
+  ];
   const latestEvaluation = evaluationRuns.data?.items[0];
   const latestEvaluationBaseline = latestEvaluation?.baseline ?? {};
   const latestUnresolvedPassages = (latestEvaluation?.results ?? []).flatMap(
@@ -2145,6 +2334,55 @@ export default function KnowledgePage({
       </Card>
 
       <Card
+        title="知识缺口 Top 10"
+        extra={
+          <Space>
+            <Text type="secondary">{knowledgeGaps.data?.total ?? 0} 条</Text>
+            <Select
+              aria-label="缺口统计窗口"
+              value={gapDays}
+              onChange={setGapDays}
+              options={[
+                { value: 7, label: "近 7 天" },
+                { value: 30, label: "近 30 天" },
+                { value: 90, label: "近 90 天" },
+              ]}
+              style={{ width: 120 }}
+            />
+          </Space>
+        }
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="缺口清单口径"
+          description="合并待修复/修复中的修复任务、负反馈聚类，以及当前窗口内未生成修复任务的抽检失败记录；按出现次数从高到低排序，次数相同按优先级 P0→P3。修复任务与负反馈代表当前积压，不按时间窗口过滤。"
+          style={{ marginBottom: 16 }}
+        />
+        {knowledgeGaps.isError && (
+          <Alert
+            type="error"
+            showIcon
+            message="知识缺口清单加载失败，请检查指标查看权限或后端服务状态。"
+            style={{ marginBottom: 16 }}
+          />
+        )}
+        <Table
+          rowKey={(record) =>
+            `${record.source}:${record.repair_task_id ?? record.query}:${
+              record.status ?? ""
+            }`
+          }
+          size="small"
+          columns={knowledgeGapColumns}
+          dataSource={knowledgeGaps.data?.items}
+          loading={knowledgeGaps.isLoading}
+          pagination={false}
+          locale={{ emptyText: <Empty description="当前没有待补录的知识缺口" /> }}
+        />
+      </Card>
+
+      <Card
         title="知识使用反馈"
         extra={<Text type="secondary">{feedback.data?.total ?? 0} 条</Text>}
       >
@@ -2289,6 +2527,41 @@ export default function KnowledgePage({
                 emptyText: (
                   <Empty description="当前窗口内没有待抽检的已采纳草稿" />
                 ),
+              }}
+            />
+          </Card>
+          <Card
+            title="最近未通过抽检"
+            extra={
+              <Text type="secondary">
+                {qualityIssues.data?.total ?? 0} 条
+              </Text>
+            }
+          >
+            <Alert
+              type="info"
+              showIcon
+              message="抽检未通过后如何闭环"
+              description="抽检结论为“错误”或标记了幻觉的草稿会出现在这里。点击“生成修复任务”会自动创建（或复用已有）知识修复任务，任务出现在“修复与反馈”中；修复验证通过后，该记录会显示已关联的任务状态。"
+              style={{ marginBottom: 16 }}
+            />
+            {qualityIssues.isError && (
+              <Alert
+                type="error"
+                showIcon
+                message="未通过抽检记录加载失败，请稍后重试。"
+                style={{ marginBottom: 16 }}
+              />
+            )}
+            <Table
+              rowKey="draft_id"
+              size="small"
+              columns={answerQualityIssueColumns}
+              dataSource={qualityIssues.data?.items}
+              loading={qualityIssues.isLoading}
+              pagination={{ pageSize: 8, showSizeChanger: false }}
+              locale={{
+                emptyText: <Empty description="当前窗口内没有未通过的抽检" />,
               }}
             />
           </Card>

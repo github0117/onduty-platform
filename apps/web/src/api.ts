@@ -3,9 +3,11 @@ import type {
   AgentRunTrace,
   AgentSkill,
   AnswerQualityEvaluation,
+  AnswerQualityIssueList,
   AnswerQualitySampleList,
   AnswerQualitySummary,
   AnswerQualityVerdict,
+  KnowledgeGapList,
   BusinessServiceEntry,
   AgentPresence,
   AgentPresenceList,
@@ -1902,6 +1904,36 @@ export function recordAnswerQualityEvaluation(input: {
       note: input.note || null,
     }),
   });
+}
+
+export function listAnswerQualityIssues(
+  days = 30,
+  limit = 10,
+): Promise<AnswerQualityIssueList> {
+  return request(
+    `/api/v1/knowledge/answer-evaluations/issues?business_unit_id=bu_demo&days=${days}&limit=${limit}`,
+  );
+}
+
+export function createAnswerQualityRepairTask(
+  draftId: string,
+): Promise<KnowledgeRepairTask> {
+  return request(
+    `/api/v1/knowledge/answer-evaluations/${draftId}/repair-task`,
+    {
+      method: "POST",
+      body: JSON.stringify({ business_unit_id: "bu_demo" }),
+    },
+  );
+}
+
+export function getKnowledgeGaps(
+  days = 30,
+  limit = 10,
+): Promise<KnowledgeGapList> {
+  return request(
+    `/api/v1/knowledge/gaps?business_unit_id=bu_demo&days=${days}&limit=${limit}`,
+  );
 }
 
 export function listKnowledgeFeedback(): Promise<KnowledgeFeedbackList> {

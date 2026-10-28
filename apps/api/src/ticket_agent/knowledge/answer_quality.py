@@ -11,17 +11,23 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ticket_agent.knowledge.models import KnowledgeRepairTask
+from ticket_agent.knowledge.repair_service import KnowledgeRepairService
 from ticket_agent.knowledge.schemas import (
     AnswerQualityEvaluationCreate,
     AnswerQualityEvaluationView,
+    AnswerQualityIssueList,
+    AnswerQualityIssueView,
     AnswerQualitySampleList,
     AnswerQualitySampleView,
     AnswerQualitySummary,
+    KnowledgeRepairTaskView,
 )
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.tickets.models import AnswerDraft, AnswerQualityEvaluation, Ticket
@@ -118,6 +124,145 @@ class AnswerQualityService:
             items=items,
             pending_total=self._pending_count(conditions),
         )
+
+    def _failed_conditions(
+        self,
+        *,
+        business_unit_id: str,
+        from_at: datetime,
+        to_at: datetime,
+    ) -> list[Any]:
+        return [
+            Ticket.business_unit_id == business_unit_id,
+            AnswerQualityEvaluation.created_at >= from_at,
+            AnswerQualityEvaluation.created_at <= to_at,
+            or_(
+                AnswerQualityEvaluation.verdict == "INCORRECT",
+                AnswerQualityEvaluation.hallucinated.is_(True),
+            ),
+        ]
+
+    def issues(
+        self,
+        *,
+        business_unit_id: str,
+        days: int,
+        limit: int,
+    ) -> AnswerQualityIssueList:
+        from_at, to_at = self._window(days)
+        conditions = self._failed_conditions(
+            business_unit_id=business_unit_id,
+            from_at=from_at,
+            to_at=to_at,
+        )
+        rows = self.session.execute(
+            select(AnswerQualityEvaluation, AnswerDraft, Ticket)
+            .join(AnswerDraft, AnswerDraft.id == AnswerQualityEvaluation.draft_id)
+            .join(Ticket, Ticket.id == AnswerDraft.ticket_id)
+            .where(*conditions)
+            .order_by(AnswerQualityEvaluation.created_at.desc())
+            .limit(limit)
+        ).all()
+        task_ids = [
+            evaluation.repair_task_id
+            for evaluation, _, _ in rows
+            if evaluation.repair_task_id is not None
+        ]
+        statuses: dict[UUID, str] = {}
+        if task_ids:
+            status_rows = self.session.execute(
+                select(KnowledgeRepairTask.id, KnowledgeRepairTask.status).where(
+                    KnowledgeRepairTask.id.in_(task_ids)
+                )
+            ).all()
+            statuses = {task_id: status for task_id, status in status_rows}
+        items = [
+            AnswerQualityIssueView(
+                draft_id=draft.id,
+                evaluation_id=evaluation.id,
+                ticket_id=ticket.id,
+                ticket_subject=ticket.subject,
+                draft_text=draft.text,
+                verdict=evaluation.verdict,
+                hallucinated=evaluation.hallucinated,
+                note=evaluation.note,
+                evaluated_at=evaluation.created_at,
+                repair_task_id=evaluation.repair_task_id,
+                repair_task_status=(
+                    statuses.get(evaluation.repair_task_id)
+                    if evaluation.repair_task_id is not None
+                    else None
+                ),
+            )
+            for evaluation, draft, ticket in rows
+        ]
+        total = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AnswerQualityEvaluation)
+                .join(AnswerDraft, AnswerDraft.id == AnswerQualityEvaluation.draft_id)
+                .join(Ticket, Ticket.id == AnswerDraft.ticket_id)
+                .where(*conditions)
+            )
+            or 0
+        )
+        return AnswerQualityIssueList(items=items, total=total)
+
+    def create_repair_task(
+        self,
+        *,
+        draft_id: UUID,
+        business_unit_id: str,
+        actor_id: str,
+    ) -> KnowledgeRepairTaskView:
+        evaluation = self.session.scalar(
+            select(AnswerQualityEvaluation).where(
+                AnswerQualityEvaluation.draft_id == draft_id
+            )
+        )
+        draft = self.session.get(AnswerDraft, draft_id)
+        ticket = (
+            self.session.get(Ticket, draft.ticket_id) if draft is not None else None
+        )
+        if (
+            evaluation is None
+            or draft is None
+            or ticket is None
+            or evaluation.business_unit_id != business_unit_id
+            or ticket.business_unit_id != business_unit_id
+        ):
+            raise ApiProblem(
+                status_code=404,
+                code="ANSWER_EVALUATION_NOT_FOUND",
+                title="Answer quality evaluation not found",
+                detail="The spot check does not exist in this business unit.",
+            )
+        if evaluation.verdict != "INCORRECT" and not evaluation.hallucinated:
+            raise ApiProblem(
+                status_code=409,
+                code="ANSWER_QUALITY_REPAIR_NOT_REQUIRED",
+                title="Answer quality repair is not required",
+                detail="Only incorrect or hallucinated answers can open a repair task.",
+                context={"verdict": evaluation.verdict},
+            )
+        repairs = KnowledgeRepairService(self.session)
+        if evaluation.repair_task_id is not None:
+            existing_task = repairs.get(evaluation.repair_task_id)
+            return repairs.view(existing_task)
+        task = repairs.create_from_feedback(
+            business_unit_id=business_unit_id,
+            knowledge_space_id=None,
+            title=f"答案抽检未通过：{ticket.subject[:120]}",
+            query=ticket.subject,
+            reason_code=(
+                "WRONG_ANSWER" if evaluation.hallucinated else "MISSING_KNOWLEDGE"
+            ),
+            created_by=actor_id,
+        )
+        evaluation.repair_task_id = task.id
+        self.session.commit()
+        self.session.refresh(evaluation)
+        return repairs.view(task)
 
     def summary(self, *, business_unit_id: str, days: int) -> AnswerQualitySummary:
         from_at, to_at = self._window(days)
@@ -269,6 +414,7 @@ class AnswerQualityService:
             draft_id=evaluation.draft_id,
             verdict=evaluation.verdict,
             hallucinated=evaluation.hallucinated,
+            repair_task_id=evaluation.repair_task_id,
             note=evaluation.note,
             evaluator_ref=evaluation.evaluator_ref,
             created_at=evaluation.created_at,

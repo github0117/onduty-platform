@@ -126,6 +126,11 @@
   `GET /api/v1/knowledge/answer-evaluations/summary`、
   `GET .../samples`（需要 `operations.view`）和
   `POST /api/v1/knowledge/answer-evaluations`（需要 `knowledge.write`）。
+- 抽检结论为错误或标记幻觉时进入“最近未通过抽检”清单，可通过
+  `POST /api/v1/knowledge/answer-evaluations/{draft_id}/repair-task` 生成（或复用）
+  知识修复任务，任务与抽检结论相互关联；仅失败结论可开任务，重复请求幂等。
+  “修复与反馈”页的“知识缺口 Top 10”通过 `GET /api/v1/knowledge/gaps` 合并
+  待办修复任务、负反馈聚类和窗口内未生成任务的抽检失败，按次数与优先级排序。
 
 ## 业务入口、员工复用与前端视图
 

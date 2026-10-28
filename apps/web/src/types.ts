@@ -1228,6 +1228,47 @@ export interface AnswerQualitySummary {
   hallucination_rate: number | null;
 }
 
+export interface AnswerQualityIssue {
+  draft_id: string;
+  evaluation_id: string;
+  ticket_id: string;
+  ticket_subject: string;
+  draft_text: string;
+  verdict: AnswerQualityVerdict;
+  hallucinated: boolean;
+  note: string | null;
+  evaluated_at: string;
+  repair_task_id: string | null;
+  repair_task_status: string | null;
+}
+
+export interface AnswerQualityIssueList {
+  items: AnswerQualityIssue[];
+  total: number;
+}
+
+export type KnowledgeGapSource =
+  | "REPAIR_TASK"
+  | "NEGATIVE_FEEDBACK"
+  | "SPOT_CHECK";
+
+export interface KnowledgeGapItem {
+  source: KnowledgeGapSource;
+  title: string;
+  query: string;
+  count: number;
+  priority: string;
+  status: string | null;
+  repair_task_id: string | null;
+  draft_id: string | null;
+  knowledge_space_id: string | null;
+}
+
+export interface KnowledgeGapList {
+  items: KnowledgeGapItem[];
+  total: number;
+}
+
 export interface AnswerQualityEvaluation {
   id: string;
   business_unit_id: string;

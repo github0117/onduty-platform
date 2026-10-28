@@ -1,9 +1,10 @@
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
+from ticket_agent.knowledge.models import KnowledgeFeedback, KnowledgeRepairTask
 from ticket_agent.shared.db import SessionLocal
 from ticket_agent.tickets.models import AnswerDraft, AnswerQualityEvaluation, Ticket
 
@@ -36,6 +37,7 @@ def _adopted_draft(
     business_unit_id: str = "bu_demo",
     created_at: datetime | None = None,
     text: str = "已采纳的客服草稿",
+    subject: str = "答案质量抽检工单",
 ) -> AnswerDraft:
     ticket = Ticket(
         business_unit_id=business_unit_id,
@@ -45,7 +47,7 @@ def _adopted_draft(
         idempotency_key=f"answer-quality-{uuid4()}",
         request_hash="0" * 64,
         requester_ref="quality-customer",
-        subject="答案质量抽检工单",
+        subject=subject,
         body="用于抽检回答质量。",
         created_at=created_at or datetime.now(UTC),
     )
@@ -359,3 +361,313 @@ def test_existing_evaluation_is_reused_not_duplicated(client: TestClient) -> Non
     ).json()
     assert summary["verdict_counts"] == {"CORRECT": 1}
     assert summary["hallucination_rate"] == 0.0
+
+
+def _record(
+    client: TestClient,
+    draft_id: str | UUID,
+    verdict: str,
+    *,
+    hallucinated: bool = False,
+    headers: dict[str, str] | None = None,
+) -> dict:
+    response = client.post(
+        "/api/v1/knowledge/answer-evaluations",
+        headers=headers or OPERATOR,
+        json={
+            "business_unit_id": "bu_demo",
+            "draft_id": str(draft_id),
+            "verdict": verdict,
+            "hallucinated": hallucinated,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_issues_only_list_failed_checks_in_window(client: TestClient) -> None:
+    now = datetime.now(UTC)
+    with SessionLocal() as session:
+        passed = _adopted_draft(session, created_at=now, subject="通过抽检工单")
+        failed = _adopted_draft(
+            session, created_at=now - timedelta(days=1), subject="错误抽检工单"
+        )
+        hallucinated = _adopted_draft(
+            session, created_at=now - timedelta(days=2), subject="幻觉抽检工单"
+        )
+        old = _adopted_draft(
+            session, created_at=now - timedelta(days=40), subject="过期抽检工单"
+        )
+        other = _adopted_draft(
+            session,
+            business_unit_id="bu_other",
+            subject="其他业务单元抽检工单",
+        )
+        session.flush()
+        session.add_all(
+            [
+                AnswerQualityEvaluation(
+                    business_unit_id="bu_other",
+                    draft_id=other.id,
+                    verdict="INCORRECT",
+                    hallucinated=False,
+                    evaluator_ref="other-reviewer",
+                ),
+                AnswerQualityEvaluation(
+                    business_unit_id="bu_demo",
+                    draft_id=old.id,
+                    verdict="INCORRECT",
+                    hallucinated=False,
+                    evaluator_ref="old-reviewer",
+                    created_at=now - timedelta(days=40),
+                ),
+            ]
+        )
+        session.commit()
+        ids = {
+            "passed": str(passed.id),
+            "failed": str(failed.id),
+            "hallucinated": str(hallucinated.id),
+            "old": str(old.id),
+            "other": str(other.id),
+        }
+
+    _record(client, ids["passed"], "CORRECT")
+    _record(client, ids["failed"], "INCORRECT")
+    _record(client, ids["hallucinated"], "PARTIAL", hallucinated=True)
+
+    response = client.get(
+        "/api/v1/knowledge/answer-evaluations/issues"
+        "?business_unit_id=bu_demo&days=30&limit=10",
+        headers=OPERATOR,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["total"] == 2
+    assert [item["draft_id"] for item in payload["items"]] == [
+        ids["hallucinated"],
+        ids["failed"],
+    ]
+    assert payload["items"][0]["hallucinated"] is True
+    assert payload["items"][1]["ticket_subject"] == "错误抽检工单"
+    assert payload["items"][1]["verdict"] == "INCORRECT"
+    assert all(item["repair_task_id"] is None for item in payload["items"])
+
+    limited = client.get(
+        "/api/v1/knowledge/answer-evaluations/issues"
+        "?business_unit_id=bu_demo&days=30&limit=1",
+        headers=OPERATOR,
+    ).json()
+    assert limited["total"] == 2
+    assert len(limited["items"]) == 1
+
+
+def test_failed_spot_check_opens_one_repair_task(client: TestClient) -> None:
+    now = datetime.now(UTC)
+    with SessionLocal() as session:
+        incorrect = _adopted_draft(session, created_at=now, subject="错误答案工单")
+        hallucinated = _adopted_draft(session, created_at=now, subject="幻觉答案工单")
+        passed = _adopted_draft(session, created_at=now, subject="正确答案工单")
+        session.commit()
+        incorrect_id = str(incorrect.id)
+        hallucinated_id = str(hallucinated.id)
+        passed_id = str(passed.id)
+
+    _record(client, incorrect_id, "INCORRECT")
+    _record(client, hallucinated_id, "PARTIAL", hallucinated=True)
+    _record(client, passed_id, "CORRECT")
+
+    created = client.post(
+        f"/api/v1/knowledge/answer-evaluations/{incorrect_id}/repair-task",
+        headers=OPERATOR,
+        json={"business_unit_id": "bu_demo"},
+    )
+    assert created.status_code == 200, created.text
+    task = created.json()
+    assert task["status"] == "OPEN"
+    assert task["priority"] == "P2"
+    assert task["title"] == "答案抽检未通过：错误答案工单"
+    assert task["query"] == "错误答案工单"
+    assert task["created_by"] == "knowledge-operator-quality"
+
+    repeated = client.post(
+        f"/api/v1/knowledge/answer-evaluations/{incorrect_id}/repair-task",
+        headers=OPERATOR,
+        json={"business_unit_id": "bu_demo"},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["id"] == task["id"]
+
+    hallucinated_task = client.post(
+        f"/api/v1/knowledge/answer-evaluations/{hallucinated_id}/repair-task",
+        headers=OPERATOR,
+        json={"business_unit_id": "bu_demo"},
+    )
+    assert hallucinated_task.status_code == 200
+    assert hallucinated_task.json()["id"] != task["id"]
+    assert hallucinated_task.json()["priority"] == "P1"
+
+    not_required = client.post(
+        f"/api/v1/knowledge/answer-evaluations/{passed_id}/repair-task",
+        headers=OPERATOR,
+        json={"business_unit_id": "bu_demo"},
+    )
+    assert not_required.status_code == 409
+    assert not_required.json()["code"] == "ANSWER_QUALITY_REPAIR_NOT_REQUIRED"
+
+    missing = client.post(
+        f"/api/v1/knowledge/answer-evaluations/{uuid4()}/repair-task",
+        headers=OPERATOR,
+        json={"business_unit_id": "bu_demo"},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "ANSWER_EVALUATION_NOT_FOUND"
+
+    cross_unit = client.post(
+        f"/api/v1/knowledge/answer-evaluations/{hallucinated_id}/repair-task",
+        headers=OPERATOR,
+        json={"business_unit_id": "bu_other"},
+    )
+    assert cross_unit.status_code == 403
+    assert cross_unit.json()["code"] == "BUSINESS_UNIT_ACCESS_DENIED"
+
+    agent_write = client.post(
+        f"/api/v1/knowledge/answer-evaluations/{hallucinated_id}/repair-task",
+        headers=AGENT,
+        json={"business_unit_id": "bu_demo"},
+    )
+    assert agent_write.status_code == 403
+
+    issues = client.get(
+        "/api/v1/knowledge/answer-evaluations/issues?business_unit_id=bu_demo",
+        headers=OPERATOR,
+    ).json()
+    linked = {
+        item["draft_id"]: item["repair_task_id"] for item in issues["items"]
+    }
+    assert linked[incorrect_id] == task["id"]
+    assert linked[hallucinated_id] == hallucinated_task.json()["id"]
+
+
+def test_gaps_merge_repair_feedback_and_spot_checks(client: TestClient) -> None:
+    now = datetime.now(UTC)
+    with SessionLocal() as session:
+        open_task = KnowledgeRepairTask(
+            business_unit_id="bu_demo",
+            status="OPEN",
+            priority="P1",
+            title="知识评测失败：退款政策",
+            query="退款政策是什么",
+            expected_titles_json=[],
+            returned_titles_json=[],
+            created_by="seed",
+        )
+        closed_task = KnowledgeRepairTask(
+            business_unit_id="bu_demo",
+            status="CLOSED",
+            priority="P2",
+            title="已关闭的修复任务",
+            query="已关闭的问题",
+            expected_titles_json=[],
+            returned_titles_json=[],
+            created_by="seed",
+        )
+        session.add_all([open_task, closed_task])
+        session.add_all(
+            [
+                KnowledgeFeedback(
+                    business_unit_id="bu_demo",
+                    query="退货运费谁承担",
+                    rating="NEGATIVE",
+                    reason_code="WRONG_ANSWER",
+                    created_by="customer",
+                ),
+                KnowledgeFeedback(
+                    business_unit_id="bu_demo",
+                    query="发票怎么开",
+                    rating="NEGATIVE",
+                    reason_code="MISSING_KNOWLEDGE",
+                    created_by="customer",
+                ),
+            ]
+        )
+        unlinked = _adopted_draft(session, created_at=now, subject="未链接抽检工单")
+        linked = _adopted_draft(session, created_at=now, subject="已链接抽检工单")
+        session.flush()
+        session.add(
+            AnswerQualityEvaluation(
+                business_unit_id="bu_demo",
+                draft_id=linked.id,
+                verdict="INCORRECT",
+                hallucinated=False,
+                evaluator_ref="reviewer",
+                repair_task_id=open_task.id,
+            )
+        )
+        session.commit()
+        unlinked_id = str(unlinked.id)
+        open_task_id = str(open_task.id)
+
+    _record(client, unlinked_id, "INCORRECT")
+
+    response = client.get(
+        "/api/v1/knowledge/gaps?business_unit_id=bu_demo&days=30&limit=10",
+        headers=SUPERVISOR,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    sources = [item["source"] for item in payload["items"]]
+    assert payload["total"] == 4
+    assert sources.count("NEGATIVE_FEEDBACK") == 2
+    assert sources.count("REPAIR_TASK") == 1
+    assert sources.count("SPOT_CHECK") == 1
+
+    spot = next(
+        item for item in payload["items"] if item["source"] == "SPOT_CHECK"
+    )
+    assert spot["title"] == "答案抽检未通过：未链接抽检工单"
+    assert spot["draft_id"] is None
+    assert spot["repair_task_id"] is None
+
+    repair = next(
+        item for item in payload["items"] if item["source"] == "REPAIR_TASK"
+    )
+    assert repair["repair_task_id"] == open_task_id
+    assert repair["status"] == "OPEN"
+
+    feedback = [
+        item for item in payload["items"] if item["source"] == "NEGATIVE_FEEDBACK"
+    ]
+    wrong_answer = next(
+        item for item in feedback if item["query"] == "退货运费谁承担"
+    )
+    assert wrong_answer["priority"] == "P1"
+    assert all(item["title"] != "已关闭的修复任务" for item in payload["items"])
+
+    limited = client.get(
+        "/api/v1/knowledge/gaps?business_unit_id=bu_demo&limit=2",
+        headers=SUPERVISOR,
+    ).json()
+    assert limited["total"] == 4
+    assert len(limited["items"]) == 2
+
+    agent = client.get(
+        "/api/v1/knowledge/gaps?business_unit_id=bu_demo",
+        headers=AGENT,
+    )
+    assert agent.status_code == 403
+
+    cross_unit = client.get(
+        "/api/v1/knowledge/gaps?business_unit_id=bu_other",
+        headers=SUPERVISOR,
+    )
+    assert cross_unit.status_code == 403
+
+    for days in ("0", "91"):
+        assert (
+            client.get(
+                f"/api/v1/knowledge/gaps?business_unit_id=bu_demo&days={days}",
+                headers=SUPERVISOR,
+            ).status_code
+            == 422
+        )

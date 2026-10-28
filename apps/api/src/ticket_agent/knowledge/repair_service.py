@@ -109,6 +109,13 @@ class KnowledgeRepairService:
         created_by: str,
     ) -> KnowledgeRepairTask:
         normalized_query = normalize_repair_query(query)
+        self._lock_dedup_key(
+            repair_dedup_key(
+                business_unit_id=business_unit_id,
+                knowledge_space_id=knowledge_space_id,
+                query=normalized_query,
+            )
+        )
         existing = self._find_reusable(
             business_unit_id=business_unit_id,
             knowledge_space_id=knowledge_space_id,
@@ -140,6 +147,22 @@ class KnowledgeRepairService:
         self.session.commit()
         self.session.refresh(task)
         return task
+
+    def _lock_dedup_key(self, key: str) -> None:
+        """Serialize repair task creation for the same dedup key.
+
+        Deduplication reads before inserting, so concurrent requests would
+        otherwise each miss the existing row and create a duplicate task.
+        PostgreSQL advisory locks are transaction scoped and released on
+        commit; other dialects fall back to the sequential behavior.
+        """
+
+        bind = self.session.get_bind()
+        if bind.dialect.name != "postgresql":
+            return
+        self.session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext(key)))
+        )
 
     def _find_reusable(
         self,

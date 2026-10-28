@@ -124,6 +124,56 @@ const qualitySummary = {
   hallucination_rate: 0.5,
 };
 
+const qualityIssue = {
+  draft_id: "draft-quality-failed",
+  evaluation_id: "evaluation-quality-failed",
+  ticket_id: "ticket-quality-failed",
+  ticket_subject: "保温杯漏水能否只换配件",
+  draft_text: "漏水只能整单退款，不能换配件。",
+  verdict: "INCORRECT",
+  hallucinated: true,
+  note: "条款引用错误",
+  evaluated_at: now,
+  repair_task_id: null,
+  repair_task_status: null,
+};
+
+const knowledgeGaps = [
+  {
+    source: "REPAIR_TASK",
+    title: "售后政策未召回",
+    query: "漏水如何退换",
+    count: 5,
+    priority: "P1",
+    status: "OPEN",
+    repair_task_id: "repair-e2e",
+    draft_id: null,
+    knowledge_space_id: space.id,
+  },
+  {
+    source: "NEGATIVE_FEEDBACK",
+    title: "负反馈：WRONG_ANSWER",
+    query: "发票怎么开",
+    count: 3,
+    priority: "P1",
+    status: null,
+    repair_task_id: null,
+    draft_id: null,
+    knowledge_space_id: space.id,
+  },
+  {
+    source: "SPOT_CHECK",
+    title: "答案抽检未通过：保温杯漏水能否只换配件",
+    query: "保温杯漏水能否只换配件",
+    count: 1,
+    priority: "P1",
+    status: null,
+    repair_task_id: null,
+    draft_id: null,
+    knowledge_space_id: null,
+  },
+];
+
 async function mockKnowledgePage(
   page: Page,
   options: {
@@ -133,6 +183,10 @@ async function mockKnowledgePage(
     qualitySamples?: unknown[];
     qualityPending?: number;
     qualitySummaryError?: boolean;
+    qualityIssues?: unknown[];
+    qualityIssuesError?: boolean;
+    gaps?: unknown[];
+    gapsError?: boolean;
   } = {},
 ): Promise<void> {
   await page.route(
@@ -248,6 +302,41 @@ async function mockKnowledgePage(
       });
     },
   );
+  await page.route(
+    "**/api/v1/knowledge/answer-evaluations/issues?**",
+    async (route) => {
+      if (options.qualityIssuesError) {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "抽检记录服务不可用" }),
+        });
+        return;
+      }
+      const items = options.qualityIssues ?? [];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items, total: items.length }),
+      });
+    },
+  );
+  await page.route("**/api/v1/knowledge/gaps?**", async (route) => {
+    if (options.gapsError) {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "缺口清单服务不可用" }),
+      });
+      return;
+    }
+    const items = options.gaps ?? [];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items, total: items.length }),
+    });
+  });
 }
 
 async function openKnowledge(
@@ -1332,11 +1421,111 @@ test("答案抽检指标接口失败时提示错误", async ({ page }) => {
 
 test("审计员只能查看抽检队列不能提交结论", async ({ page }) => {
   await useIdentity(page, "auditor");
-  await mockKnowledgePage(page);
+  await mockKnowledgePage(page, { qualityIssues: [qualityIssue] });
   await page.goto("/knowledge/answer-quality");
   await expect(
     page.getByRole("heading", { name: "知识库 · 答案抽检" }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /抽\s*检/ })).toHaveCount(0);
-  await expect(page.getByRole("table").getByText("只读")).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成修复任务" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("table").getByText("只读")).toHaveCount(2);
+});
+
+test("抽检未通过记录可生成修复任务并回显任务状态", async ({ page }) => {
+  await mockKnowledgePage(page, { qualityIssues: [qualityIssue] });
+  let linked = false;
+  const postPromise = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().endsWith(
+        "/api/v1/knowledge/answer-evaluations/draft-quality-failed/repair-task",
+      ),
+  );
+  await page.route(
+    "**/api/v1/knowledge/answer-evaluations/*/repair-task",
+    async (route) => {
+      linked = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(repairTask("OPEN")),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/knowledge/answer-evaluations/issues?**",
+    async (route) => {
+      const items = [
+        linked
+          ? { ...qualityIssue, repair_task_id: "repair-e2e", repair_task_status: "OPEN" }
+          : qualityIssue,
+      ];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items, total: items.length }),
+      });
+    },
+  );
+  await openKnowledge(page, "/knowledge/answer-quality");
+  await expect(page.getByText("最近未通过抽检")).toBeVisible();
+  await expect(page.getByText("条款引用错误")).toBeVisible();
+  await page.getByRole("button", { name: "生成修复任务" }).click();
+  expect((await postPromise).postDataJSON()).toEqual({
+    business_unit_id: "bu_demo",
+  });
+  await expect(
+    page.getByText("已生成知识修复任务，可在“修复与反馈”中处理"),
+  ).toBeVisible();
+  await expect(page.getByText("待修复")).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成修复任务" })).toHaveCount(
+    0,
+  );
+});
+
+test("未通过抽检记录接口失败时提示错误", async ({ page }) => {
+  await mockKnowledgePage(page, { qualityIssuesError: true });
+  await openKnowledge(page, "/knowledge/answer-quality");
+  await expect(
+    page.getByText("未通过抽检记录加载失败，请稍后重试。"),
+  ).toBeVisible();
+});
+
+test("知识缺口清单合并三种来源并支持切换统计窗口", async ({ page }) => {
+  await mockKnowledgePage(page, { gaps: knowledgeGaps });
+  await openKnowledge(page, "/knowledge/repairs");
+  const gapCard = page
+    .locator(".ant-card")
+    .filter({ hasText: "知识缺口 Top 10" });
+  const rows = gapCard.locator("tbody tr.ant-table-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0)).toContainText("修复任务");
+  await expect(rows.nth(0)).toContainText("售后政策未召回");
+  await expect(rows.nth(1)).toContainText("负反馈");
+  await expect(rows.nth(2)).toContainText("抽检未通过");
+  await expect(gapCard.getByText("3 条")).toBeVisible();
+
+  const daysPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/knowledge/gaps") &&
+      request.url().includes("days=7"),
+  );
+  await page
+    .locator(".ant-select")
+    .filter({ has: page.getByRole("combobox", { name: "缺口统计窗口" }) })
+    .click();
+  await page.locator('.ant-select-item-option[title="近 7 天"]').click();
+  await daysPromise;
+});
+
+test("知识缺口清单接口失败时提示错误", async ({ page }) => {
+  await mockKnowledgePage(page, { gapsError: true });
+  await openKnowledge(page, "/knowledge/repairs");
+  await expect(
+    page.getByText(
+      "知识缺口清单加载失败，请检查指标查看权限或后端服务状态。",
+    ),
+  ).toBeVisible();
 });

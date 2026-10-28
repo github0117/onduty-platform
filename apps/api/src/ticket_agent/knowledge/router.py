@@ -20,6 +20,7 @@ from ticket_agent.identity.models import Principal
 from ticket_agent.knowledge.answer_quality import AnswerQualityService
 from ticket_agent.knowledge.evaluation_service import KnowledgeEvaluationService
 from ticket_agent.knowledge.feedback_service import KnowledgeFeedbackService
+from ticket_agent.knowledge.gaps import KnowledgeGapService
 from ticket_agent.knowledge.metrics import RagMetricsService, embedding_quality
 from ticket_agent.knowledge.models import (
     KnowledgeDocument,
@@ -34,6 +35,8 @@ from ticket_agent.knowledge.repair_service import KnowledgeRepairService
 from ticket_agent.knowledge.schemas import (
     AnswerQualityEvaluationCreate,
     AnswerQualityEvaluationView,
+    AnswerQualityIssueList,
+    AnswerQualityRepairRequest,
     AnswerQualitySampleList,
     AnswerQualitySummary,
     EmployeeKnowledgeBindingReplace,
@@ -52,6 +55,7 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeFeedbackCreate,
     KnowledgeFeedbackList,
     KnowledgeFeedbackView,
+    KnowledgeGapList,
     KnowledgeHitView,
     KnowledgePublishRequest,
     KnowledgeReindexJobList,
@@ -217,6 +221,65 @@ def record_answer_quality_evaluation(
     return AnswerQualityService(db).record(
         payload,
         actor_id=principal.actor_id,
+    )
+
+
+@router.get(
+    "/knowledge/answer-evaluations/issues",
+    response_model=AnswerQualityIssueList,
+)
+def list_answer_quality_issues(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> AnswerQualityIssueList:
+    ensure_metrics_viewer(principal)
+    business_unit_id = resolve_business_unit(principal, business_unit_id)
+    return AnswerQualityService(db).issues(
+        business_unit_id=business_unit_id,
+        days=days,
+        limit=limit,
+    )
+
+
+@router.post(
+    "/knowledge/answer-evaluations/{draft_id}/repair-task",
+    response_model=KnowledgeRepairTaskView,
+)
+def create_answer_quality_repair_task(
+    draft_id: UUID,
+    payload: AnswerQualityRepairRequest,
+    db: DbSession,
+    principal: Actor,
+) -> KnowledgeRepairTaskView:
+    ensure_knowledge_admin(principal)
+    ensure_business_unit_access(principal, payload.business_unit_id)
+    return AnswerQualityService(db).create_repair_task(
+        draft_id=draft_id,
+        business_unit_id=payload.business_unit_id,
+        actor_id=principal.actor_id,
+    )
+
+
+@router.get(
+    "/knowledge/gaps",
+    response_model=KnowledgeGapList,
+)
+def get_knowledge_gaps(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> KnowledgeGapList:
+    ensure_metrics_viewer(principal)
+    business_unit_id = resolve_business_unit(principal, business_unit_id)
+    return KnowledgeGapService(db).summary(
+        business_unit_id=business_unit_id,
+        days=days,
+        limit=limit,
     )
 
 

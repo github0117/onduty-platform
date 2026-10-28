@@ -497,6 +497,7 @@ class AnswerQualityEvaluationView(BaseModel):
     draft_id: UUID
     verdict: str
     hallucinated: bool
+    repair_task_id: UUID | None = None
     note: str | None
     evaluator_ref: str
     created_at: datetime
@@ -530,6 +531,49 @@ class AnswerQualitySummary(BaseModel):
     verdict_counts: dict[str, int]
     correctness_rate: float | None
     hallucination_rate: float | None
+
+
+class AnswerQualityRepairRequest(BaseModel):
+    business_unit_id: str = Field(default="bu_demo", min_length=1, max_length=64)
+
+
+class AnswerQualityIssueView(BaseModel):
+    draft_id: UUID
+    evaluation_id: UUID
+    ticket_id: UUID
+    ticket_subject: str
+    draft_text: str
+    verdict: str
+    hallucinated: bool
+    note: str | None
+    evaluated_at: datetime
+    repair_task_id: UUID | None
+    repair_task_status: str | None
+
+
+class AnswerQualityIssueList(BaseModel):
+    items: list[AnswerQualityIssueView]
+    total: int
+
+
+KnowledgeGapSource = Literal["REPAIR_TASK", "NEGATIVE_FEEDBACK", "SPOT_CHECK"]
+
+
+class KnowledgeGapItem(BaseModel):
+    source: KnowledgeGapSource
+    title: str
+    query: str
+    count: int
+    priority: str
+    status: str | None
+    repair_task_id: UUID | None
+    draft_id: UUID | None
+    knowledge_space_id: UUID | None
+
+
+class KnowledgeGapList(BaseModel):
+    items: list[KnowledgeGapItem]
+    total: int
 
 
 class RagMetricsResponse(BaseModel):

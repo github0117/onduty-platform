@@ -148,6 +148,12 @@ class AnswerQualityEvaluation(Base):
     )
     verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     hallucinated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    repair_task_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("knowledge_repair_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     note: Mapped[str | None] = mapped_column(Text)
     evaluator_ref: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
