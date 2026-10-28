@@ -451,6 +451,9 @@ export default function KnowledgePage({
     useState("");
   const [evaluationNegativeDocumentIds, setEvaluationNegativeDocumentIds] =
     useState("");
+  const [evaluationPassages, setEvaluationPassages] = useState<
+    { documentId: string; text: string }[]
+  >([]);
   const [evaluationScope, setEvaluationScope] = useState("{}");
   const [evaluationNoGrounding, setEvaluationNoGrounding] = useState(false);
   const [evaluationDataset, setEvaluationDataset] =
@@ -653,6 +656,15 @@ export default function KnowledgePage({
       } catch {
         throw new Error("检索上下文必须是 JSON 对象");
       }
+      const passages = evaluationPassages
+        .map((passage) => ({
+          documentId: passage.documentId.trim(),
+          text: passage.text.trim(),
+        }))
+        .filter((passage) => passage.documentId && passage.text);
+      if (passages.length !== evaluationPassages.length) {
+        throw new Error("段落期望需要同时选择文档并填写原文片段");
+      }
       return createKnowledgeEvaluationCase({
         name: evaluationName,
         query: evaluationQuery,
@@ -666,6 +678,7 @@ export default function KnowledgePage({
         negativeDocumentIds: splitMultiline(
           evaluationNegativeDocumentIds,
         ),
+        expectedPassages: passages,
         expectNoGrounding: evaluationNoGrounding,
         scope,
       });
@@ -685,6 +698,7 @@ export default function KnowledgePage({
       setEvaluationExpectedChunkIds("");
       setEvaluationExpectedDocumentIds("");
       setEvaluationNegativeDocumentIds("");
+      setEvaluationPassages([]);
       setEvaluationScope("{}");
       setEvaluationNoGrounding(false);
       if (returnToEvaluation) setEvaluationDataset("TUNING");
@@ -1180,8 +1194,10 @@ export default function KnowledgePage({
         const chunkIds = record.expected_chunk_ids ?? [];
         const documentIds = record.expected_document_ids ?? [];
         const negativeIds = record.negative_document_ids ?? [];
+        const passages = record.expected_passages ?? [];
         const parts = [
           titles.length ? `${titles.length} 个标题` : "",
+          passages.length ? `${passages.length} 段原文` : "",
           chunkIds.length ? `${chunkIds.length} 个分块` : "",
           documentIds.length ? `${documentIds.length} 份文档` : "",
         ].filter(Boolean);
@@ -1191,6 +1207,16 @@ export default function KnowledgePage({
             {titles.length > 0 && (
               <Text type="secondary" ellipsis={{ tooltip: titles.join("、") }}>
                 {titles.join("、")}
+              </Text>
+            )}
+            {passages.length > 0 && (
+              <Text
+                type="secondary"
+                ellipsis={{
+                  tooltip: passages.map((item) => item.text).join("；"),
+                }}
+              >
+                段落：{passages[0].text}
               </Text>
             )}
             {negativeIds.length > 0 && (
@@ -1443,6 +1469,13 @@ export default function KnowledgePage({
   ];
   const latestEvaluation = evaluationRuns.data?.items[0];
   const latestEvaluationBaseline = latestEvaluation?.baseline ?? {};
+  const latestUnresolvedPassages = (latestEvaluation?.results ?? []).flatMap(
+    (result) =>
+      (result.unresolved_passages ?? []).map((passage) => ({
+        query: result.query,
+        reason: passage.reason,
+      })),
+  );
   const repairRelatedCases = useMemo(() => {
     const cases = new Map<string, KnowledgeEvaluationCase>();
     for (const item of [
@@ -1896,10 +1929,23 @@ export default function KnowledgePage({
                     `文档 Recall@K ${latestEvaluation.document_recall_at_k?.toFixed(3) ?? "-"}`,
                     `文档 MRR ${latestEvaluation.document_mrr?.toFixed(3) ?? "-"}`,
                     `上下文精确率 ${latestEvaluation.context_precision?.toFixed(3) ?? "-"}`,
+                    `平均上下文 ${latestEvaluation.avg_context_chars?.toFixed(1) ?? "-"} 字符 / 约 ${latestEvaluation.avg_context_tokens?.toFixed(0) ?? "-"} token`,
                     `禁止召回违规率 ${latestEvaluation.negative_violation_rate?.toFixed(3) ?? "-"}`,
                     `正确拒答率 ${latestEvaluation.no_grounding_accuracy?.toFixed(3) ?? "-"}`,
                   ].join(" · ")}
                 </Text>
+                {latestUnresolvedPassages.length > 0 && (
+                  <Text type="danger">
+                    未解析段落 {latestUnresolvedPassages.length} 条：
+                    {latestUnresolvedPassages
+                      .slice(0, 3)
+                      .map(
+                        (item) =>
+                          `${item.query}（${item.reason === "text_not_found" ? "原文未找到" : "文档未索引"}）`,
+                      )
+                      .join("；")}
+                  </Text>
+                )}
                 <Text type="secondary">
                   配置快照：embedding {latestEvaluationBaseline.embedding_model ?? "-"}
                   {latestEvaluationBaseline.embedding_dimensions
@@ -2255,15 +2301,26 @@ export default function KnowledgePage({
         }}
         onOk={() => createEvaluation.mutate()}
         confirmLoading={createEvaluation.isPending}
+        okText="创建案例"
+        width={640}
+        styles={{
+          body: { maxHeight: "60vh", overflowY: "auto", paddingRight: 8 },
+        }}
         okButtonProps={{
           disabled:
             !evaluationName.trim() ||
             !evaluationQuery.trim() ||
             !evaluationSpaceId ||
+            (evaluationPassages.length > 0 &&
+              !evaluationPassages.every(
+                (passage) =>
+                  passage.documentId.trim() && passage.text.trim(),
+              )) ||
             (!evaluationNoGrounding &&
               !evaluationExpectedTitles.trim() &&
               !evaluationExpectedChunkIds.trim() &&
-              !evaluationExpectedDocumentIds.trim()),
+              !evaluationExpectedDocumentIds.trim() &&
+              evaluationPassages.length === 0),
         }}
       >
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -2314,6 +2371,81 @@ export default function KnowledgePage({
             value={evaluationExpectedTitles}
             onChange={(event) => setEvaluationExpectedTitles(event.target.value)}
           />
+          <Space direction="vertical" size={4} style={{ width: "100%" }}>
+            <Text strong>段落级期望（推荐）</Text>
+            <Text type="secondary">
+              选择文档并填写原文片段；运行时按当前生效版本的分块文本解析，
+              重建索引或切换分块后无需改用例。段落存在时期望优先于分块 ID。
+            </Text>
+            {evaluationPassages.map((passage, index) => (
+              <Space.Compact
+                key={index}
+                style={{ width: "100%", display: "flex" }}
+              >
+                <Select
+                  aria-label={`段落期望文档 ${index + 1}`}
+                  style={{ flex: 1, minWidth: 160 }}
+                  value={passage.documentId || undefined}
+                  placeholder="选择文档"
+                  options={(documents.data ?? [])
+                    .filter(
+                      (item) =>
+                        !evaluationSpaceId ||
+                        item.space_id === evaluationSpaceId,
+                    )
+                    .map((item) => ({
+                      value: item.id,
+                      label: item.title,
+                    }))}
+                  onChange={(value: string) =>
+                    setEvaluationPassages((previous) =>
+                      previous.map((item, position) =>
+                        position === index
+                          ? { ...item, documentId: value }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+                <Input
+                  aria-label={`段落期望原文 ${index + 1}`}
+                  placeholder="原文片段，例如：签收后七天内可以申请退款"
+                  value={passage.text}
+                  onChange={(event) =>
+                    setEvaluationPassages((previous) =>
+                      previous.map((item, position) =>
+                        position === index
+                          ? { ...item, text: event.target.value }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+                <Button
+                  aria-label={`删除段落期望 ${index + 1}`}
+                  onClick={() =>
+                    setEvaluationPassages((previous) =>
+                      previous.filter((_item, position) => position !== index),
+                    )
+                  }
+                >
+                  删除
+                </Button>
+              </Space.Compact>
+            ))}
+            <Button
+              size="small"
+              disabled={evaluationPassages.length >= 20}
+              onClick={() =>
+                setEvaluationPassages((previous) => [
+                  ...previous,
+                  { documentId: "", text: "" },
+                ])
+              }
+            >
+              添加段落期望
+            </Button>
+          </Space>
           <TextArea
             rows={2}
             placeholder="预期命中的分块 ID，一行一个（可选，用于分块级 Recall/MRR）"
@@ -2345,7 +2477,8 @@ export default function KnowledgePage({
               Boolean(
                 evaluationExpectedTitles.trim() ||
                   evaluationExpectedChunkIds.trim() ||
-                  evaluationExpectedDocumentIds.trim(),
+                  evaluationExpectedDocumentIds.trim() ||
+                  evaluationPassages.length,
               )
             }
           >

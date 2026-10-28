@@ -40,7 +40,7 @@ def test_fresh_sqlite_migrations_normalize_employee_ids(
         ).fetchone()
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert revision == ("f0b7a2c9d4e1",)
+    assert revision == ("b7e2c4a9f105",)
     assert default_employee == ("00000000000000000000000000000101",)
     assert violations == []
 
@@ -132,6 +132,6 @@ def test_evaluation_dataset_migration_backfills_legacy_cases_to_holdout(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
 
-    assert revision == ("f0b7a2c9d4e1",)
+    assert revision == ("b7e2c4a9f105",)
     assert legacy_case == ("HOLDOUT", "[]", "[]", "[]")
     assert legacy_run == ("TUNING", None)

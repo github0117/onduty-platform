@@ -12,8 +12,10 @@ from ticket_agent.knowledge.evaluation import (
     score_evaluation,
     threshold_failures,
 )
-from ticket_agent.knowledge.evaluation_service import KnowledgeEvaluationService
-from ticket_agent.knowledge.models import KnowledgeEvaluationCase
+from ticket_agent.knowledge.evaluation_service import (
+    KnowledgeEvaluationService,
+    build_evaluation_cases,
+)
 from ticket_agent.knowledge.service import KnowledgeService
 from ticket_agent.shared.db import SessionLocal
 
@@ -47,6 +49,12 @@ def main() -> None:
     parser.add_argument("--min-context-precision", type=float)
     parser.add_argument("--min-no-grounding-accuracy", type=float)
     parser.add_argument("--max-negative-violation-rate", type=float)
+    parser.add_argument(
+        "--max-unresolved-passages",
+        type=int,
+        default=0,
+        help="Fail when passage expectations no longer resolve (default 0).",
+    )
     args = parser.parse_args()
     if args.top_k < 1:
         parser.error("--top-k must be positive")
@@ -56,7 +64,7 @@ def main() -> None:
     with SessionLocal() as session:
         service = KnowledgeService(session)
         if args.business_unit is not None:
-            entries = _cases_from_database(
+            entries, unresolved_passages = _cases_from_database(
                 session,
                 business_unit_id=args.business_unit,
                 knowledge_space_id=args.space_id,
@@ -68,6 +76,7 @@ def main() -> None:
                 for line in args.dataset.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
+            unresolved_passages = 0
         results = [
             service.search(
                 query=case.query,
@@ -84,7 +93,15 @@ def main() -> None:
         results,
         top_k=args.top_k,
     )
+    report["unresolved_passage_count"] = unresolved_passages
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if unresolved_passages > args.max_unresolved_passages:
+        print(
+            "threshold failure: unresolved_passage_count "
+            f"{unresolved_passages} > maximum {args.max_unresolved_passages}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
     minimums = {
         key: value
@@ -122,35 +139,25 @@ def _cases_from_database(
     business_unit_id: str,
     knowledge_space_id: UUID | None,
     dataset: str,
-) -> list[tuple[EvaluationCase, UUID | None, UUID | None]]:
-    rows = KnowledgeEvaluationService(session).list_cases(
-        business_unit_id=business_unit_id,
-        knowledge_space_id=knowledge_space_id,
-        dataset=dataset,
-    )
-    return [
-        (_case_from_row(row), row.knowledge_space_id, row.employee_id)
-        for row in rows
+) -> tuple[
+    list[tuple[EvaluationCase, UUID | None, UUID | None]],
+    int,
+]:
+    rows = [
+        row
+        for row in KnowledgeEvaluationService(session).list_cases(
+            business_unit_id=business_unit_id,
+            knowledge_space_id=knowledge_space_id,
+            dataset=dataset,
+        )
         if row.enabled
     ]
-
-
-def _case_from_row(row: KnowledgeEvaluationCase) -> EvaluationCase:
-    return EvaluationCase(
-        query=row.query,
-        business_unit_id=row.business_unit_id,
-        expected_titles=list(row.expected_titles_json or []),
-        expect_no_grounding=row.expect_no_grounding,
-        scope=dict(row.scope_json or {}),
-        dataset=row.dataset,
-        expected_chunk_ids=[str(item) for item in row.expected_chunk_ids_json or []],
-        expected_document_ids=[
-            str(item) for item in row.expected_document_ids_json or []
-        ],
-        negative_document_ids=[
-            str(item) for item in row.negative_document_ids_json or []
-        ],
-    )
+    cases, unresolved = build_evaluation_cases(session, rows)
+    entries = [
+        (case, row.knowledge_space_id, row.employee_id)
+        for case, row in zip(cases, rows, strict=True)
+    ]
+    return entries, sum(len(items) for items in unresolved.values())
 
 
 def _parse_case(line: str) -> EvaluationCase:

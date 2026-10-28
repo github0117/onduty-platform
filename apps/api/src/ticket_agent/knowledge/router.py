@@ -19,7 +19,7 @@ from ticket_agent.identity.dependencies import (
 from ticket_agent.identity.models import Principal
 from ticket_agent.knowledge.evaluation_service import KnowledgeEvaluationService
 from ticket_agent.knowledge.feedback_service import KnowledgeFeedbackService
-from ticket_agent.knowledge.metrics import RagMetricsService
+from ticket_agent.knowledge.metrics import RagMetricsService, embedding_quality
 from ticket_agent.knowledge.models import (
     KnowledgeDocument,
     KnowledgeEvaluationCase,
@@ -936,7 +936,13 @@ def get_rag_metrics(
         from_at=from_at,
         to_at=to_at,
         embedding_model=knowledge_service.embedding_provider.name,
+        embedding_quality=embedding_quality(
+            knowledge_service.embedding_provider.name
+        ),
         reindex_pending_versions=reindex_service.pending_version_count(
+            business_unit_id
+        ),
+        stale_evaluation_chunk_refs=reindex_service.stale_evaluation_chunk_refs(
             business_unit_id
         ),
     )

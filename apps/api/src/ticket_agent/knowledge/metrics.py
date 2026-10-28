@@ -7,6 +7,15 @@ from sqlalchemy.orm import Session
 from ticket_agent.tickets.models import AnswerDraft, Ticket
 
 
+def embedding_quality(model_name: str) -> str:
+    """Classify the effective embedding as demo-grade or semantic.
+
+    The local provider is a deterministic feature hash: it is good enough for
+    demos and regression tests, but it is not a semantic model.
+    """
+    return "demo" if model_name.startswith("local-hash") else "semantic"
+
+
 class RagMetricsService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -18,7 +27,9 @@ class RagMetricsService:
         from_at: datetime | None = None,
         to_at: datetime | None = None,
         embedding_model: str = "",
+        embedding_quality: str = "demo",
         reindex_pending_versions: int = 0,
+        stale_evaluation_chunk_refs: int = 0,
     ) -> dict[str, object]:
         statement = select(AnswerDraft, Ticket).join(
             Ticket,
@@ -86,6 +97,8 @@ class RagMetricsService:
             "semantic_unsupported_claim_count": semantic_unsupported_claim_count,
             "provider_counts": dict(providers),
             "embedding_model": embedding_model,
+            "embedding_quality": embedding_quality,
             "reindex_pending_versions": reindex_pending_versions,
+            "stale_evaluation_chunk_refs": stale_evaluation_chunk_refs,
         }
 

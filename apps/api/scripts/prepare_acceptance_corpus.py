@@ -142,7 +142,10 @@ def _evaluation(index: int, dataset: str) -> dict[str, object]:
         "expected_document_id": (
             None if no_answer else document["id"]
         ),
-        "expect_chunk": not no_answer and index % 3 == 0,
+        # Alternate the two expectation styles so the gate covers both the
+        # reindex-remapped chunk ids and the text-resolved passages.
+        "expect_passage": not no_answer and index % 3 == 0,
+        "expect_chunk": not no_answer and index % 3 == 1,
         "should_refuse": no_answer,
         "synthetic": True,
     }

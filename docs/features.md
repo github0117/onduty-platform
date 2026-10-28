@@ -42,8 +42,34 @@
   `GET /knowledge/reindex-jobs` 查询，全程留存审计。
 - 嵌入不再静默回退：关闭 `embedding_fallback_to_local` 时远端失败直接报错、
   版本不落库；开启时按真实使用的本地模型名与 `embedding_fallback_used` 标记
-  写入，避免向量空间混用。`/metrics/rag` 增加 `embedding_model` 与
-  `reindex_pending_versions`，模型切换后未重建的版本可被观测。
+  写入，避免向量空间混用。`/metrics/rag` 增加 `embedding_model`、
+  `embedding_quality` 与 `reindex_pending_versions`，模型切换后未重建的版本
+  可被观测。
+- 语义嵌入是推荐配置（`.env.example` 默认指向 DashScope `text-embedding-v3`）。
+  未配置 `EMBEDDING_BASE_URL`/`EMBEDDING_API_KEY` 时不会每次请求都去撞远端，
+  而是直接使用本地 `local-hash-256` 演示模式：`embedding_quality=demo`，
+  运营页显示橙色提示“检索质量不代表语义检索水平”；自托管无鉴权端点需显式
+  设置 `EMBEDDING_ALLOW_EMPTY_API_KEY=true`。配置密钥后必须重建索引。
+- 检索结果是给模型看的上下文，不是搜索结果页：同一文档内近乎重复的段落会被
+  去重（完全相同或包含且长度比 ≥ 0.8），总字符数受
+  `KNOWLEDGE_CONTEXT_MAX_CHARS`（默认 5000，0 为不限）约束，避免重复段落
+  占用 token 和引用位。可用 `KNOWLEDGE_CONTEXT_PRUNE_ENABLED=false` 关闭。
+- 评测用例支持段落级期望（`expected_passages`：文档 ID + 原文片段）。运行评测
+  时按当前生效版本的 chunk 文本解析出 chunk ID，因此重建索引、切换分块版本都不会
+  让用例失效；段落存在时优先于显式 `expected_chunk_ids`。段落文本在语料中找不到
+  时，该用例判失败并在结果里给出 `unresolved_passages`，整次运行的 verdict 强制
+  为 FAIL（配置错误不能伪装成检索失败）。
+- 知识运营页可直接新建段落级期望：选择文档、填写原文片段，最多 20 条，可逐条
+  删除；评测案例列表显示“N 段原文”。最近一次评测卡片展示
+  `avg_context_chars` / `avg_context_tokens`，并把无法解析的段落以红色列出
+  （原文未找到 / 文档未索引），配置错误在页面上即可定位。
+- 重建索引会更换 chunk 主键，纯 chunk 引用的旧用例同步重映射：按文本完全
+  一致 → 旧块并入单个新块 → 旧块被拆成多个新块（取序号最小者）逐级匹配，
+  同业务单元内去重改写。HOLDOUT 是冻结集，只跟随**文本完全一致**的换主键，
+  合并/拆分匹配只用于 TUNING。带段落期望的用例不参与重映射，也不计入
+  `stale_evaluation_chunk_refs`（它们的 chunk 引用只是缓存）。无法确定的引用
+  保持原样并计入 `/metrics/rag` 的 `stale_evaluation_chunk_refs`，让评测显式
+  失败而不是悄悄弱化门禁；运营页会以红色提示展示该数量。
 - 混合检索（`KNOWLEDGE_RETRIEVAL_MODE=hybrid`，默认 `dense`）：向量召回与
   PostgreSQL 全文召回（`to_tsvector('simple')` + `ts_rank_cd`，表达式 GIN
   索引）各取候选，用 RRF 融合后再重排，兼顾语义召回与型号、单号等精确词面
@@ -63,9 +89,12 @@
 - 评测案例分为 TUNING（调参集）和 HOLDOUT（留出集）：调参集可改可删，留出集创建后
   接口级冻结（`409 HOLDOUT_CASE_IMMUTABLE`），只能按业务单元 + 数据集过滤查询；
   既有案例在迁移时回填为 HOLDOUT，既有运行回填为 TUNING。
-- 评测指标同时给出 chunk 级和文档级 Recall@K / MRR，并统计 context precision
-  和负例文档违规率；每次运行写入 `baseline_json`（数据集、top_k、嵌入模型与维度、
-  分块版本、检索模式、RRF k、重排器、查询上下文/改写开关、阈值）。
+- 评测指标同时给出 chunk 级和文档级 Recall@K / MRR，并统计 context precision、
+  平均上下文字符数与估算 token（`avg_context_chars` / `avg_context_tokens`）
+  和负例文档违规率；`/knowledge/evaluation-runs` 的每次运行也返回这两个均值
+  （由逐用例 `context_chars` 推导，早于该字段的旧运行为 `null`）。每次运行写入
+  `baseline_json`（数据集、top_k、嵌入模型与维度、分块版本、检索模式、RRF k、
+  重排器、查询上下文/改写开关、阈值）。
 - 关键知识空间可启用发布门禁：门禁只跑已启用的 HOLDOUT 案例，没有可用留出集时
   返回 `409 KNOWLEDGE_EVALUATION_HOLDOUT_EMPTY`；评测失败自动回滚候选版本、
   生成修复任务并返回 `409 KNOWLEDGE_EVALUATION_GATE_FAILED`。

@@ -1048,6 +1048,7 @@ export interface KnowledgeEvaluationCase {
   dataset: KnowledgeEvaluationDataset;
   expected_titles: string[];
   expected_chunk_ids: string[];
+  expected_passages: { document_id: string; text: string }[];
   expected_document_ids: string[];
   negative_document_ids: string[];
   expect_no_grounding: boolean;
@@ -1091,6 +1092,8 @@ export interface KnowledgeEvaluationRun {
   document_mrr: number | null;
   context_precision: number | null;
   negative_violation_rate: number | null;
+  avg_context_chars?: number | null;
+  avg_context_tokens?: number | null;
   thresholds: Record<string, number>;
   baseline: KnowledgeEvaluationBaseline;
   results: Array<{
@@ -1107,7 +1110,13 @@ export interface KnowledgeEvaluationRun {
     document_reciprocal_rank?: number | null;
     returned_document_ids?: string[];
     context_precision?: number | null;
+    context_chars?: number | null;
     negative_document_hit?: boolean | null;
+    unresolved_passages?: Array<{
+      document_id: string;
+      text: string;
+      reason: string;
+    }> | null;
   }>;
   error_message: string | null;
   created_by: string;
@@ -1294,6 +1303,10 @@ export interface RagMetrics {
   semantic_verified_claim_count: number;
   semantic_unsupported_claim_count: number;
   provider_counts: Record<string, number>;
+  embedding_model: string;
+  embedding_quality: "demo" | "semantic";
+  reindex_pending_versions: number;
+  stale_evaluation_chunk_refs: number;
 }
 
 export interface WorkforceMetrics {

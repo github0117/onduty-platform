@@ -237,6 +237,25 @@ class ProductKnowledgeSyncResult(BaseModel):
 KnowledgeEvaluationDataset = Literal["TUNING", "HOLDOUT"]
 
 
+class KnowledgeEvaluationPassage(BaseModel):
+    """A ground-truth text fragment inside one document.
+
+    Storing the text instead of a chunk id keeps the case valid across
+    reindexes and chunking changes; the chunk is resolved at run time.
+    """
+
+    document_id: UUID
+    text: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("text")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("passage text must not be blank")
+        return cleaned
+
+
 class KnowledgeEvaluationCaseCreate(BaseModel):
     business_unit_id: str = Field(min_length=1, max_length=64)
     knowledge_space_id: UUID | None = None
@@ -246,6 +265,9 @@ class KnowledgeEvaluationCaseCreate(BaseModel):
     dataset: KnowledgeEvaluationDataset = "TUNING"
     expected_titles: list[str] = Field(default_factory=list, max_length=20)
     expected_chunk_ids: list[UUID] = Field(default_factory=list, max_length=50)
+    expected_passages: list[KnowledgeEvaluationPassage] = Field(
+        default_factory=list, max_length=20
+    )
     expected_document_ids: list[UUID] = Field(default_factory=list, max_length=20)
     negative_document_ids: list[UUID] = Field(default_factory=list, max_length=20)
     expect_no_grounding: bool = False
@@ -268,6 +290,7 @@ class KnowledgeEvaluationCaseCreate(BaseModel):
         if self.expect_no_grounding and (
             self.expected_titles
             or self.expected_chunk_ids
+            or self.expected_passages
             or self.expected_document_ids
         ):
             raise ValueError(
@@ -286,6 +309,7 @@ class KnowledgeEvaluationCaseView(BaseModel):
     dataset: KnowledgeEvaluationDataset
     expected_titles: list[str]
     expected_chunk_ids: list[UUID]
+    expected_passages: list[KnowledgeEvaluationPassage]
     expected_document_ids: list[UUID]
     negative_document_ids: list[UUID]
     expect_no_grounding: bool
@@ -302,6 +326,9 @@ class KnowledgeEvaluationCaseUpdate(BaseModel):
     dataset: KnowledgeEvaluationDataset | None = None
     expected_titles: list[str] | None = Field(default=None, max_length=20)
     expected_chunk_ids: list[UUID] | None = Field(default=None, max_length=50)
+    expected_passages: list[KnowledgeEvaluationPassage] | None = Field(
+        default=None, max_length=20
+    )
     expected_document_ids: list[UUID] | None = Field(default=None, max_length=20)
     negative_document_ids: list[UUID] | None = Field(default=None, max_length=20)
     expect_no_grounding: bool | None = None
@@ -354,6 +381,8 @@ class KnowledgeEvaluationRunView(BaseModel):
     document_mrr: float | None
     context_precision: float | None
     negative_violation_rate: float | None
+    avg_context_chars: float | None = None
+    avg_context_tokens: float | None = None
     thresholds: dict[str, Any]
     baseline: dict[str, Any]
     results: list[dict[str, Any]]
@@ -469,7 +498,11 @@ class RagMetricsResponse(BaseModel):
     semantic_unsupported_claim_count: int
     provider_counts: dict[str, int]
     embedding_model: str
+    # "demo" means the local feature-hash embedding: retrieval works but is not
+    # semantic, so the UI must not present it as production quality.
+    embedding_quality: Literal["demo", "semantic"]
     reindex_pending_versions: int
+    stale_evaluation_chunk_refs: int
 
 
 class KnowledgeReindexRequest(BaseModel):

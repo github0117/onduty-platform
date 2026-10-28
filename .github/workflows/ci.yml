@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_quality_gate:
+        description: "Run the semantic-embedding quality baseline (needs EMBEDDING_API_KEY)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -76,6 +82,8 @@ jobs:
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
       - run: uv run alembic upgrade head
+      - name: Detect model/migration drift
+        run: uv run alembic check
       - run: uv run pytest tests/integration/test_postgres_pgvector.py -q
 
   rag-gate:
@@ -125,6 +133,43 @@ jobs:
         run: >-
           uv run python scripts/seed_acceptance_corpus.py --reset
           http://127.0.0.1:8000 /tmp/acceptance-corpus
+      - name: Assert seeded corpus invariants
+        run: |
+          uv run python - <<'PY'
+          import json
+          import urllib.parse
+          import urllib.request
+
+          base = "http://127.0.0.1:8000/api/v1"
+          headers = {
+              "X-Actor-Id": "ci-gate",
+              "X-Actor-Role": "admin",
+              "X-Business-Unit-Id": "bu_acceptance",
+          }
+
+          def get(path: str, **params: str):
+              url = f"{base}{path}"
+              if params:
+                  url += "?" + urllib.parse.urlencode(params)
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          metrics = get("/metrics/rag")
+          assert metrics["reindex_pending_versions"] == 0, metrics
+          assert metrics["stale_evaluation_chunk_refs"] == 0, metrics
+          assert metrics["embedding_model"] == "local-hash-256", metrics
+          assert metrics["embedding_quality"] == "demo", metrics
+
+          counts = {}
+          for dataset in ("TUNING", "HOLDOUT"):
+              cases = get(
+                  "/knowledge/evaluation-cases", dataset=dataset
+              )
+              counts[dataset] = len(cases)
+          assert counts == {"TUNING": 80, "HOLDOUT": 50}, counts
+          print("rag gate invariants ok", metrics["embedding_model"], counts)
+          PY
       - name: Evaluate frozen HOLDOUT dataset with thresholds
         run: |
           uv run python scripts/evaluate_rag.py \
@@ -138,12 +183,91 @@ jobs:
             --min-chunk-mrr 0.9 \
             --min-document-mrr 0.9 \
             --min-context-precision 0.15 \
-            --min-no-grounding-accuracy 1.0
+            --min-no-grounding-accuracy 1.0 \
+            --max-unresolved-passages 0
       - name: Upload API log
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: rag-gate-api-log
+          path: apps/api/api.log
+          retention-days: 7
+
+  rag-quality:
+    # The synthetic acceptance corpus proves "nothing broke"; it cannot prove
+    # semantic retrieval quality. This gate runs the public real-question
+    # corpus with a semantic embedding model. It needs an external key, so it
+    # is opt-in: dispatch the workflow with run_quality_gate=true after
+    # configuring EMBEDDING_API_KEY (and EMBEDDING_BASE_URL if not DashScope).
+    name: RAG semantic quality baseline
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_quality_gate }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: ticket_agent
+          POSTGRES_USER: ticket_agent
+          POSTGRES_PASSWORD: ticket_agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticket_agent -d ticket_agent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://ticket_agent:ticket_agent@localhost:5432/ticket_agent
+      APP_ENV: test
+      APP_AUTH_MODE: dev
+      TASK_MODE: inline
+      RATE_LIMIT_ENABLED: "false"
+      EMBEDDING_PROVIDER: openai_compatible
+      EMBEDDING_BASE_URL: ${{ vars.EMBEDDING_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1' }}
+      EMBEDDING_MODEL_NAME: ${{ vars.EMBEDDING_MODEL_NAME || 'text-embedding-v3' }}
+      EMBEDDING_DIMENSIONS: "256"
+      EMBEDDING_SEND_DIMENSIONS: "true"
+      EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.5"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - run: uv python install 3.11
+      - run: uv sync --all-groups --frozen
+      - run: uv run alembic upgrade head
+      - name: Fetch public real-question corpus
+        run: uv run python scripts/fetch_public_eval_corpus.py /tmp/public-corpus
+      - name: Start API
+        run: |
+          nohup uv run uvicorn ticket_agent.main:app \
+            --host 127.0.0.1 --port 8000 > api.log 2>&1 &
+          timeout 120 bash -c \
+            'until curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; do sleep 2; done'
+      - name: Seed public evaluation corpus
+        run: >-
+          uv run python scripts/seed_public_eval_corpus.py --reset
+          http://127.0.0.1:8000 /tmp/public-corpus
+      - name: Evaluate HOLDOUT with semantic embedding
+        run: |
+          uv run python scripts/evaluate_rag.py \
+            --business-unit bu_public_eval \
+            --dataset-name HOLDOUT \
+            --top-k 5 \
+            --min-chunk-recall-at-k 0.85 \
+            --min-document-recall-at-k 0.80 \
+            --min-mrr 0.60 \
+            --max-unresolved-passages 0
+      - name: Upload API log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-quality-api-log
           path: apps/api/api.log
           retention-days: 7
 

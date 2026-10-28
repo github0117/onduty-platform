@@ -152,6 +152,14 @@ def _seed_documents_and_cases(
             "dataset": item["dataset"],
             "expected_titles": [],
             "expected_chunk_ids": chunk_ids,
+            # The passage keeps the HOLDOUT case valid after a reindex or a
+            # chunking switch; chunk ids are only a legacy fallback.
+            "expected_passages": [
+                {
+                    "document_id": str(document["id"]),
+                    "text": str(item["answer"]).strip()[:120],
+                }
+            ],
             "expected_document_ids": [str(document["id"])],
             "expect_no_grounding": False,
             "scope": PUBLIC_SCOPE,

@@ -32,6 +32,7 @@ class CaseScore:
     document_reciprocal_rank: float | None
     returned_document_ids: list[str]
     context_precision: float | None
+    context_chars: int
     negative_document_hit: bool | None
     passed: bool
 
@@ -124,6 +125,8 @@ def score_evaluation(
             )
             context_precision = relevant / len(top_hits) if top_hits else 0.0
 
+        context_chars = sum(len(hit.content) for hit in top_hits)
+
         negative_hit: bool | None = None
         if negative_documents:
             negative_hit = any(
@@ -152,6 +155,7 @@ def score_evaluation(
                 document_reciprocal_rank=document_rank,
                 returned_document_ids=returned_document_ids,
                 context_precision=context_precision,
+                context_chars=context_chars,
                 negative_document_hit=negative_hit,
                 passed=passed,
             )
@@ -265,6 +269,14 @@ def score_evaluation(
             if negative_scores
             else None
         ),
+        "avg_context_chars": _mean(
+            [float(score.context_chars) for score in scored_cases]
+        ),
+        # Rough token estimate for the prompt part of retrieval; Chinese text
+        # is about 1.6 characters per token on common tokenizers.
+        "avg_context_tokens": _mean(
+            [score.context_chars / 1.6 for score in scored_cases]
+        ),
         "cases": [
             {
                 "query": score.query,
@@ -280,6 +292,7 @@ def score_evaluation(
                 "document_reciprocal_rank": score.document_reciprocal_rank,
                 "returned_document_ids": score.returned_document_ids,
                 "context_precision": score.context_precision,
+                "context_chars": score.context_chars,
                 "negative_document_hit": score.negative_document_hit,
             }
             for score in scored_cases

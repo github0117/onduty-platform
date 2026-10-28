@@ -201,6 +201,7 @@ def _seed_knowledge(
         seeded[str(item["id"])] = {
             "title": str(item["title"]),
             "document_id": str(document["id"]),
+            "content": str(item["content"]),
             "chunk_ids": _document_chunk_ids(str(document["id"])),
         }
     return seeded
@@ -234,6 +235,7 @@ def _seed_evaluations(
         dataset: _existing_cases(client, dataset)
         for dataset in ("TUNING", "HOLDOUT")
     }
+    frozen_without_passages = 0
     for item in items:
         dataset = str(item.get("dataset") or "TUNING")
         name = f"验收问题 {item['id']}"
@@ -249,6 +251,16 @@ def _seed_evaluations(
             "expected_chunk_ids": (
                 expected["chunk_ids"][:1]
                 if expected and item.get("expect_chunk")
+                else []
+            ),
+            "expected_passages": (
+                [
+                    {
+                        "document_id": expected["document_id"],
+                        "text": expected["content"][:40],
+                    }
+                ]
+                if expected and item.get("expect_passage")
                 else []
             ),
             "expect_no_grounding": bool(item["should_refuse"]),
@@ -269,6 +281,10 @@ def _seed_evaluations(
             )
         elif dataset == "HOLDOUT":
             # Holdout cases are immutable; a re-seed keeps the frozen case.
+            if payload["expected_passages"] and not existing_case.get(
+                "expected_passages"
+            ):
+                frozen_without_passages += 1
             continue
         else:
             response = client.patch(
@@ -281,6 +297,16 @@ def _seed_evaluations(
                 f"{response.request.method} {response.request.url} "
                 f"returned {response.status_code}: {response.text}"
             )
+    if frozen_without_passages:
+        print(
+            "warning: "
+            f"{frozen_without_passages} frozen HOLDOUT case(s) have no passage "
+            "expectation, but the corpus asks for one. HOLDOUT cases are "
+            "immutable, so run this script with --reset inside the API "
+            "container (where DATABASE_URL points at the application database) "
+            "to rebuild them.",
+            file=sys.stderr,
+        )
     return len(items)
 
 

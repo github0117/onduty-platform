@@ -398,8 +398,22 @@ export default function OperationsPage() {
               <Text type="secondary">
                 RAG 草稿 {rag.data?.draft_count ?? 0} 份，已有引用{" "}
                 {rag.data?.grounded_count ?? 0} 份，回答要点引用覆盖率{" "}
-                {percent(rag.data?.policy_citation_coverage ?? 0)}。
+                {percent(rag.data?.policy_citation_coverage ?? 0)}。检索模型{" "}
+                {rag.data?.embedding_model ?? "未知"}，待重建版本{" "}
+                {rag.data?.reindex_pending_versions ?? 0} 个。
               </Text>
+              {rag.data?.embedding_quality === "demo" && (
+                <Tag color="orange">
+                  当前为本地哈希演示模式，检索质量不代表语义检索水平；配置
+                  EMBEDDING_BASE_URL 与 EMBEDDING_API_KEY 后重建索引
+                </Tag>
+              )}
+              {(rag.data?.stale_evaluation_chunk_refs ?? 0) > 0 && (
+                <Tag color="red">
+                  评测用例存在失效分块引用{" "}
+                  {rag.data?.stale_evaluation_chunk_refs} 条，请先重建或修正用例
+                </Tag>
+              )}
             </Space>
           </Card>
         </Col>

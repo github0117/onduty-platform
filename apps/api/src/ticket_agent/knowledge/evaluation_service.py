@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.knowledge.evaluation import EvaluationCase, score_evaluation
 from ticket_agent.knowledge.models import (
+    KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeEvaluationCase,
     KnowledgeEvaluationRun,
@@ -21,6 +22,7 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeEvaluationCaseUpdate,
     KnowledgeEvaluationCaseView,
     KnowledgeEvaluationDataset,
+    KnowledgeEvaluationPassage,
     KnowledgeEvaluationRunCreate,
     KnowledgeEvaluationRunList,
     KnowledgeEvaluationRunView,
@@ -42,6 +44,7 @@ class KnowledgeEvaluationService:
         if not (
             payload.expected_titles
             or payload.expected_chunk_ids
+            or payload.expected_passages
             or payload.expected_document_ids
             or payload.expect_no_grounding
         ):
@@ -50,10 +53,14 @@ class KnowledgeEvaluationService:
                 code="EVALUATION_EXPECTATION_REQUIRED",
                 title="Evaluation expectation is missing",
                 detail=(
-                    "An evaluation case must define expected titles, chunk "
-                    "or document ids, or expect no grounding."
+                    "An evaluation case must define expected titles, chunks, "
+                    "passages or document ids, or expect no grounding."
                 ),
             )
+        self._validate_passage_documents(
+            business_unit_id=payload.business_unit_id,
+            passages=payload.expected_passages,
+        )
         self._validate_scope_references(
             business_unit_id=payload.business_unit_id,
             knowledge_space_id=payload.knowledge_space_id,
@@ -95,6 +102,9 @@ class KnowledgeEvaluationService:
             existing.expected_chunk_ids_json = _uuid_values(
                 payload.expected_chunk_ids
             )
+            existing.expected_passages_json = _passage_values(
+                payload.expected_passages
+            )
             existing.expected_document_ids_json = _uuid_values(
                 payload.expected_document_ids
             )
@@ -116,6 +126,7 @@ class KnowledgeEvaluationService:
             dataset=payload.dataset,
             expected_titles_json=payload.expected_titles,
             expected_chunk_ids_json=_uuid_values(payload.expected_chunk_ids),
+            expected_passages_json=_passage_values(payload.expected_passages),
             expected_document_ids_json=_uuid_values(
                 payload.expected_document_ids
             ),
@@ -158,6 +169,8 @@ class KnowledgeEvaluationService:
             and case.expected_titles_json == payload.expected_titles
             and case.expected_chunk_ids_json
             == _uuid_values(payload.expected_chunk_ids)
+            and case.expected_passages_json
+            == _passage_values(payload.expected_passages)
             and case.expected_document_ids_json
             == _uuid_values(payload.expected_document_ids)
             and case.negative_document_ids_json
@@ -416,6 +429,14 @@ class KnowledgeEvaluationService:
             case.expected_chunk_ids_json = _uuid_values(
                 payload.expected_chunk_ids
             )
+        if payload.expected_passages is not None:
+            self._validate_passage_documents(
+                business_unit_id=case.business_unit_id,
+                passages=payload.expected_passages,
+            )
+            case.expected_passages_json = _passage_values(
+                payload.expected_passages
+            )
         if payload.expected_document_ids is not None:
             case.expected_document_ids_json = _uuid_values(
                 payload.expected_document_ids
@@ -444,6 +465,7 @@ class KnowledgeEvaluationService:
         if case.expect_no_grounding and (
             case.expected_titles_json
             or case.expected_chunk_ids_json
+            or case.expected_passages_json
             or case.expected_document_ids_json
         ):
             raise ApiProblem(
@@ -457,6 +479,7 @@ class KnowledgeEvaluationService:
         if not (
             case.expected_titles_json
             or case.expected_chunk_ids_json
+            or case.expected_passages_json
             or case.expected_document_ids_json
             or case.expect_no_grounding
         ):
@@ -465,8 +488,8 @@ class KnowledgeEvaluationService:
                 code="EVALUATION_EXPECTATION_REQUIRED",
                 title="Evaluation expectation is missing",
                 detail=(
-                    "An evaluation case must define expected titles, chunk "
-                    "or document ids, or expect no grounding."
+                    "An evaluation case must define expected titles, chunks, "
+                    "passages or document ids, or expect no grounding."
                 ),
             )
         self.session.commit()
@@ -546,20 +569,9 @@ class KnowledgeEvaluationService:
         self.session.commit()
         self.session.refresh(run)
 
-        evaluation_cases = [
-            EvaluationCase(
-                query=case.query,
-                business_unit_id=case.business_unit_id,
-                expected_titles=case.expected_titles_json,
-                expect_no_grounding=case.expect_no_grounding,
-                scope=case.scope_json,
-                dataset=case.dataset,
-                expected_chunk_ids=case.expected_chunk_ids_json,
-                expected_document_ids=case.expected_document_ids_json,
-                negative_document_ids=case.negative_document_ids_json,
-            )
-            for case in cases
-        ]
+        evaluation_cases, unresolved_passages = build_evaluation_cases(
+            self.session, cases
+        )
         scored_cases: list[dict[str, Any]] = []
         try:
             results = [
@@ -583,6 +595,11 @@ class KnowledgeEvaluationService:
                 ),
             )
             scored_cases = cast(list[dict[str, Any]], report["cases"])
+            unresolved_count = _mark_unresolved_cases(
+                cases=cases,
+                scored_cases=scored_cases,
+                unresolved_passages=unresolved_passages,
+            )
             passed_cases = sum(
                 1 for case in scored_cases if case.get("passed") is True
             )
@@ -609,6 +626,11 @@ class KnowledgeEvaluationService:
                 no_grounding=no_grounding,
                 thresholds=thresholds,
             )
+            if unresolved_count:
+                # An unresolved passage means the case no longer points at any
+                # text in the corpus. That is a configuration failure, not a
+                # retrieval miss, so the run must not quietly pass.
+                verdict = "FAIL"
             run.status = "SUCCEEDED"
             run.verdict = verdict
             run.passed_cases = passed_cases
@@ -623,7 +645,13 @@ class KnowledgeEvaluationService:
             run.context_precision = context_precision
             run.negative_violation_rate = negative_violation
             run.results_json = scored_cases
-            run.error_message = None
+            run.error_message = (
+                f"{unresolved_count} passage expectation(s) no longer match "
+                "any chunk in their document; update the case before trusting "
+                "this run."
+                if unresolved_count
+                else None
+            )
         except Exception as exc:
             self.session.rollback()
             stored = self.session.get(KnowledgeEvaluationRun, run.id)
@@ -702,6 +730,7 @@ class KnowledgeEvaluationService:
             dataset=cast(KnowledgeEvaluationDataset, case.dataset),
             expected_titles=case.expected_titles_json,
             expected_chunk_ids=_uuid_list(case.expected_chunk_ids_json),
+            expected_passages=_passage_models(case.expected_passages_json),
             expected_document_ids=_uuid_list(
                 case.expected_document_ids_json
             ),
@@ -720,6 +749,23 @@ class KnowledgeEvaluationService:
         self,
         run: KnowledgeEvaluationRun,
     ) -> KnowledgeEvaluationRunView:
+        # Context size is derived from the stored per-case results so older
+        # runs (written before the column existed) still render sensibly.
+        context_chars = [
+            float(item["context_chars"])
+            for item in run.results_json or []
+            if isinstance(item.get("context_chars"), int | float)
+        ]
+        avg_context_chars = (
+            round(sum(context_chars) / len(context_chars), 2)
+            if context_chars
+            else None
+        )
+        avg_context_tokens = (
+            round(avg_context_chars / 1.6, 2)
+            if avg_context_chars is not None
+            else None
+        )
         return KnowledgeEvaluationRunView(
             id=run.id,
             business_unit_id=run.business_unit_id,
@@ -739,6 +785,8 @@ class KnowledgeEvaluationService:
             document_mrr=run.document_mrr,
             context_precision=run.context_precision,
             negative_violation_rate=run.negative_violation_rate,
+            avg_context_chars=avg_context_chars,
+            avg_context_tokens=avg_context_tokens,
             thresholds=run.thresholds_json,
             baseline=run.baseline_json or {},
             results=run.results_json,
@@ -774,6 +822,196 @@ class KnowledgeEvaluationService:
                     title="Digital employee not found",
                     detail="The evaluation employee does not exist.",
                 )
+
+    def _validate_passage_documents(
+        self,
+        *,
+        business_unit_id: str,
+        passages: list[KnowledgeEvaluationPassage],
+    ) -> None:
+        for passage in passages:
+            document = self.session.get(KnowledgeDocument, passage.document_id)
+            if document is None or document.business_unit_id != business_unit_id:
+                raise ApiProblem(
+                    status_code=404,
+                    code="KNOWLEDGE_DOCUMENT_NOT_FOUND",
+                    title="Knowledge document not found",
+                    detail=(
+                        f"Passage document {passage.document_id} does not "
+                        "exist in this business unit."
+                    ),
+                )
+
+
+def build_evaluation_cases(
+    session: Session,
+    rows: list[KnowledgeEvaluationCase],
+) -> tuple[list[EvaluationCase], dict[UUID, list[dict[str, str]]]]:
+    """Build scoring cases, resolving passage expectations to current chunks.
+
+    Passages take precedence over ``expected_chunk_ids_json`` because they are
+    the reindex-safe form: the chunk id is looked up by text every run instead
+    of being pinned to a row that a rebuild may delete.
+
+    Returns the cases plus a map of unresolved passages keyed by case id.
+    """
+    cases: list[EvaluationCase] = []
+    unresolved: dict[UUID, list[dict[str, str]]] = {}
+    for row in rows:
+        passages = _stored_passages(row.expected_passages_json)
+        chunk_ids = [str(item) for item in row.expected_chunk_ids_json or []]
+        if passages:
+            chunk_ids, missing = resolve_passages(
+                session,
+                business_unit_id=row.business_unit_id,
+                passages=passages,
+            )
+            if missing:
+                unresolved[row.id] = missing
+        cases.append(
+            EvaluationCase(
+                query=row.query,
+                business_unit_id=row.business_unit_id,
+                expected_titles=list(row.expected_titles_json or []),
+                expect_no_grounding=row.expect_no_grounding,
+                scope=dict(row.scope_json or {}),
+                dataset=row.dataset,
+                expected_chunk_ids=chunk_ids,
+                expected_document_ids=[
+                    str(item) for item in row.expected_document_ids_json or []
+                ],
+                negative_document_ids=[
+                    str(item)
+                    for item in row.negative_document_ids_json or []
+                ],
+            )
+        )
+    return cases, unresolved
+
+
+def resolve_passages(
+    session: Session,
+    *,
+    business_unit_id: str,
+    passages: list[dict[str, str]],
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Map document + text passages to the chunks of the current version."""
+    resolved: list[str] = []
+    missing: list[dict[str, str]] = []
+    cache: dict[str, tuple[list[tuple[str, str]], str | None]] = {}
+    for passage in passages:
+        document_id = passage["document_id"]
+        text = passage["text"]
+        entry = cache.get(document_id)
+        if entry is None:
+            document = session.get(KnowledgeDocument, UUID(document_id))
+            if (
+                document is None
+                or document.business_unit_id != business_unit_id
+                or document.current_version_id is None
+            ):
+                cache[document_id] = ([], "document_not_indexed")
+                entry = cache[document_id]
+            else:
+                chunk_rows = session.execute(
+                    select(KnowledgeChunk.id, KnowledgeChunk.content)
+                    .where(
+                        KnowledgeChunk.knowledge_version_id
+                        == document.current_version_id
+                    )
+                    .order_by(KnowledgeChunk.ordinal)
+                ).all()
+                entry = (
+                    [
+                        (str(chunk_id), _normalize_text(content))
+                        for chunk_id, content in chunk_rows
+                    ],
+                    None,
+                )
+                cache[document_id] = entry
+        chunks, error = entry
+        if error is not None:
+            missing.append(
+                {"document_id": document_id, "text": text, "reason": error}
+            )
+            continue
+        needle = _normalize_text(text)
+        match = next(
+            (chunk_id for chunk_id, content in chunks if needle in content),
+            None,
+        )
+        if match is None:
+            missing.append(
+                {
+                    "document_id": document_id,
+                    "text": text,
+                    "reason": "text_not_found",
+                }
+            )
+            continue
+        if match not in resolved:
+            resolved.append(match)
+    return resolved, missing
+
+
+def _mark_unresolved_cases(
+    *,
+    cases: list[KnowledgeEvaluationCase],
+    scored_cases: list[dict[str, Any]],
+    unresolved_passages: dict[UUID, list[dict[str, str]]],
+) -> int:
+    """Fail cases whose passage text no longer resolves; return how many."""
+    if not unresolved_passages:
+        return 0
+    unresolved_count = 0
+    for row, score in zip(cases, scored_cases, strict=True):
+        missing = unresolved_passages.get(row.id)
+        if not missing:
+            continue
+        unresolved_count += len(missing)
+        score["passed"] = False
+        score["unresolved_passages"] = missing
+    return unresolved_count
+
+
+def _stored_passages(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    passages: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        document_id = item.get("document_id")
+        text = item.get("text")
+        if isinstance(document_id, str) and isinstance(text, str) and text.strip():
+            passages.append(
+                {"document_id": document_id, "text": text.strip()}
+            )
+    return passages
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _passage_values(
+    passages: list[KnowledgeEvaluationPassage],
+) -> list[dict[str, str]]:
+    return [
+        {"document_id": str(passage.document_id), "text": passage.text}
+        for passage in passages
+    ]
+
+
+def _passage_models(raw: object) -> list[KnowledgeEvaluationPassage]:
+    return [
+        KnowledgeEvaluationPassage(
+            document_id=UUID(passage["document_id"]),
+            text=passage["text"],
+        )
+        for passage in _stored_passages(raw)
+    ]
+
 
 def _holdout_immutable() -> ApiProblem:
     return ApiProblem(

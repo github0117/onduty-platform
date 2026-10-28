@@ -31,6 +31,33 @@ settings.ensure_sqlite_directory()
 config.set_main_option("sqlalchemy.url", settings.database_url)
 target_metadata = Base.metadata
 
+# Indexes created by hand-written migrations (expression / HNSW opclass /
+# partial unique) that SQLAlchemy metadata cannot express portably. They are
+# excluded from ``alembic check`` drift detection on purpose; add new ones here
+# together with the migration that creates them.
+MIGRATION_ONLY_INDEXES = frozenset(
+    {
+        "ix_digital_employee_drafts_employee_id",
+        "ix_digital_employee_drafts_source_task_id",
+        "ix_knowledge_chunks_embedding_hnsw",
+        "ix_knowledge_chunks_lexical",
+        "uq_knowledge_evaluation_case_identity",
+    }
+)
+
+
+def include_object(
+    object_: object,
+    name: str | None,
+    type_: str,
+    reflected: bool,
+    compare_to: object | None,
+) -> bool:
+    del object_, compare_to
+    if type_ == "index" and reflected and name in MIGRATION_ONLY_INDEXES:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
     context.configure(
@@ -39,6 +66,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -55,6 +83,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

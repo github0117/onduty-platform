@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -70,6 +71,16 @@ from ticket_agent.shared.settings import get_settings
 from ticket_agent.storage.factory import get_object_storage
 from ticket_agent.storage.types import ObjectStorage, ObjectStorageError
 from ticket_agent.tickets.models import OutboxEvent
+
+logger = logging.getLogger(__name__)
+
+# A rebuilt chunk only counts as the successor of an old chunk when the two
+# share at least this much text. Shorter overlaps are usually boilerplate
+# (headers, table borders) and would mis-map evaluation references. When an old
+# chunk was split, the new chunk must still cover a quarter of it.
+MIN_CHUNK_REMAP_OVERLAP_CHARS = 40
+MIN_CHUNK_REMAP_SPLIT_CHARS = 20
+MIN_CHUNK_REMAP_SPLIT_RATIO = 0.25
 
 
 @dataclass(frozen=True)
@@ -960,6 +971,11 @@ class KnowledgeService:
                     score=ranked_candidate.final_score,
                 )
             )
+        if self.settings.knowledge_context_prune_enabled:
+            hits = _prune_context_hits(
+                hits,
+                max_chars=self.settings.knowledge_context_max_chars,
+            )
         return hits
 
     def _candidate_rankings(
@@ -1570,6 +1586,14 @@ class KnowledgeService:
         if not drafts:
             return False
         batch = self._embed_drafts(drafts)
+        old_chunks = [
+            (row.id, row.content)
+            for row in self.session.execute(
+                select(KnowledgeChunk.id, KnowledgeChunk.content)
+                .where(KnowledgeChunk.knowledge_version_id == version.id)
+                .order_by(KnowledgeChunk.ordinal)
+            )
+        ]
         self.session.execute(
             delete(KnowledgeChunk).where(
                 KnowledgeChunk.knowledge_version_id == version.id
@@ -1585,7 +1609,98 @@ class KnowledgeService:
         version.embedding_model = batch.model_name
         version.embedding_indexed_at = datetime.now(UTC)
         self.session.flush()
+        if old_chunks:
+            new_chunks = [
+                (row.id, row.content)
+                for row in self.session.execute(
+                    select(KnowledgeChunk.id, KnowledgeChunk.content)
+                    .where(KnowledgeChunk.knowledge_version_id == version.id)
+                    .order_by(KnowledgeChunk.ordinal)
+                )
+            ]
+            updated_cases, remapped_refs, unmatched_refs = (
+                self._remap_evaluation_chunk_refs(
+                    business_unit_id=document.business_unit_id,
+                    old_chunks=old_chunks,
+                    new_chunks=new_chunks,
+                )
+            )
+            if updated_cases:
+                logger.info(
+                    "Remapped evaluation chunk references after reindex: "
+                    "version_id=%s cases=%s references=%s unmatched=%s",
+                    version.id,
+                    updated_cases,
+                    remapped_refs,
+                    unmatched_refs,
+                )
+            if unmatched_refs:
+                logger.warning(
+                    "Evaluation cases still reference chunks that no longer exist "
+                    "after reindex: version_id=%s references=%s",
+                    version.id,
+                    unmatched_refs,
+                )
         return True
+
+    def _remap_evaluation_chunk_refs(
+        self,
+        *,
+        business_unit_id: str,
+        old_chunks: Sequence[tuple[UUID, str]],
+        new_chunks: Sequence[tuple[UUID, str]],
+    ) -> tuple[int, int, int]:
+        """Point evaluation cases at the rebuilt chunks of the same text.
+
+        Reindex replaces chunk rows, so ``expected_chunk_ids_json`` would
+        otherwise reference UUIDs that no longer exist and every metric would
+        silently collapse. References that cannot be matched with confidence
+        are left untouched on purpose: a loud evaluation failure is preferable
+        to quietly weakening the gate.
+        """
+        successor_of = _chunk_successor_map(old_chunks, new_chunks)
+        stale_ids = {str(chunk_id) for chunk_id, _content in old_chunks}
+        if not stale_ids:
+            return (0, 0, 0)
+        cases = self.session.scalars(
+            select(KnowledgeEvaluationCase).where(
+                KnowledgeEvaluationCase.business_unit_id == business_unit_id
+            )
+        ).all()
+        updated_cases = 0
+        remapped_refs = 0
+        unmatched_refs = 0
+        for case in cases:
+            if case.expected_passages_json:
+                # Passage-based cases resolve their chunks from text at run
+                # time; leaving their cached ids alone is what makes them
+                # reindex-safe.
+                continue
+            expected = [str(item) for item in case.expected_chunk_ids_json or []]
+            if not any(item in stale_ids for item in expected):
+                continue
+            frozen = case.dataset == "HOLDOUT"
+            rewritten: list[str] = []
+            for item in expected:
+                if item in stale_ids:
+                    match = successor_of.get(item)
+                    if match is None or (frozen and not match[1]):
+                        # HOLDOUT may only follow an exact-text move: a
+                        # merge/split changes what the case points at, and the
+                        # dataset is frozen against human edits.
+                        unmatched_refs += 1
+                        successor = item
+                    else:
+                        successor = match[0]
+                        remapped_refs += 1
+                else:
+                    successor = item
+                if successor not in rewritten:
+                    rewritten.append(successor)
+            if rewritten != expected:
+                case.expected_chunk_ids_json = rewritten
+                updated_cases += 1
+        return (updated_cases, remapped_refs, unmatched_refs)
 
     def _embed_drafts(self, drafts: list[ChunkDraft]) -> EmbeddingBatch:
         try:
@@ -1704,6 +1819,87 @@ class KnowledgeService:
         version.ingestion_error = error[:2000]
         version.processed_at = datetime.now(UTC)
         self.session.commit()
+
+
+def _chunk_successor_map(
+    old_chunks: Sequence[tuple[UUID, str]],
+    new_chunks: Sequence[tuple[UUID, str]],
+) -> dict[str, tuple[str, bool]]:
+    """Map rebuilt chunks onto the old chunk they replaced.
+
+    Three tiers, strongest first: identical content (an embedding-only
+    reindex), the old chunk merged into one larger new chunk, and the old chunk
+    split into smaller new chunks (first one by ordinal wins). The flag in the
+    value is True only for the identical-content tier; callers use it to keep
+    frozen HOLDOUT references on exact moves only. Anything less certain than
+    that is left unmapped so it surfaces as an evaluation failure instead of a
+    silently wrong reference.
+    """
+    new_by_content: dict[str, str] = {}
+    for chunk_id, content in new_chunks:
+        new_by_content.setdefault(content, str(chunk_id))
+    successors: dict[str, tuple[str, bool]] = {}
+    for old_id, old_content in old_chunks:
+        successor = new_by_content.get(old_content)
+        exact = successor is not None
+        if successor is None and len(old_content) >= MIN_CHUNK_REMAP_OVERLAP_CHARS:
+            merged = {
+                str(new_id)
+                for new_id, new_content in new_chunks
+                if old_content in new_content
+            }
+            if len(merged) == 1:
+                successor = merged.pop()
+        if successor is None and len(old_content) >= MIN_CHUNK_REMAP_OVERLAP_CHARS:
+            for new_id, new_content in new_chunks:
+                if (
+                    len(new_content) >= MIN_CHUNK_REMAP_SPLIT_CHARS
+                    and len(new_content) >= len(old_content) * MIN_CHUNK_REMAP_SPLIT_RATIO
+                    and new_content in old_content
+                ):
+                    successor = str(new_id)
+                    break
+        if successor is not None and successor != str(old_id):
+            successors[str(old_id)] = (successor, exact)
+    return successors
+
+
+def _prune_context_hits(
+    hits: Sequence[KnowledgeHit],
+    *,
+    max_chars: int,
+) -> list[KnowledgeHit]:
+    """Drop near-duplicate passages and cap the total context size.
+
+    Search results feed both the prompt and the citation list, so returning
+    the same paragraph twice mostly buys token spend and citation noise.
+    """
+    kept: list[KnowledgeHit] = []
+    normalized_seen: list[tuple[UUID, str]] = []
+    total_chars = 0
+    for hit in hits:
+        normalized = " ".join(hit.content.split()).casefold()
+        if any(
+            document_id == hit.document_id
+            and _same_context(normalized, other)
+            for document_id, other in normalized_seen
+        ):
+            continue
+        if kept and max_chars > 0 and total_chars + len(hit.content) > max_chars:
+            continue
+        kept.append(hit)
+        normalized_seen.append((hit.document_id, normalized))
+        total_chars += len(hit.content)
+    return kept
+
+
+def _same_context(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    shorter, longer = sorted((left, right), key=len)
+    if not shorter or len(shorter) < 0.8 * len(longer):
+        return False
+    return shorter in longer
 
 
 def _rrf_fuse(

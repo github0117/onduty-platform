@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -12,6 +12,7 @@ from ticket_agent.knowledge.local_embedding import LocalEmbeddingProvider
 from ticket_agent.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
+    KnowledgeEvaluationCase,
     KnowledgeVersion,
 )
 from ticket_agent.knowledge.openai_embedding import OpenAICompatibleEmbeddingProvider
@@ -20,7 +21,11 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeDocumentCreate,
     KnowledgeVersionCreate,
 )
-from ticket_agent.knowledge.service import KnowledgeService
+from ticket_agent.knowledge.service import (
+    MIN_CHUNK_REMAP_OVERLAP_CHARS,
+    KnowledgeService,
+    _chunk_successor_map,
+)
 from ticket_agent.shared.db import SessionLocal
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import Settings
@@ -295,3 +300,236 @@ def test_embedding_fallback_records_local_model_and_flag() -> None:
     assert chunks
     assert all(chunk.metadata_json["embedding_fallback_used"] is True for chunk in chunks)
     assert all(chunk.metadata_json["embedding_model"] == "local-hash-8" for chunk in chunks)
+
+
+def _create_evaluation_case(
+    session: object,
+    *,
+    business_unit_id: str,
+    expected_chunk_ids: list[str],
+    dataset: str = "TUNING",
+) -> KnowledgeEvaluationCase:
+    case = KnowledgeEvaluationCase(
+        business_unit_id=business_unit_id,
+        name=f"退款时效-{uuid4().hex[:8]}",
+        query="签收后多久可以申请退款",
+        dataset=dataset,
+        expected_titles_json=["退款政策"],
+        expected_chunk_ids_json=expected_chunk_ids,
+        expected_document_ids_json=[],
+        negative_document_ids_json=[],
+        scope_json={},
+        created_by="admin-1",
+    )
+    session.add(case)  # type: ignore[attr-defined]
+    session.commit()  # type: ignore[attr-defined]
+    return case
+
+
+def test_reindex_remaps_evaluation_chunk_refs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO", logger="ticket_agent.knowledge.service")
+    with SessionLocal() as session:
+        _document, version = _create_version(session, "签收后七天内可以申请退款。")
+        old_ids = [
+            str(chunk.id)
+            for chunk in session.query(KnowledgeChunk)
+            .filter_by(knowledge_version_id=version.id)
+            .order_by(KnowledgeChunk.ordinal)
+        ]
+        case = _create_evaluation_case(
+            session,
+            business_unit_id=BUSINESS_UNIT_ID,
+            expected_chunk_ids=old_ids,
+        )
+        service = KnowledgeReindexService(
+            session,
+            embedding_provider=NamedLocalProvider("bge-m3"),
+        )
+        job = service.run_job(
+            service.create_job(
+                business_unit_id=BUSINESS_UNIT_ID,
+                requested_by="admin-1",
+                correlation_id="reindex-remap",
+            ).job.id
+        )
+        new_ids = [
+            str(chunk.id)
+            for chunk in session.query(KnowledgeChunk)
+            .filter_by(knowledge_version_id=version.id)
+            .order_by(KnowledgeChunk.ordinal)
+        ]
+        session.refresh(case)
+        remapped = list(case.expected_chunk_ids_json)
+        stale = service.stale_evaluation_chunk_refs(BUSINESS_UNIT_ID)
+
+    assert job.status == "SUCCEEDED"
+    assert new_ids != old_ids
+    assert remapped == new_ids
+    assert stale == 0
+    assert any(
+        "Remapped evaluation chunk references" in record.message
+        for record in caplog.records
+    )
+
+
+def test_reindex_does_not_touch_evaluation_cases_of_other_business_units() -> None:
+    other_unit = "bu_reindex_other"
+    with SessionLocal() as session:
+        _document, version = _create_version(session, "发票在确认收货后开具。")
+        old_ids = [
+            str(chunk.id)
+            for chunk in session.query(KnowledgeChunk)
+            .filter_by(knowledge_version_id=version.id)
+        ]
+        other_case = _create_evaluation_case(
+            session,
+            business_unit_id=other_unit,
+            expected_chunk_ids=old_ids,
+        )
+        service = KnowledgeReindexService(
+            session,
+            embedding_provider=NamedLocalProvider("bge-m3"),
+        )
+        service.run_job(
+            service.create_job(
+                business_unit_id=BUSINESS_UNIT_ID,
+                requested_by="admin-1",
+                correlation_id="reindex-scope",
+            ).job.id
+        )
+        session.refresh(other_case)
+        untouched = list(other_case.expected_chunk_ids_json)
+        stale = service.stale_evaluation_chunk_refs(other_unit)
+
+    assert untouched == old_ids
+    assert stale == len(old_ids)
+
+
+def test_stale_evaluation_chunk_refs_counts_missing_chunks() -> None:
+    with SessionLocal() as session:
+        _document, version = _create_version(session, "跨境订单不支持无理由退款。")
+        live_id = str(
+            session.query(KnowledgeChunk)
+            .filter_by(knowledge_version_id=version.id)
+            .first()
+            .id
+        )
+        missing_id = str(uuid4())
+        _create_evaluation_case(
+            session,
+            business_unit_id="bu_reindex_stale",
+            expected_chunk_ids=[live_id, missing_id],
+        )
+        service = KnowledgeReindexService(session)
+        stale = service.stale_evaluation_chunk_refs("bu_reindex_stale")
+
+    assert stale == 1
+
+
+def test_chunk_successor_map_matches_merge_and_split() -> None:
+    paragraph = "签收后七天内可以申请退款，跨境订单不支持无理由退款，退款将在三个工作日内原路退回。"
+    merged_old = (uuid4(), paragraph)
+    merged_new = (uuid4(), f"退款政策\n\n{paragraph}")
+    merged = _chunk_successor_map([merged_old], [merged_new])
+    assert merged == {str(merged_old[0]): (str(merged_new[0]), False)}
+
+    first_half = paragraph[: len(paragraph) // 2]
+    second_half = paragraph[len(paragraph) // 2 :]
+    split_old = (uuid4(), paragraph)
+    split_new = [(uuid4(), first_half), (uuid4(), second_half)]
+    assert _chunk_successor_map([split_old], split_new) == {
+        str(split_old[0]): (str(split_new[0][0]), False)
+    }
+
+    identical_old = (uuid4(), paragraph)
+    identical_new = [(uuid4(), "无关内容（与旧块无重叠，不应匹配）"), (uuid4(), paragraph)]
+    assert _chunk_successor_map([identical_old], identical_new) == {
+        str(identical_old[0]): (str(identical_new[1][0]), True)
+    }
+
+
+def test_chunk_successor_map_ignores_short_boilerplate_overlap() -> None:
+    short = "退款政策"
+    assert len(short) < MIN_CHUNK_REMAP_OVERLAP_CHARS
+    old = (uuid4(), short)
+    new = [(uuid4(), f"{short}\n\n签收后七天内可以申请退款，详情见附录说明。")]
+    assert _chunk_successor_map([old], new) == {}
+
+
+def test_unmatched_evaluation_refs_are_kept_and_counted_as_stale() -> None:
+    with SessionLocal() as session:
+        _document, version = _create_version(
+            session,
+            "签收后七天内可以申请退款，跨境订单不支持无理由退款，退款将在三个工作日内原路退回。",
+        )
+        deleted_chunk_id = str(
+            session.query(KnowledgeChunk)
+            .filter_by(knowledge_version_id=version.id)
+            .first()
+            .id
+        )
+        _other_document, other_version = _create_version(session, "发票在确认收货后开具。")
+        keep_chunk_id = str(
+            session.query(KnowledgeChunk)
+            .filter_by(knowledge_version_id=other_version.id)
+            .first()
+            .id
+        )
+        _create_evaluation_case(
+            session,
+            business_unit_id="bu_reindex_unmatched",
+            expected_chunk_ids=[deleted_chunk_id, keep_chunk_id],
+        )
+        removed = session.get(KnowledgeChunk, UUID(deleted_chunk_id))
+        assert removed is not None
+        session.delete(removed)
+        session.commit()
+        stale = KnowledgeReindexService(session).stale_evaluation_chunk_refs(
+            "bu_reindex_unmatched"
+        )
+        cases = (
+            session.query(KnowledgeEvaluationCase)
+            .filter_by(business_unit_id="bu_reindex_unmatched")
+            .all()
+        )
+
+    assert stale == 1
+    assert cases[0].expected_chunk_ids_json == [deleted_chunk_id, keep_chunk_id]
+
+
+def test_holdout_refs_only_follow_exact_text_moves() -> None:
+    paragraph = "签收后七天内可以申请退款，跨境订单不支持无理由退款，退款将在三个工作日内原路退回。"
+    old_id = uuid4()
+    new_id = uuid4()
+    with SessionLocal() as session:
+        _create_evaluation_case(
+            session,
+            business_unit_id="bu_reindex_holdout",
+            expected_chunk_ids=[str(old_id)],
+            dataset="HOLDOUT",
+        )
+        _create_evaluation_case(
+            session,
+            business_unit_id="bu_reindex_holdout",
+            expected_chunk_ids=[str(old_id)],
+            dataset="TUNING",
+        )
+        updated, remapped, unmatched = KnowledgeService(
+            session
+        )._remap_evaluation_chunk_refs(
+            business_unit_id="bu_reindex_holdout",
+            old_chunks=[(old_id, paragraph)],
+            new_chunks=[(new_id, f"退款政策\n\n{paragraph}")],
+        )
+        cases = (
+            session.query(KnowledgeEvaluationCase)
+            .filter_by(business_unit_id="bu_reindex_holdout")
+            .all()
+        )
+        by_dataset = {case.dataset: list(case.expected_chunk_ids_json) for case in cases}
+
+    assert by_dataset["HOLDOUT"] == [str(old_id)]
+    assert by_dataset["TUNING"] == [str(new_id)]
+    assert (updated, remapped, unmatched) == (1, 1, 1)

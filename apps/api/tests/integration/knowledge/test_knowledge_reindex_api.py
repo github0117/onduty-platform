@@ -2,9 +2,9 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi.testclient import TestClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 
-from ticket_agent.knowledge.models import KnowledgeVersion
+from ticket_agent.knowledge.models import KnowledgeChunk, KnowledgeVersion
 from ticket_agent.shared.db import SessionLocal
 
 ADMIN_HEADERS = {
@@ -196,3 +196,276 @@ def test_reindex_jobs_list_is_scoped_to_business_unit(client: TestClient) -> Non
     )
     assert other.status_code == 200
     assert other.json()["items"] == []
+
+
+def test_reindex_remaps_evaluation_case_chunk_refs(client: TestClient) -> None:
+    _, version_id = _create_published_version(client)
+    hit = _search(client)["items"][0]
+    old_chunk_id = hit["chunk_id"]
+    case = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        json={
+            "business_unit_id": "bu_demo",
+            "name": f"退款时效-{version_id[:8]}",
+            "query": "签收后多久可以退款",
+            "expected_titles": ["退款政策"],
+            "expected_chunk_ids": [old_chunk_id],
+        },
+    )
+    assert case.status_code == 201, case.text
+    case_id = case.json()["id"]
+
+    _mark_versions_stale("legacy-embedding-model")
+    before = client.get(
+        "/api/v1/metrics/rag",
+        headers=ADMIN_HEADERS,
+        params={"business_unit_id": "bu_demo"},
+    )
+    assert before.json()["stale_evaluation_chunk_refs"] == 0
+
+    response = client.post(
+        "/api/v1/knowledge/reindex",
+        headers=ADMIN_HEADERS,
+        json={"business_unit_id": "bu_demo"},
+    )
+    assert response.status_code == 202, response.text
+    job = client.get(
+        f"/api/v1/knowledge/reindex-jobs/{response.json()['id']}",
+        headers=ADMIN_HEADERS,
+    ).json()
+    assert job["status"] == "SUCCEEDED"
+
+    listing = client.get(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=ADMIN_HEADERS,
+        params={"business_unit_id": "bu_demo"},
+    )
+    assert listing.status_code == 200, listing.text
+    new_chunk_ids = next(
+        item["expected_chunk_ids"] for item in listing.json() if item["id"] == case_id
+    )
+    assert new_chunk_ids != [old_chunk_id]
+
+    with SessionLocal() as session:
+        existing = {
+            str(chunk_id)
+            for chunk_id in session.scalars(
+                select(KnowledgeChunk.id).where(
+                    KnowledgeChunk.id.in_(
+                        [UUID(chunk_id) for chunk_id in new_chunk_ids]
+                    )
+                )
+            )
+        }
+    assert existing == set(new_chunk_ids)
+
+    after = client.get(
+        "/api/v1/metrics/rag",
+        headers=ADMIN_HEADERS,
+        params={"business_unit_id": "bu_demo"},
+    )
+    assert after.json()["stale_evaluation_chunk_refs"] == 0
+
+
+def test_passage_based_case_survives_reindex_without_editing(
+    client: TestClient,
+) -> None:
+    business_unit_id = "bu_passage_api"
+    headers = {
+        **ADMIN_HEADERS,
+        "X-Business-Unit-Id": business_unit_id,
+    }
+    document = client.post(
+        "/api/v1/knowledge-documents",
+        headers=headers,
+        json={
+            "business_unit_id": business_unit_id,
+            "title": "售后时效说明",
+            "doc_type": "SOP",
+            "owner_id": "admin-1",
+            "scope": {},
+        },
+    )
+    assert document.status_code == 201, document.text
+    document_id = str(document.json()["id"])
+    version = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions",
+        headers=headers,
+        json={
+            "version_label": "1.0",
+            "content": "签收后七天内可以申请退款，超时需要人工审核。",
+            "effective_from": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert version.status_code == 201, version.text
+    version_id = str(version.json()["id"])
+    published = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions/{version_id}/publish",
+        headers=headers,
+        json={"release_note": "passage test"},
+    )
+    assert published.status_code == 200, published.text
+
+    case = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=headers,
+        json={
+            "business_unit_id": business_unit_id,
+            "name": "退款时效（段落级期望）",
+            "query": "签收后多久可以退款",
+            "expected_passages": [
+                {"document_id": document_id, "text": "签收后七天内可以申请退款"}
+            ],
+        },
+    )
+    assert case.status_code == 201, case.text
+    case_id = str(case.json()["id"])
+    assert case.json()["expected_chunk_ids"] == []
+
+    first_run = client.post(
+        "/api/v1/knowledge/evaluation-runs",
+        headers=headers,
+        json={"business_unit_id": business_unit_id},
+    )
+    assert first_run.status_code == 201, first_run.text
+    assert first_run.json()["verdict"] == "PASS"
+    assert first_run.json()["results"][0]["chunk_recall_at_k"] == 1.0
+    first_chunk_ids = first_run.json()["results"][0]["returned_chunk_ids"]
+
+    _mark_versions_stale("legacy-embedding-model")
+    response = client.post(
+        "/api/v1/knowledge/reindex",
+        headers=headers,
+        json={"business_unit_id": business_unit_id},
+    )
+    assert response.status_code == 202, response.text
+    job = client.get(
+        f"/api/v1/knowledge/reindex-jobs/{response.json()['id']}",
+        headers=headers,
+    ).json()
+    assert job["status"] == "SUCCEEDED"
+    assert job["processed_versions"] == 1
+
+    stored_case = next(
+        item
+        for item in client.get(
+            "/api/v1/knowledge/evaluation-cases",
+            headers=headers,
+            params={"business_unit_id": business_unit_id},
+        ).json()
+        if item["id"] == case_id
+    )
+    assert stored_case["expected_chunk_ids"] == []
+    assert stored_case["expected_passages"][0]["text"] == (
+        "签收后七天内可以申请退款"
+    )
+
+    second_run = client.post(
+        "/api/v1/knowledge/evaluation-runs",
+        headers=headers,
+        json={"business_unit_id": business_unit_id},
+    )
+    assert second_run.status_code == 201, second_run.text
+    payload = second_run.json()
+    assert payload["verdict"] == "PASS"
+    assert payload["chunk_recall_at_k"] == 1.0
+    assert payload["results"][0]["returned_chunk_ids"] != first_chunk_ids
+    assert payload["avg_context_chars"] > 0
+    assert payload["avg_context_tokens"] == round(
+        payload["avg_context_chars"] / 1.6, 2
+    )
+
+    metrics = client.get(
+        "/api/v1/metrics/rag",
+        headers=headers,
+        params={"business_unit_id": business_unit_id},
+    )
+    assert metrics.status_code == 200, metrics.text
+    assert metrics.json()["stale_evaluation_chunk_refs"] == 0
+    assert metrics.json()["embedding_quality"] in {"demo", "semantic"}
+
+
+def test_passage_case_rejects_document_from_another_business_unit(
+    client: TestClient,
+) -> None:
+    document_id, _ = _create_published_version(client)
+    headers = {
+        **ADMIN_HEADERS,
+        "X-Business-Unit-Id": "bu_passage_isolation",
+    }
+    response = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=headers,
+        json={
+            "business_unit_id": "bu_passage_isolation",
+            "name": "跨租户段落",
+            "query": "签收后多久可以退款",
+            "expected_passages": [
+                {"document_id": document_id, "text": "签收后七天内可以申请退款"}
+            ],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "KNOWLEDGE_DOCUMENT_NOT_FOUND"
+
+
+def test_unresolved_passage_makes_the_run_fail(client: TestClient) -> None:
+    business_unit_id = "bu_passage_unresolved"
+    headers = {**ADMIN_HEADERS, "X-Business-Unit-Id": business_unit_id}
+    document = client.post(
+        "/api/v1/knowledge-documents",
+        headers=headers,
+        json={
+            "business_unit_id": business_unit_id,
+            "title": "退款政策",
+            "doc_type": "SOP",
+            "owner_id": "admin-1",
+            "scope": {},
+        },
+    )
+    document_id = str(document.json()["id"])
+    version = client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions",
+        headers=headers,
+        json={
+            "version_label": "1.0",
+            "content": "签收后七天内可以申请退款。",
+            "effective_from": datetime.now(UTC).isoformat(),
+        },
+    )
+    client.post(
+        f"/api/v1/knowledge-documents/{document_id}/versions/"
+        f"{version.json()['id']}/publish",
+        headers=headers,
+        json={"release_note": "unresolved passage"},
+    )
+    case = client.post(
+        "/api/v1/knowledge/evaluation-cases",
+        headers=headers,
+        json={
+            "business_unit_id": business_unit_id,
+            "name": "段落已过时",
+            "query": "签收后多久可以退款",
+            "expected_passages": [
+                {"document_id": document_id, "text": "这段文字已经不在文档里"}
+            ],
+        },
+    )
+    assert case.status_code == 201, case.text
+
+    run = client.post(
+        "/api/v1/knowledge/evaluation-runs",
+        headers=headers,
+        json={"business_unit_id": business_unit_id},
+    )
+
+    assert run.status_code == 201, run.text
+    payload = run.json()
+    assert payload["verdict"] == "FAIL"
+    assert payload["passed_cases"] == 0
+    assert "passage" in (payload["error_message"] or "")
+    assert payload["results"][0]["unresolved_passages"][0]["reason"] == (
+        "text_not_found"
+    )

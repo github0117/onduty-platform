@@ -251,6 +251,15 @@ class KnowledgeEvaluationCase(Base):
         nullable=False,
         server_default=text("'[]'"),
     )
+    # Document id plus original text fragment. Resolved to chunk ids at run
+    # time so a reindex does not invalidate the case; when present these take
+    # precedence over expected_chunk_ids_json.
+    expected_passages_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+        server_default=text("'[]'"),
+    )
     expected_document_ids_json: Mapped[list[str]] = mapped_column(
         JSON,
         default=list,

@@ -132,15 +132,23 @@ EMBEDDING_DIMENSIONS=1024
 # 端点支持 OpenAI dimensions 参数时开启；DashScope text-embedding-v3 需要。
 EMBEDDING_SEND_DIMENSIONS=true
 EMBEDDING_FALLBACK_TO_LOCAL=false
+# 自托管无鉴权端点（如 TEI）设为 true；否则缺少 API Key 会被当作未配置。
+EMBEDDING_ALLOW_EMPTY_API_KEY=false
 KNOWLEDGE_CHUNKING_VERSION=v2
 KNOWLEDGE_CHUNK_TARGET_CHARS=800
 KNOWLEDGE_CHUNK_MAX_CHARS=1200
+KNOWLEDGE_CONTEXT_PRUNE_ENABLED=true
+KNOWLEDGE_CONTEXT_MAX_CHARS=5000
 ```
 
-- DashScope 可用 `EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`、
-  `EMBEDDING_MODEL_NAME=text-embedding-v3`、`EMBEDDING_DIMENSIONS=256`、
-  `EMBEDDING_SEND_DIMENSIONS=true`；该组合已在公开评测集上完成 reindex 与
-  质量 A/B，但默认配置仍使用本地 `local-hash-256`。
+- **推荐默认**是语义嵌入：`.env.example` 与 compose 默认指向 DashScope
+  `text-embedding-v3`（`EMBEDDING_DIMENSIONS=256`、`EMBEDDING_SEND_DIMENSIONS=true`）。
+  没填 `EMBEDDING_API_KEY` 时启动日志会提示，并直接走本地 `local-hash-256`
+  演示模式，不会每次请求都去撞远端失败；此时 `/metrics/rag` 返回
+  `embedding_quality=demo`，运营页显示橙色提示。填入密钥后必须重建索引。
+- 公开评测集上，本地哈希 HOLDOUT chunk/document recall 为 0.76/0.663，
+  `text-embedding-v3` 为 0.96/0.8557；这是公开人社问答语料的结果，不是内部
+  工单，不能直接外推为生产质量。
 - `EMBEDDING_DIMENSIONS` 必须与模型真实维度一致，响应维度不符时请求失败。
 - `EMBEDDING_SEND_DIMENSIONS=true` 时请求体带 `"dimensions"`。部分服务默认
   返回 1024 维，只有显式传参才能得到 256 维；不支持该参数的端点保持默认
@@ -158,7 +166,28 @@ curl -X POST http://127.0.0.1:8000/api/v1/knowledge/reindex \
 ```
 
 `GET /api/v1/knowledge/reindex-jobs` 查询任务状态；`/api/v1/metrics/rag` 的
-`reindex_pending_versions` 表示仍是旧模型、尚未重建的版本数。
+`reindex_pending_versions` 表示仍是旧模型、尚未重建的版本数，
+`stale_evaluation_chunk_refs` 表示评测用例仍指向已删除 chunk 的引用数。
+
+更稳妥的做法是给评测用例配置段落级期望：
+
+```json
+"expected_passages": [
+  {"document_id": "<knowledge document id>", "text": "签收后七天内可以申请退款"}
+]
+```
+
+评测运行时按当前生效版本的 chunk 文本解析 chunk，重建索引或切换分块版本都
+不需要改用例；段落存在时优先于 `expected_chunk_ids`。段落文本找不到时用例
+直接失败并返回 `unresolved_passages`，整次运行 verdict 为 FAIL
+（`scripts/evaluate_rag.py --max-unresolved-passages` 默认 0）。
+
+没有段落的旧用例仍走 chunk 引用重映射（完全一致 → 合并 → 拆分，见
+`docs/features.md`）。HOLDOUT 用例只接受“文本完全一致”的换主键，合并/拆分
+改动会保留原值并计入 stale。无法匹配的引用保持原样并计入
+`stale_evaluation_chunk_refs`；此时应先核对用例再跑评测，不要依赖
+`--min-chunk-recall-at-k` 的失败去反向推理。带段落的用例不参与重映射，也不
+计入 stale。
 
 - 迁移顺序：先 `alembic upgrade head` 再启动应用。开发模式启动会执行
   `init_db()` 建表，顺序颠倒会出现 `DuplicateTable`。

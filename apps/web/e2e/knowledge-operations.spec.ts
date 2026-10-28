@@ -1030,3 +1030,131 @@ test("通用 FAQ CSV 批量导入会跳过无效行并发布有效知识", async
     page.getByText("FAQ 批量导入完成：已发布 1 条知识"),
   ).toBeVisible();
 });
+
+test("新建评测案例可录入段落级期望", async ({ page }) => {
+  await mockKnowledgePage(page, { cases: [] });
+  let payload: Record<string, unknown> | undefined;
+  await page.route(
+    "**/api/v1/knowledge/evaluation-cases",
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      payload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...evaluationCase,
+          name: "退款时效（段落）",
+          expected_passages: [
+            {
+              document_id: document.id,
+              text: "签收后七天内可以申请退款",
+            },
+          ],
+        }),
+      });
+    },
+  );
+  await openKnowledge(page, "/knowledge/evaluation");
+  await page.getByRole("button", { name: "新建评测案例" }).click();
+  const dialog = page.getByRole("dialog", { name: "新建知识评测案例" });
+  await dialog
+    .getByPlaceholder("案例名称，例如 制度条款召回")
+    .fill("退款时效（段落）");
+  await dialog.getByPlaceholder("要验证的业务问题").fill("漏水如何退换");
+  await dialog
+    .locator(".ant-select")
+    .filter({
+      has: page.getByRole("combobox", { name: "评测知识空间" }),
+    })
+    .click();
+  await page
+    .getByText("E2E 售后知识 · e2e_knowledge", { exact: true })
+    .last()
+    .click();
+  await dialog.getByRole("button", { name: "添加段落期望" }).click();
+  await dialog
+    .locator(".ant-select")
+    .filter({
+      has: page.getByRole("combobox", { name: "段落期望文档 1" }),
+    })
+    .click();
+  await page
+    .getByText("E2E 售后处理规范", { exact: true })
+    .last()
+    .click();
+  await dialog
+    .getByLabel("段落期望原文 1")
+    .fill("签收后七天内可以申请退款");
+  await dialog.getByRole("button", { name: "创建案例" }).click();
+
+  await expect(page.getByText("评测案例已创建")).toBeVisible();
+  expect(payload).toMatchObject({
+    name: "退款时效（段落）",
+    query: "漏水如何退换",
+    dataset: "TUNING",
+    expected_passages: [
+      {
+        document_id: document.id,
+        text: "签收后七天内可以申请退款",
+      },
+    ],
+  });
+});
+
+test("最近评测展示平均上下文和未解析段落", async ({ page }) => {
+  await mockKnowledgePage(page);
+  await page.route(
+    "**/api/v1/knowledge/evaluation-runs?business_unit_id=bu_demo*",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [
+            {
+              ...evaluationRun,
+              verdict: "FAIL",
+              passed_cases: 0,
+              failed_cases: 1,
+              chunk_recall_at_k: 0,
+              chunk_mrr: 0,
+              document_recall_at_k: 0,
+              document_mrr: 0,
+              context_precision: 0,
+              avg_context_chars: 222.4,
+              avg_context_tokens: 139,
+              error_message: "1 passage expectation(s) no longer match",
+              results: [
+                {
+                  query: "漏水如何退换",
+                  recall_at_k: 0,
+                  reciprocal_rank: 0,
+                  returned_titles: [],
+                  no_grounding_correct: null,
+                  unresolved_passages: [
+                    {
+                      document_id: document.id,
+                      text: "已经不在文档里的旧段落",
+                      reason: "text_not_found",
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          total: 1,
+        }),
+      });
+    },
+  );
+  await openKnowledge(page, "/knowledge/evaluation");
+  await expect(page.getByText(/平均上下文 222\.4 字符/)).toBeVisible();
+  await expect(page.getByText(/约 139 token/)).toBeVisible();
+  await expect(
+    page.getByText(/未解析段落 1 条：漏水如何退换（原文未找到）/),
+  ).toBeVisible();
+});

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import func, or_, select, text
@@ -10,6 +11,7 @@ from ticket_agent.knowledge.embedding_types import EmbeddingProvider
 from ticket_agent.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
+    KnowledgeEvaluationCase,
     KnowledgeReindexJob,
     KnowledgeVersion,
 )
@@ -228,6 +230,42 @@ class KnowledgeReindexService:
                 KnowledgeDocument.business_unit_id == business_unit_id
             )
         return self.session.scalar(statement) or 0
+
+    def stale_evaluation_chunk_refs(self, business_unit_id: str | None) -> int:
+        """Evaluation cases pointing at chunks that no longer exist.
+
+        Reindex remaps those references onto the rebuilt chunks; a non-zero
+        count means a case needs human review before the gate can be trusted.
+        """
+        statement = select(
+            KnowledgeEvaluationCase.expected_chunk_ids_json,
+            KnowledgeEvaluationCase.expected_passages_json,
+        )
+        if business_unit_id:
+            statement = statement.where(
+                KnowledgeEvaluationCase.business_unit_id == business_unit_id
+            )
+        referenced: set[UUID] = set()
+        for row in self.session.execute(statement):
+            raw_ids = cast(list[str] | None, row[0])
+            passages = cast(list[dict[str, object]] | None, row[1])
+            if passages:
+                # Passage cases resolve chunks by text at run time, so their
+                # cached chunk ids are not authoritative.
+                continue
+            for raw_id in raw_ids or []:
+                try:
+                    referenced.add(UUID(str(raw_id)))
+                except ValueError:
+                    continue
+        if not referenced:
+            return 0
+        existing = set(
+            self.session.scalars(
+                select(KnowledgeChunk.id).where(KnowledgeChunk.id.in_(referenced))
+            )
+        )
+        return len(referenced - existing)
 
     def _lock_scope(self, business_unit_id: str, document_id: UUID | None) -> None:
         if self.session.get_bind().dialect.name != "postgresql":

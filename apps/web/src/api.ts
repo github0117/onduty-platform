@@ -1784,6 +1784,7 @@ export function createKnowledgeEvaluationCase(input: {
   dataset: KnowledgeEvaluationDataset;
   expectedTitles: string[];
   expectedChunkIds: string[];
+  expectedPassages?: { documentId: string; text: string }[];
   expectedDocumentIds: string[];
   negativeDocumentIds: string[];
   expectNoGrounding: boolean;
@@ -1800,6 +1801,10 @@ export function createKnowledgeEvaluationCase(input: {
       dataset: input.dataset,
       expected_titles: input.expectedTitles,
       expected_chunk_ids: input.expectedChunkIds,
+      expected_passages: (input.expectedPassages ?? []).map((passage) => ({
+        document_id: passage.documentId,
+        text: passage.text,
+      })),
       expected_document_ids: input.expectedDocumentIds,
       negative_document_ids: input.negativeDocumentIds,
       expect_no_grounding: input.expectNoGrounding,

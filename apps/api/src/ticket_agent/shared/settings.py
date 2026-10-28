@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     embedding_send_dimensions: bool = False
     embedding_timeout_seconds: float = 20.0
     embedding_fallback_to_local: bool = True
+    # Openai-compatible endpoints that need no credential (self-hosted TEI)
+    # must opt in; otherwise a missing key means "demo mode" instead of a slow
+    # failing remote call on every request.
+    embedding_allow_empty_api_key: bool = False
     knowledge_chunk_size: int = 800
     knowledge_chunk_overlap: int = 100
     knowledge_chunking_version: Literal["v1", "v2"] = "v1"
@@ -87,6 +91,11 @@ class Settings(BaseSettings):
     query_rewrite_model_name: str = ""
     knowledge_search_top_k: int = 5
     knowledge_min_score: float = 0.15
+    # Retrieval returns passages, not a search result page: dropping
+    # near-duplicates and capping the context keeps prompt cost and citation
+    # noise down. 0 disables the character cap.
+    knowledge_context_prune_enabled: bool = True
+    knowledge_context_max_chars: int = 5000
     knowledge_max_file_bytes: int = 20 * 1024 * 1024
     knowledge_reranker: Literal["hybrid", "vector"] = "hybrid"
     knowledge_vector_weight: float = 0.6

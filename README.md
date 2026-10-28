@@ -37,7 +37,12 @@
   chunk/文档级 Recall、MRR、context precision 和负例违规率；
   CI 通过 `rag-gate` 用冻结 HOLDOUT 和阈值退出码做回归；
   低分查询可选 LLM 多查询改写（默认关闭，失败回退本地结果）；
-  真实 embedding 与远端 rerank 已做协议和公开集 A/B，但默认仍用本地实现；
+  默认配置推荐 DashScope `text-embedding-v3`，未配置密钥时降级为
+  `local-hash-256` 演示模式：`/metrics/rag` 返回 `embedding_quality=demo`，
+  运营页显式提示“检索质量不代表语义检索水平”；评测用例支持段落级期望
+  （`expected_passages`），页面可直接选择文档并录入原文片段，重建索引后无需
+  改写，最近运行会展示平均上下文字符数/估算 token 和未解析段落原因；
+  真实 embedding 与远端 rerank 已做协议和公开集 A/B，远端 rerank 默认仍关闭；
   无依据或校验不通过时转人工，不编造答案。
 - **MCP 工具治理**：只读工具自动执行；写工具走确定性策略、独立审批、
   幂等执行、事故对账与补偿审批。

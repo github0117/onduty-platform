@@ -419,3 +419,61 @@ test("运行与审计刷新按钮和 Agent Run Trace 抽屉可用", async ({ pag
   await expect(drawer.getByText("检索售后知识")).toBeVisible();
   await expect(drawer.getByText("knowledge.search")).toBeVisible();
 });
+
+async function mockRagMetrics(
+  page: Page,
+  overrides: Record<string, unknown>,
+): Promise<void> {
+  await page.route(
+    "**/api/v1/metrics/rag?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          draft_count: 6,
+          grounded_count: 5,
+          no_knowledge_count: 1,
+          citation_total: 8,
+          average_citations: 1.33,
+          grounding_rate: 0.83,
+          claim_count: 12,
+          cited_claim_count: 10,
+          policy_claim_count: 4,
+          policy_citation_coverage: 0.9,
+          semantic_verified_claim_count: 9,
+          semantic_unsupported_claim_count: 0,
+          provider_counts: {},
+          embedding_model: "local-hash-256",
+          embedding_quality: "demo",
+          reindex_pending_versions: 0,
+          stale_evaluation_chunk_refs: 0,
+          ...overrides,
+        }),
+      });
+    },
+  );
+}
+
+test("运行与审计在演示嵌入模式下提示检索质量不代表语义水平", async ({
+  page,
+}) => {
+  await mockOperations(page);
+  await mockRagMetrics(page, { embedding_model: "local-hash-256" });
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/operations");
+  await expect(page.getByText(/检索模型 local-hash-256/)).toBeVisible();
+  await expect(page.getByText(/本地哈希演示模式/)).toBeVisible();
+});
+
+test("运行与审计在语义嵌入模式下不显示演示提示", async ({ page }) => {
+  await mockOperations(page);
+  await mockRagMetrics(page, {
+    embedding_model: "text-embedding-v3",
+    embedding_quality: "semantic",
+  });
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/operations");
+  await expect(page.getByText(/检索模型 text-embedding-v3/)).toBeVisible();
+  await expect(page.getByText(/本地哈希演示模式/)).toHaveCount(0);
+});
