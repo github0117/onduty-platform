@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -118,6 +119,43 @@ class AnswerDraft(Base):
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AnswerQualityEvaluation(Base):
+    """Human spot-check verdict for one adopted answer draft.
+
+    One evaluation per draft: a re-check updates the verdict in place so the
+    sampling queue never shows the same answer twice. Drafts, not tickets,
+    are the unit because a ticket can regenerate answers after rejection.
+    """
+
+    __tablename__ = "answer_quality_evaluations"
+    __table_args__ = (
+        UniqueConstraint("draft_id", name="uq_answer_quality_evaluations_draft"),
+        Index(
+            "ix_answer_quality_evaluations_unit_created",
+            "business_unit_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    draft_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("answer_drafts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    hallucinated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    evaluator_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
 
 
 class WorkflowTransition(Base):

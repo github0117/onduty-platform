@@ -1197,6 +1197,49 @@ export interface KnowledgeFeedback {
   created_at: string;
 }
 
+export type AnswerQualityVerdict = "CORRECT" | "PARTIAL" | "INCORRECT";
+
+export interface AnswerQualitySample {
+  draft_id: string;
+  ticket_id: string;
+  ticket_subject: string;
+  draft_text: string;
+  draft_status: string;
+  grounding_status: string;
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export interface AnswerQualitySampleList {
+  items: AnswerQualitySample[];
+  pending_total: number;
+}
+
+export interface AnswerQualitySummary {
+  business_unit_id: string;
+  days: number;
+  from_at: string;
+  to_at: string;
+  adopted_total: number;
+  evaluated_total: number;
+  coverage_rate: number | null;
+  verdict_counts: Record<string, number>;
+  correctness_rate: number | null;
+  hallucination_rate: number | null;
+}
+
+export interface AnswerQualityEvaluation {
+  id: string;
+  business_unit_id: string;
+  draft_id: string;
+  verdict: AnswerQualityVerdict;
+  hallucinated: boolean;
+  note: string | null;
+  evaluator_ref: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface KnowledgeFeedbackList {
   items: KnowledgeFeedback[];
   total: number;

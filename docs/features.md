@@ -120,6 +120,12 @@
   模型成本：采纳率只统计人工已审核草稿（自动通过、待审核单独计数），并给出采纳后
   修改率、单会话模型成本和单采纳草稿成本；对应接口
   `GET /api/v1/customer-service/value-metrics` 需要 `operations.view` 能力。
+- 知识库“答案抽检”页（`/knowledge/answer-quality`）对已采纳草稿做人工抽检：
+  记录正确/部分正确/错误与幻觉标记，输出抽检覆盖率、正确率和幻觉率，
+  同一草稿重复提交覆盖旧结论；对应接口
+  `GET /api/v1/knowledge/answer-evaluations/summary`、
+  `GET .../samples`（需要 `operations.view`）和
+  `POST /api/v1/knowledge/answer-evaluations`（需要 `knowledge.write`）。
 
 ## 业务入口、员工复用与前端视图
 

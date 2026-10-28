@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { useIdentity } from "./helpers/identity";
+
 const now = new Date().toISOString();
 const space = {
   id: "space-e2e",
@@ -98,12 +100,39 @@ function repairTask(status = "OPEN") {
   };
 }
 
+const qualitySample = {
+  draft_id: "draft-quality-e2e",
+  ticket_id: "ticket-quality-e2e",
+  ticket_subject: "保温杯漏水如何退换",
+  draft_text: "签收 7 天内可无理由退换，漏水属于质量问题可全额退款。",
+  draft_status: "ACCEPTED",
+  grounding_status: "GROUNDED",
+  created_at: now,
+  reviewed_at: now,
+};
+
+const qualitySummary = {
+  business_unit_id: "bu_demo",
+  days: 30,
+  from_at: now,
+  to_at: now,
+  adopted_total: 4,
+  evaluated_total: 2,
+  coverage_rate: 0.5,
+  verdict_counts: { CORRECT: 1, PARTIAL: 1 },
+  correctness_rate: 0.75,
+  hallucination_rate: 0.5,
+};
+
 async function mockKnowledgePage(
   page: Page,
   options: {
     cases?: unknown[];
     repairs?: unknown[];
     documents?: unknown[];
+    qualitySamples?: unknown[];
+    qualityPending?: number;
+    qualitySummaryError?: boolean;
   } = {},
 ): Promise<void> {
   await page.route(
@@ -154,6 +183,68 @@ async function mockKnowledgePage(
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ items: [], total: 0 }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/knowledge/answer-evaluations",
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      const payload = route.request().postDataJSON() as {
+        draft_id: string;
+        verdict: string;
+        hallucinated: boolean;
+        note: string | null;
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "evaluation-quality-e2e",
+          business_unit_id: "bu_demo",
+          draft_id: payload.draft_id,
+          verdict: payload.verdict,
+          hallucinated: payload.hallucinated,
+          note: payload.note,
+          evaluator_ref: "e2e-reviewer",
+          created_at: now,
+          updated_at: now,
+        }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/knowledge/answer-evaluations/summary?**",
+    async (route) => {
+      if (options.qualitySummaryError) {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "指标服务不可用" }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(qualitySummary),
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/knowledge/answer-evaluations/samples?**",
+    async (route) => {
+      const items = options.qualitySamples ?? [qualitySample];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items,
+          pending_total: options.qualityPending ?? items.length,
+        }),
       });
     },
   );
@@ -1157,4 +1248,95 @@ test("最近评测展示平均上下文和未解析段落", async ({ page }) => 
   await expect(
     page.getByText(/未解析段落 1 条：漏水如何退换（原文未找到）/),
   ).toBeVisible();
+});
+
+test("答案抽检提交结论并刷新指标", async ({ page }) => {
+  await mockKnowledgePage(page);
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/knowledge/answer-evaluations"),
+  );
+  await openKnowledge(page, "/knowledge/answer-quality");
+  await expect(page.getByText("保温杯漏水如何退换")).toBeVisible();
+  await expect(page.getByText("待抽检 1")).toBeVisible();
+  await expect(page.getByText("抽检覆盖率")).toBeVisible();
+  await expect(page.getByText("75.0%")).toBeVisible();
+  await expect(page.getByText("50.0%").first()).toBeVisible();
+
+  await page.getByRole("button", { name: /抽\s*检/ }).click();
+  const modal = page.getByRole("dialog");
+  await expect(modal.getByText(/签收 7 天内可无理由退换/)).toBeVisible();
+  await modal
+    .locator(".ant-select")
+    .filter({ has: page.getByRole("combobox", { name: "抽检结论" }) })
+    .click();
+  await page.locator('.ant-select-item-option[title="部分正确"]').click();
+  await modal.getByRole("checkbox").check();
+  await modal
+    .getByPlaceholder("备注（可选，例如错在哪一条）")
+    .fill("第二条依据已过期");
+  await modal.getByRole("button", { name: "保存抽检结论" }).click();
+
+  const request = await requestPromise;
+  expect(request.postDataJSON()).toEqual({
+    business_unit_id: "bu_demo",
+    draft_id: "draft-quality-e2e",
+    verdict: "PARTIAL",
+    hallucinated: true,
+    note: "第二条依据已过期",
+  });
+  await expect(
+    page.getByText("抽检结论已保存，正确率与幻觉率已更新"),
+  ).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("答案抽检空队列显示占位符和空比率", async ({ page }) => {
+  await mockKnowledgePage(page, { qualitySamples: [], qualityPending: 0 });
+  await page.route(
+    "**/api/v1/knowledge/answer-evaluations/summary?**",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...qualitySummary,
+          adopted_total: 0,
+          evaluated_total: 0,
+          coverage_rate: null,
+          verdict_counts: {},
+          correctness_rate: null,
+          hallucination_rate: null,
+        }),
+      });
+    },
+  );
+  await openKnowledge(page, "/knowledge/answer-quality");
+  await expect(page.getByText("待抽检 0")).toBeVisible();
+  await expect(
+    page.getByText("当前窗口内没有待抽检的已采纳草稿"),
+  ).toBeVisible();
+  await expect(
+    page.locator(".ant-statistic-content-value").filter({ hasText: "-" }),
+  ).toHaveCount(3);
+});
+
+test("答案抽检指标接口失败时提示错误", async ({ page }) => {
+  await mockKnowledgePage(page, { qualitySummaryError: true });
+  await openKnowledge(page, "/knowledge/answer-quality");
+  await expect(
+    page.getByText("答案质量指标加载失败，请检查指标查看权限或后端服务状态。"),
+  ).toBeVisible();
+});
+
+test("审计员只能查看抽检队列不能提交结论", async ({ page }) => {
+  await useIdentity(page, "auditor");
+  await mockKnowledgePage(page);
+  await page.goto("/knowledge/answer-quality");
+  await expect(
+    page.getByRole("heading", { name: "知识库 · 答案抽检" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /抽\s*检/ })).toHaveCount(0);
+  await expect(page.getByRole("table").getByText("只读")).toBeVisible();
 });

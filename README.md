@@ -91,6 +91,10 @@ docker compose -f infra/compose/docker-compose.yml --profile app up -d
 人工已审核草稿，自动通过与待审核单独计数，并给出单会话、单采纳草稿的模型成本，
 支持 7/30/90 天窗口切换。
 
+知识库“答案抽检”页（`/knowledge/answer-quality`）对待抽检的已采纳草稿逐条给出
+正确/部分正确/错误与幻觉标记，并汇总抽检覆盖率、正确率和幻觉率；需知识运营或
+平台管理员身份提交结论，审计员等只读角色只能查看队列。
+
 - 平台总览：<http://127.0.0.1:5173/overview>
 - 主演示 · 企业服务台：<http://127.0.0.1:5173/customer-service>
 - 人工工作台：<http://127.0.0.1:5173/customer-service/workbench>

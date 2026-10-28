@@ -179,6 +179,11 @@ const routeMeta: Record<string, RouteMeta> = {
     description: "处理评测失败、线上负反馈和修复回归",
     category: "平台管理",
   },
+  "/knowledge/answer-quality": {
+    title: "知识库 · 答案抽检",
+    description: "抽检已采纳草稿，统计正确率与幻觉率",
+    category: "平台管理",
+  },
   "/operations": {
     title: "平台治理 · 运行与审计",
     description: "查看工具调用、模型成本、Trace 和外部同步",
@@ -204,6 +209,7 @@ const knowledgeSections: Record<string, KnowledgeSection> = {
   "/knowledge/search": "search",
   "/knowledge/evaluation": "evaluation",
   "/knowledge/repairs": "repairs",
+  "/knowledge/answer-quality": "answer-quality",
 };
 
 const ecommerceSections: Record<string, EcommerceSection> = {

@@ -31,6 +31,12 @@ const entries = [
     primary: "知识修复队列",
     absent: "运行全部评测",
   },
+  {
+    path: "/knowledge/answer-quality",
+    heading: "知识库 · 答案抽检",
+    primary: "答案质量抽检",
+    absent: "运行全部评测",
+  },
 ];
 
 test("知识库总览只展示统计和二级入口", async ({ page }) => {
@@ -65,7 +71,7 @@ test("知识库二级页面可直接访问且每个页面只保留主任务", as
       page.getByRole("heading", { name: entry.heading }),
     ).toBeVisible();
     const primary =
-      entry.primary === "知识修复队列"
+      entry.primary === "知识修复队列" || entry.primary === "答案质量抽检"
         ? page.getByText(entry.primary, { exact: true })
         : page.getByRole("button", { name: entry.primary });
     await expect(primary.first()).toBeVisible();

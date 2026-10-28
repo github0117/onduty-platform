@@ -29,6 +29,8 @@ import {
   createKnowledgeEvaluationCase,
   createKnowledgeSpace,
   createKnowledgeVersion,
+  getAnswerQualitySummary,
+  listAnswerQualitySamples,
   listDigitalEmployees,
   listKnowledgeDocuments,
   listKnowledgeEvaluationCases,
@@ -39,6 +41,7 @@ import {
   listKnowledgeSpaces,
   listKnowledgeVersions,
   publishKnowledgeVersion,
+  recordAnswerQualityEvaluation,
   restoreKnowledgeDocument,
   searchKnowledge,
   runKnowledgeEvaluation,
@@ -49,6 +52,8 @@ import {
   uploadKnowledgeVersion,
 } from "./api";
 import type {
+  AnswerQualitySample,
+  AnswerQualityVerdict,
   KnowledgeDocument,
   KnowledgeEvaluationCase,
   KnowledgeEvaluationDataset,
@@ -63,8 +68,10 @@ import { useAuth } from "./auth";
 import { message } from "./feedback";
 import {
   channelLabels,
+  draftStateLabels,
   feedbackRatingLabels,
   feedbackReasonLabels,
+  groundingStatusLabels,
   knowledgeDocumentStatusLabels,
   knowledgeDocumentTypeLabels,
   knowledgeEvaluationDatasetLabels,
@@ -118,6 +125,17 @@ function statusColor(status: string): string {
   if (status === "FAILED") return "red";
   if (status === "SUPERSEDED") return "default";
   return "gold";
+}
+
+function percentText(value: number | null): string {
+  return value === null ? "-" : `${(value * 100).toFixed(1)}%`;
+}
+
+function groundingColor(status: string): string {
+  if (status === "GROUNDED") return "green";
+  if (status === "PARTIALLY_GROUNDED") return "gold";
+  if (status === "APPROVAL_REQUIRED") return "orange";
+  return "default";
 }
 
 function KnowledgeVersions({
@@ -323,7 +341,8 @@ export type KnowledgeSection =
   | "documents"
   | "search"
   | "evaluation"
-  | "repairs";
+  | "repairs"
+  | "answer-quality";
 
 const knowledgeSections = [
   { key: "overview", label: "知识概览", path: "/knowledge" },
@@ -332,6 +351,11 @@ const knowledgeSections = [
   { key: "search", label: "检索调试", path: "/knowledge/search" },
   { key: "evaluation", label: "质量评测", path: "/knowledge/evaluation" },
   { key: "repairs", label: "修复与反馈", path: "/knowledge/repairs" },
+  {
+    key: "answer-quality",
+    label: "答案抽检",
+    path: "/knowledge/answer-quality",
+  },
 ] as const;
 
 const repairStatusLabels: Record<
@@ -493,6 +517,15 @@ export default function KnowledgePage({
   );
   const [repairVerificationRunning, setRepairVerificationRunning] =
     useState(false);
+  const [qualityDays, setQualityDays] = useState(30);
+  const [qualityDraft, setQualityDraft] = useState<AnswerQualitySample | null>(
+    null,
+  );
+  const [qualityVerdict, setQualityVerdict] = useState<AnswerQualityVerdict | "">(
+    "",
+  );
+  const [qualityHallucinated, setQualityHallucinated] = useState(false);
+  const [qualityNote, setQualityNote] = useState("");
 
   const spaces = useQuery({
     queryKey: ["knowledge", "spaces"],
@@ -522,6 +555,16 @@ export default function KnowledgePage({
   const repairTasks = useQuery({
     queryKey: ["knowledge", "repair-tasks"],
     queryFn: listKnowledgeRepairTasks,
+  });
+  const qualitySummary = useQuery({
+    queryKey: ["knowledge", "answer-quality", "summary", qualityDays],
+    queryFn: () => getAnswerQualitySummary(qualityDays),
+    enabled: section === "answer-quality",
+  });
+  const qualitySamples = useQuery({
+    queryKey: ["knowledge", "answer-quality", "samples", qualityDays],
+    queryFn: () => listAnswerQualitySamples(qualityDays, 10),
+    enabled: section === "answer-quality",
   });
   const feedback = useQuery({
     queryKey: ["knowledge", "feedback"],
@@ -791,6 +834,33 @@ export default function KnowledgePage({
       }
       message.error(error.message);
     },
+  });
+  const resetQualityForm = () => {
+    setQualityDraft(null);
+    setQualityVerdict("");
+    setQualityHallucinated(false);
+    setQualityNote("");
+  };
+  const recordQuality = useMutation({
+    mutationFn: () => {
+      if (!qualityDraft || !qualityVerdict) {
+        throw new Error("请选择抽检结论");
+      }
+      return recordAnswerQualityEvaluation({
+        draftId: qualityDraft.draft_id,
+        verdict: qualityVerdict,
+        hallucinated: qualityHallucinated,
+        note: qualityNote.trim(),
+      });
+    },
+    onSuccess: () => {
+      message.success("抽检结论已保存，正确率与幻觉率已更新");
+      resetQualityForm();
+      queryClient.invalidateQueries({
+        queryKey: ["knowledge", "answer-quality"],
+      });
+    },
+    onError: (error: Error) => message.error(error.message),
   });
   const updateEvaluationCase = useMutation({
     mutationFn: ({
@@ -1467,6 +1537,69 @@ export default function KnowledgePage({
       render: (value: string[]) => (value.length ? `${value.length} 个` : "-"),
     },
   ];
+  const answerQualityColumns: ColumnsType<AnswerQualitySample> = [
+    {
+      title: "工单",
+      dataIndex: "ticket_subject",
+      width: 180,
+      render: (value: string) => (
+        <Text ellipsis={{ tooltip: value }} style={{ maxWidth: 160 }}>
+          {value}
+        </Text>
+      ),
+    },
+    {
+      title: "已采纳草稿",
+      dataIndex: "draft_text",
+      render: (value: string) => (
+        <Paragraph ellipsis={{ rows: 3 }} style={{ marginBottom: 0 }}>
+          {value}
+        </Paragraph>
+      ),
+    },
+    {
+      title: "采纳方式",
+      dataIndex: "draft_status",
+      width: 110,
+      render: (value: string) => draftStateLabels[value] ?? value,
+    },
+    {
+      title: "知识依据",
+      dataIndex: "grounding_status",
+      width: 130,
+      render: (value: string) => (
+        <Tag color={groundingColor(value)}>
+          {groundingStatusLabels[value] ?? value}
+        </Tag>
+      ),
+    },
+    {
+      title: "采纳时间",
+      dataIndex: "created_at",
+      width: 160,
+      render: (value: string) => new Date(value).toLocaleString("zh-CN"),
+    },
+    {
+      title: "操作",
+      width: 100,
+      render: (_, record) =>
+        canWriteKnowledge ? (
+          <Button
+            size="small"
+            onClick={() => {
+              setQualityVerdict("");
+              setQualityHallucinated(false);
+              setQualityNote("");
+              setQualityDraft(record);
+            }}
+          >
+            抽检
+          </Button>
+        ) : (
+          <Text type="secondary">只读</Text>
+        ),
+    },
+  ];
   const latestEvaluation = evaluationRuns.data?.items[0];
   const latestEvaluationBaseline = latestEvaluation?.baseline ?? {};
   const latestUnresolvedPassages = (latestEvaluation?.results ?? []).flatMap(
@@ -2039,6 +2172,184 @@ export default function KnowledgePage({
         />
       </Card>
       </>
+      )}
+
+      {section === "answer-quality" && (
+        <>
+          <Card
+            title="答案质量抽检"
+            extra={
+              <Space>
+                <Tag
+                  color={
+                    (qualitySamples.data?.pending_total ?? 0) > 0
+                      ? "gold"
+                      : "green"
+                  }
+                >
+                  待抽检 {qualitySamples.data?.pending_total ?? 0}
+                </Tag>
+                <Select
+                  aria-label="抽检统计窗口"
+                  value={qualityDays}
+                  onChange={setQualityDays}
+                  options={[
+                    { value: 7, label: "近 7 天" },
+                    { value: 30, label: "近 30 天" },
+                    { value: 90, label: "近 90 天" },
+                  ]}
+                  style={{ width: 120 }}
+                />
+              </Space>
+            }
+          >
+            <Alert
+              type="info"
+              showIcon
+              message="抽检口径"
+              description="只对已采纳（含修改后采纳）的草稿抽检。同一草稿重复提交会覆盖旧结论；正确率 = （正确 + 部分正确 × 0.5）/ 已抽检，幻觉率 = 标记幻觉 / 已抽检，覆盖率 = 已抽检 / 已采纳。"
+              style={{ marginBottom: 16 }}
+            />
+            {qualitySummary.isError && (
+              <Alert
+                type="error"
+                showIcon
+                message="答案质量指标加载失败，请检查指标查看权限或后端服务状态。"
+                style={{ marginBottom: 16 }}
+              />
+            )}
+            {qualitySamples.isError && (
+              <Alert
+                type="error"
+                showIcon
+                message="待抽检草稿加载失败，请稍后重试。"
+                style={{ marginBottom: 16 }}
+              />
+            )}
+            <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+              <Col xs={12} md={4}>
+                <Statistic
+                  title="已采纳草稿"
+                  value={qualitySummary.data?.adopted_total ?? 0}
+                  loading={qualitySummary.isLoading}
+                />
+              </Col>
+              <Col xs={12} md={4}>
+                <Statistic
+                  title="已抽检"
+                  value={qualitySummary.data?.evaluated_total ?? 0}
+                  loading={qualitySummary.isLoading}
+                />
+              </Col>
+              <Col xs={12} md={4}>
+                <Statistic
+                  title="抽检覆盖率"
+                  value={percentText(qualitySummary.data?.coverage_rate ?? null)}
+                  loading={qualitySummary.isLoading}
+                />
+              </Col>
+              <Col xs={12} md={4}>
+                <Statistic
+                  title="正确率"
+                  value={percentText(
+                    qualitySummary.data?.correctness_rate ?? null,
+                  )}
+                  loading={qualitySummary.isLoading}
+                />
+              </Col>
+              <Col xs={12} md={4}>
+                <Statistic
+                  title="幻觉率"
+                  value={percentText(
+                    qualitySummary.data?.hallucination_rate ?? null,
+                  )}
+                  loading={qualitySummary.isLoading}
+                />
+              </Col>
+              <Col xs={12} md={4}>
+                <Statistic
+                  title="未抽检"
+                  value={Math.max(
+                    (qualitySummary.data?.adopted_total ?? 0) -
+                      (qualitySummary.data?.evaluated_total ?? 0),
+                    0,
+                  )}
+                  loading={qualitySummary.isLoading}
+                />
+              </Col>
+            </Row>
+            <Table
+              rowKey="draft_id"
+              size="small"
+              columns={answerQualityColumns}
+              dataSource={qualitySamples.data?.items}
+              loading={qualitySamples.isLoading}
+              pagination={{ pageSize: 8, showSizeChanger: false }}
+              locale={{
+                emptyText: (
+                  <Empty description="当前窗口内没有待抽检的已采纳草稿" />
+                ),
+              }}
+            />
+          </Card>
+          <Modal
+            title="抽检答案质量"
+            open={qualityDraft !== null}
+            onCancel={resetQualityForm}
+            onOk={() => recordQuality.mutate()}
+            confirmLoading={recordQuality.isPending}
+            okText="保存抽检结论"
+            cancelText="取消"
+            okButtonProps={{ disabled: !qualityVerdict }}
+            destroyOnClose
+          >
+            {qualityDraft && (
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%" }}
+              >
+                <div>
+                  <Text strong>{qualityDraft.ticket_subject}</Text>
+                  <Paragraph
+                    style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
+                  >
+                    {qualityDraft.draft_text}
+                  </Paragraph>
+                </div>
+                <div>
+                  <Text strong>抽检结论</Text>
+                  <Select
+                    aria-label="抽检结论"
+                    value={qualityVerdict || undefined}
+                    onChange={setQualityVerdict}
+                    placeholder="选择正确程度"
+                    style={{ width: "100%" }}
+                    options={[
+                      { value: "CORRECT", label: "正确" },
+                      { value: "PARTIAL", label: "部分正确" },
+                      { value: "INCORRECT", label: "错误" },
+                    ]}
+                  />
+                </div>
+                <Checkbox
+                  checked={qualityHallucinated}
+                  onChange={(event) =>
+                    setQualityHallucinated(event.target.checked)
+                  }
+                >
+                  答案包含幻觉内容（编造事实或引用不存在的条款）
+                </Checkbox>
+                <TextArea
+                  rows={3}
+                  placeholder="备注（可选，例如错在哪一条）"
+                  value={qualityNote}
+                  onChange={(event) => setQualityNote(event.target.value)}
+                />
+              </Space>
+            )}
+          </Modal>
+        </>
       )}
 
       {section === "documents" && selected && (

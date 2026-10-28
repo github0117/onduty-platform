@@ -483,6 +483,55 @@ class KnowledgeFeedbackClusterList(BaseModel):
     total: int
 
 
+class AnswerQualityEvaluationCreate(BaseModel):
+    business_unit_id: str = Field(default="bu_demo", min_length=1, max_length=64)
+    draft_id: UUID
+    verdict: Literal["CORRECT", "PARTIAL", "INCORRECT"]
+    hallucinated: bool = False
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class AnswerQualityEvaluationView(BaseModel):
+    id: UUID
+    business_unit_id: str
+    draft_id: UUID
+    verdict: str
+    hallucinated: bool
+    note: str | None
+    evaluator_ref: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnswerQualitySampleView(BaseModel):
+    draft_id: UUID
+    ticket_id: UUID
+    ticket_subject: str
+    draft_text: str
+    draft_status: str
+    grounding_status: str
+    created_at: datetime
+    reviewed_at: datetime | None
+
+
+class AnswerQualitySampleList(BaseModel):
+    items: list[AnswerQualitySampleView]
+    pending_total: int
+
+
+class AnswerQualitySummary(BaseModel):
+    business_unit_id: str
+    days: int
+    from_at: datetime
+    to_at: datetime
+    adopted_total: int
+    evaluated_total: int
+    coverage_rate: float | None
+    verdict_counts: dict[str, int]
+    correctness_rate: float | None
+    hallucination_rate: float | None
+
+
 class RagMetricsResponse(BaseModel):
     draft_count: int
     grounded_count: int

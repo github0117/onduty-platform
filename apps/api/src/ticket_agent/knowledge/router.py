@@ -17,6 +17,7 @@ from ticket_agent.identity.dependencies import (
     resolve_business_unit,
 )
 from ticket_agent.identity.models import Principal
+from ticket_agent.knowledge.answer_quality import AnswerQualityService
 from ticket_agent.knowledge.evaluation_service import KnowledgeEvaluationService
 from ticket_agent.knowledge.feedback_service import KnowledgeFeedbackService
 from ticket_agent.knowledge.metrics import RagMetricsService, embedding_quality
@@ -31,6 +32,10 @@ from ticket_agent.knowledge.product_sync import sync_product_knowledge_batch
 from ticket_agent.knowledge.reindex import KnowledgeReindexService
 from ticket_agent.knowledge.repair_service import KnowledgeRepairService
 from ticket_agent.knowledge.schemas import (
+    AnswerQualityEvaluationCreate,
+    AnswerQualityEvaluationView,
+    AnswerQualitySampleList,
+    AnswerQualitySummary,
     EmployeeKnowledgeBindingReplace,
     EmployeeKnowledgeBindingView,
     KnowledgeDocumentCreate,
@@ -158,6 +163,61 @@ def cluster_knowledge_feedback(
     ensure_workspace_viewer(principal)
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return KnowledgeFeedbackService(db).clusters(business_unit_id=business_unit_id)
+
+
+@router.get(
+    "/knowledge/answer-evaluations/summary",
+    response_model=AnswerQualitySummary,
+)
+def get_answer_quality_summary(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+) -> AnswerQualitySummary:
+    ensure_metrics_viewer(principal)
+    business_unit_id = resolve_business_unit(principal, business_unit_id)
+    return AnswerQualityService(db).summary(
+        business_unit_id=business_unit_id,
+        days=days,
+    )
+
+
+@router.get(
+    "/knowledge/answer-evaluations/samples",
+    response_model=AnswerQualitySampleList,
+)
+def list_answer_quality_samples(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> AnswerQualitySampleList:
+    ensure_metrics_viewer(principal)
+    business_unit_id = resolve_business_unit(principal, business_unit_id)
+    return AnswerQualityService(db).samples(
+        business_unit_id=business_unit_id,
+        days=days,
+        limit=limit,
+    )
+
+
+@router.post(
+    "/knowledge/answer-evaluations",
+    response_model=AnswerQualityEvaluationView,
+)
+def record_answer_quality_evaluation(
+    payload: AnswerQualityEvaluationCreate,
+    db: DbSession,
+    principal: Actor,
+) -> AnswerQualityEvaluationView:
+    ensure_knowledge_admin(principal)
+    ensure_business_unit_access(principal, payload.business_unit_id)
+    return AnswerQualityService(db).record(
+        payload,
+        actor_id=principal.actor_id,
+    )
 
 
 @router.get(

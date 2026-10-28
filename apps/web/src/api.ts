@@ -2,6 +2,10 @@ import type {
   AgentRunList,
   AgentRunTrace,
   AgentSkill,
+  AnswerQualityEvaluation,
+  AnswerQualitySampleList,
+  AnswerQualitySummary,
+  AnswerQualityVerdict,
   BusinessServiceEntry,
   AgentPresence,
   AgentPresenceList,
@@ -1863,6 +1867,41 @@ export function listKnowledgeRepairTasks(): Promise<KnowledgeRepairTaskList> {
   return request(
     "/api/v1/knowledge/repair-tasks?business_unit_id=bu_demo",
   );
+}
+
+export function getAnswerQualitySummary(
+  days = 30,
+): Promise<AnswerQualitySummary> {
+  return request(
+    `/api/v1/knowledge/answer-evaluations/summary?business_unit_id=bu_demo&days=${days}`,
+  );
+}
+
+export function listAnswerQualitySamples(
+  days = 30,
+  limit = 10,
+): Promise<AnswerQualitySampleList> {
+  return request(
+    `/api/v1/knowledge/answer-evaluations/samples?business_unit_id=bu_demo&days=${days}&limit=${limit}`,
+  );
+}
+
+export function recordAnswerQualityEvaluation(input: {
+  draftId: string;
+  verdict: AnswerQualityVerdict;
+  hallucinated: boolean;
+  note?: string;
+}): Promise<AnswerQualityEvaluation> {
+  return request("/api/v1/knowledge/answer-evaluations", {
+    method: "POST",
+    body: JSON.stringify({
+      business_unit_id: "bu_demo",
+      draft_id: input.draftId,
+      verdict: input.verdict,
+      hallucinated: input.hallucinated,
+      note: input.note || null,
+    }),
+  });
 }
 
 export function listKnowledgeFeedback(): Promise<KnowledgeFeedbackList> {
