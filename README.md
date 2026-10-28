@@ -81,6 +81,12 @@ make build     # 构建前端到 apps/web/dist
 docker compose -f infra/compose/docker-compose.yml --profile app up -d
 ```
 
+试点部署前先跑 `make db-backup` 与 `make preflight`：前者导出并校验数据库，
+后者检查 `.env`、硬编码密钥、服务状态、迁移版本（必须恰好等于镜像 head）、
+健康探针、嵌入模式与鉴权模式。migrate 服务在升级前后都会校验版本，数据库版本
+不可达时不会启动 api。完整步骤与回滚流程见
+[上线检查清单](docs/go-live-checklist.md)。
+
 首次打开演示环境会以平台管理员进入“平台总览”，可先查看各类内容的真实数量，
 再点击“进入 60 秒主演示”。需要补齐固定数据时，进入“运行与审计”点击
 “检查并恢复演示数据”；任务只作用于 `bu_demo`，在后台执行并轮询状态，也可以
@@ -123,14 +129,14 @@ make acceptance-final
 当前基线：
 
 ```text
-后端: 454 passed（含 PostgreSQL/pgvector 专项）
+后端: 528 passed, 1 skipped（含 PostgreSQL/pgvector 专项）
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
-Ruff / mypy: passed（181 个源文件）
+Ruff / mypy: passed（185 个源文件）
 TypeScript / Vite: passed
-Playwright: 148 passed, 2 skipped（25 个测试文件）
+Playwright: 165 passed, 2 skipped（4.4 分钟）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
-PostgreSQL migration: d5e1f8c2b903 (head)
+PostgreSQL migration: d4b9e1c7a2f3 (head)
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
 ```
 
@@ -144,6 +150,7 @@ Playwright · Docker Compose · Nginx · FFmpeg
 
 - [演示与验收说明](docs/demo-guide.md)：项目定位、7 分钟演示脚本、指标口径和验收证据
 - [完整能力清单](docs/features.md)：平台全部功能细节
+- [上线检查清单](docs/go-live-checklist.md)：部署、备份、迁移校验与回滚
 - [模型与外部集成配置](docs/configuration.md)：千问、物流、限流和请求体上限
 - [多租户隔离设计与回归验证](docs/tenant-isolation.md)
 - [只读并发压测](docs/load-test.md)

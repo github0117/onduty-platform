@@ -12,6 +12,8 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+# Local database dumps from scripts/db_backup.sh
+backups/
 data/
 dist/
 build/

@@ -38,8 +38,9 @@ services:
       - path: ../../.env
         required: false
     environment: &app-environment
-      APP_ENV: development
-      APP_AUTH_MODE: dev
+      # 默认是本机演示栈；试点/生产部署通过 .env 覆盖为 production / oidc。
+      APP_ENV: ${APP_ENV:-development}
+      APP_AUTH_MODE: ${APP_AUTH_MODE:-dev}
       DATABASE_URL: postgresql+psycopg://ticket_agent:ticket_agent@postgres:5432/ticket_agent
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
       DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-20}
@@ -52,9 +53,11 @@ services:
       RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-120}
       TASK_MODE: celery
       MODEL_PROVIDER: openai_compatible
-      MODEL_BASE_URL: ${ECOMMERCE_CONTENT_BASE_URL:-}
-      MODEL_API_KEY: ${ECOMMERCE_CONTENT_API_KEY:-}
-      MODEL_NAME: ${ECOMMERCE_CONTENT_MODEL_NAME:-qwen-plus}
+      # 主模型只认 MODEL_*：先前复用 ECOMMERCE_CONTENT_* 会让电商文案密钥在
+      # 运维不知情时变成主模型密钥。密钥由 .env 注入，不写死在 compose 中。
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_NAME: ${MODEL_NAME:-qwen-plus}
       MODEL_FALLBACK_TO_LOCAL: "true"
       # 推荐语义嵌入；未填 EMBEDDING_API_KEY 时自动降级为 local-hash 演示模式，
       # 页面与 /metrics/rag 会标记 embedding_quality=demo。
@@ -110,7 +113,15 @@ services:
       BUSINESS_SANDBOX_PROVIDER: http_json
       BUSINESS_SANDBOX_BASE_URL: http://mock-business:8090
       METRICS_SCRAPE_TOKEN: local-metrics-token
-    command: ["alembic", "upgrade", "head"]
+    # 升级前确认数据库版本可达（回滚后旧镜像碰到新库会立刻失败），升级后再确认
+    # 恰好落在 head；api 依赖 service_completed_successfully，检查不过就不会启动。
+    command:
+      - sh
+      - -c
+      - >-
+        python scripts/migration_preflight.py --allow-pending &&
+        alembic upgrade head &&
+        python scripts/migration_preflight.py --expect-head
     depends_on:
       postgres:
         condition: service_healthy

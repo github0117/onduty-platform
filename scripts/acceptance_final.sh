@@ -5,6 +5,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 log_dir="$repo_root/outputs/acceptance"
 report_path="$repo_root/outputs/15_最终验收报告.md"
 compose_file="$repo_root/infra/compose/docker-compose.yml"
+# compose 的 ${VAR:-default} 插值只读项目目录（infra/compose）的 .env；
+# 显式指定仓库根 .env，保证本机密钥与配置真正进入容器。
+if [ -f "$repo_root/.env" ]; then
+  export COMPOSE_ENV_FILES="$repo_root/.env"
+fi
 mkdir -p "$log_dir"
 rm -f "$log_dir"/*.log "$report_path"
 

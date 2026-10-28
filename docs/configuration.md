@@ -1,5 +1,19 @@
 # 模型与外部集成配置
 
+## 配置注入方式
+
+密钥与开关统一写进仓库根目录 `.env`（已在 `.gitignore` 中）：
+
+- `Makefile` 与 `scripts/*.sh` 会设置 `COMPOSE_ENV_FILES=<repo>/.env`，因此 compose
+  的 `${VAR:-default}` 插值读到的就是根 `.env`。此前 compose 只读项目目录
+  `infra/compose/.env`，根 `.env` 里的密钥会在容器里变成空串。
+  `COMPOSE_ENV_FILES` 会**替换**默认的 `.env` 查找，所以请统一只维护根 `.env`；
+  `infra/compose/.env` 即使存在也不再参与插值。
+- 服务同时通过 `env_file: ../../.env` 注入整份 `.env`；`environment` 中的同名变量
+  优先级更高，所以不要把密钥再写进 compose 文件。
+- 主模型只读 `MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME`。compose 不再把
+  `ECOMMERCE_CONTENT_*` 映射成 `MODEL_*`，避免电商文案密钥在不被察觉时变成主模型密钥。
+
 ## 千问配置
 
 将密钥只写入本机 `.env`：

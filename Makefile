@@ -2,6 +2,14 @@ UV_CACHE_DIR := $(CURDIR)/.cache/uv
 UV_RUN_FLAGS ?= --offline
 export UV_CACHE_DIR
 
+# compose 的 ${VAR:-default} 插值默认只读“项目目录”的 .env（即 infra/compose/），
+# 不读仓库根 .env，导致根 .env 里的密钥在容器里变成空串。显式把根 .env 交给
+# compose 做插值；文件不存在时不设置，行为与之前一致。
+COMPOSE_ENV_FILE := $(wildcard $(CURDIR)/.env)
+ifneq ($(COMPOSE_ENV_FILE),)
+export COMPOSE_ENV_FILES := $(COMPOSE_ENV_FILE)
+endif
+
 CELERY_POOL ?= prefork
 RAG_DATASET ?= ../../evaluation/rag/sample_queries.jsonl
 CLAIM_DATASET ?= ../../evaluation/claims/sample_claims.jsonl
@@ -13,7 +21,7 @@ LOAD_TEST_CONCURRENCY ?= 50
 LOAD_TEST_DURATION ?= 60
 LOAD_TEST_ARGS ?=
 
-.PHONY: install test smoke load-test infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint typecheck format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke observability-up observability-down e2e-web e2e-web-docker
+.PHONY: install test smoke load-test infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint typecheck format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke preflight migrate-check db-backup db-restore observability-up observability-down e2e-web e2e-web-docker
 
 install:
 	cd apps/api && uv sync --all-groups
@@ -109,6 +117,18 @@ stack-down:
 
 stack-smoke:
 	docker compose -f infra/compose/docker-compose.yml exec -T api python scripts/acceptance_real_infra.py http://127.0.0.1:8000
+
+preflight:
+	./scripts/preflight_check.sh $(PREFLIGHT_ARGS)
+
+migrate-check:
+	docker compose -f infra/compose/docker-compose.yml exec -T api python scripts/migration_preflight.py --expect-head
+
+db-backup:
+	./scripts/db_backup.sh
+
+db-restore:
+	./scripts/db_restore.sh $(DUMP) $(RESTORE_CONFIRM)
 
 observability-up:
 	docker compose -f infra/compose/docker-compose.yml --profile observability up -d prometheus grafana
