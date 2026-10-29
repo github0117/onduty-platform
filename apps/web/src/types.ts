@@ -145,6 +145,8 @@ export interface CustomerConversation {
   business_unit_id: string;
   service_entry_id: string | null;
   employee_id: string | null;
+  employee_source: string;
+  employee_locked_at: string | null;
   requester_ref: string;
   category_name: string | null;
   category_profile_id: string | null;

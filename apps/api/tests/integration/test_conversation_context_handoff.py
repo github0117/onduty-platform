@@ -54,17 +54,22 @@ def _employee(
 def _conversation(
     client: TestClient,
     *,
-    employee_id: str,
+    employee_id: str | None = None,
     requester_ref: str,
+    service_entry_id: str | None = None,
 ) -> str:
+    payload: dict[str, object] = {
+        "business_unit_id": "bu_demo",
+        "requester_ref": requester_ref,
+    }
+    if employee_id is not None:
+        payload["employee_id"] = employee_id
+    if service_entry_id is not None:
+        payload["service_entry_id"] = service_entry_id
     response = client.post(
         "/api/v1/customer-service/conversations",
         headers=AGENT,
-        json={
-            "business_unit_id": "bu_demo",
-            "employee_id": employee_id,
-            "requester_ref": requester_ref,
-        },
+        json=payload,
     )
     assert response.status_code == 201, response.text
     return response.json()["id"]
@@ -718,3 +723,83 @@ def test_queued_turn_does_not_see_a_message_sent_after_it(
     assert all(
         sequence < sequences[1] for sequence in second_context["history_sequences"]
     )
+
+
+def test_manual_switch_must_stay_inside_the_entry_pool(
+    client: TestClient,
+) -> None:
+    inside = _employee(client, "entry_pool_inside", "入口内客服")
+    inside_two = _employee(client, "entry_pool_inside_two", "入口内二线")
+    outside = _employee(client, "entry_pool_outside", "入口外客服")
+    entry = client.post(
+        "/api/v1/business-service-entries",
+        headers=ADMIN,
+        json={
+            "business_unit_id": "bu_demo",
+            "code": f"entry_pool_{uuid4().hex[:8]}",
+            "name": "入口员工池",
+            "domain": "customer_service",
+            "channel": "enterprise_service",
+            "default_employee_id": inside,
+            "fallback_employee_id": inside,
+            "employees": [
+                {
+                    "employee_id": inside,
+                    "role_type": "PRIMARY",
+                    "priority": 10,
+                }
+            ],
+        },
+    )
+    assert entry.status_code == 201, entry.text
+    entry_id = entry.json()["id"]
+    conversation_id = _conversation(
+        client,
+        employee_id=inside,
+        requester_ref="entry-pool-buyer",
+        service_entry_id=entry_id,
+    )
+
+    rejected = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/employee",
+        headers=SUPERVISOR,
+        json={"employee_id": outside, "reason": "跨入口尝试"},
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["code"] == "HANDOFF_EMPLOYEE_OUTSIDE_ENTRY"
+
+    with SessionLocal() as session:
+        conversation = session.get(CustomerConversation, UUID(conversation_id))
+        assert conversation is not None
+        assert str(conversation.employee_id) == inside
+        handoff_count = session.scalar(
+            select(func.count(ConversationHandoff.id)).where(
+                ConversationHandoff.conversation_id == UUID(conversation_id)
+            )
+        )
+        assert handoff_count == 0
+
+    # Widening the pool is what allows the switch; the entry, not the
+    # operator, decides who may take the conversation.
+    replaced = client.put(
+        f"/api/v1/business-service-entries/{entry_id}/employees",
+        headers=ADMIN,
+        json=[
+            {"employee_id": inside, "role_type": "PRIMARY", "priority": 10},
+            {
+                "employee_id": inside_two,
+                "role_type": "SPECIALIST",
+                "priority": 20,
+            },
+        ],
+    )
+    assert replaced.status_code == 200, replaced.text
+
+    allowed = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/employee",
+        headers=SUPERVISOR,
+        json={"employee_id": inside_two, "reason": "入口内转接"},
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["employee_id"] == inside_two
+    assert allowed.json()["latest_handoff"]["kind"] == "OPERATOR_SWITCH"

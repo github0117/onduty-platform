@@ -100,6 +100,18 @@ const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
 const terminalStates = new Set(["COMPLETED", "FAILED_TERMINAL"]);
 
+// Why a conversation left its previous employee. Keep in sync with
+// HANDOFF_REASONS in apps/api/src/ticket_agent/customer_service/handoffs.py.
+const REROUTE_REASON_LABELS: Record<string, string> = {
+  EXPLICIT_REQUEST: "客户明确要求转接",
+  CAPABILITY_GAP: "当前员工不具备该问题能力",
+  TOPIC_CHANGED: "工单已结束，话题已切换",
+  SUSTAINED_TOPIC: "连续多轮指向同一员工",
+  ENTRY_SCOPE_CHANGED: "入口员工范围调整",
+  MANUAL: "人工交接",
+  ESCALATION: "升级处理",
+};
+
 const categoryLabels: Record<string, string> = {
   ecommerce_presales: "售前咨询",
   ecommerce_aftersales: "售后服务",
@@ -1169,11 +1181,20 @@ function CustomerChatDemo({
               showIcon
               style={{ margin: "0 16px 8px" }}
               message={
-                `由 ${currentConversation.latest_handoff.from_employee_name ?? "上一位员工"} ` +
-                `交接给 ${currentConversation.latest_handoff.to_employee_name ?? "接手员工"}`
+                (currentConversation.latest_handoff.kind === "AUTO_REROUTE"
+                  ? "系统自动转接："
+                  : "由 ") +
+                `${currentConversation.latest_handoff.from_employee_name ?? "上一位员工"} ` +
+                (currentConversation.latest_handoff.kind === "AUTO_REROUTE"
+                  ? "→ "
+                  : "交接给 ") +
+                `${currentConversation.latest_handoff.to_employee_name ?? "接手员工"}`
               }
               description={
                 [
+                  REROUTE_REASON_LABELS[
+                    currentConversation.latest_handoff.reason_code
+                  ],
                   currentConversation.latest_handoff.summary
                     .operator_reason,
                   currentConversation.latest_handoff.summary.open_actions

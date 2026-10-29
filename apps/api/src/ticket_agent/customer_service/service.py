@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ticket_agent.audit.service import record_audit
+from ticket_agent.business_entries.service import service_entry_employee_ids
 from ticket_agent.classification.conversation_signals import (
     SmallTalkKind,
     classify_small_talk,
@@ -59,8 +60,14 @@ from ticket_agent.customer_service.turn_events import (
     record_turn_event,
     transition_turn,
 )
-from ticket_agent.digital_employees.models import DigitalEmployee
-from ticket_agent.digital_employees.router_service import DigitalEmployeeRouter
+from ticket_agent.digital_employees.models import (
+    DigitalEmployee,
+    DigitalEmployeeRouteDecision,
+)
+from ticket_agent.digital_employees.router_service import (
+    DigitalEmployeeRouter,
+    explicit_employee_request,
+)
 from ticket_agent.identity.models import Principal
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
@@ -90,10 +97,15 @@ class CustomerConversationService:
         self.session = session
 
     def create(self, payload: CustomerConversationCreate) -> CustomerConversation:
+        # An explicitly requested employee is a deliberate assignment: the
+        # entry router must not silently take the conversation back later.
+        explicit_employee = payload.employee_id is not None
         conversation = CustomerConversation(
             business_unit_id=payload.business_unit_id,
             service_entry_id=payload.service_entry_id,
             employee_id=payload.employee_id,
+            employee_source="MANUAL" if explicit_employee else "ROUTER",
+            employee_locked_at=datetime.now(UTC) if explicit_employee else None,
             requester_ref=payload.requester_ref,
             category_name=payload.category_name,
             category_profile_id=payload.category_profile_id,
@@ -1129,83 +1141,14 @@ class CustomerConversationService:
         if existing_ticket is not None:
             ticket = existing_ticket
             created = True
-            previous_workflow_state = ticket.workflow_state
             previous_employee_id = ticket.employee_id
-            if conversation.service_entry_id is not None:
-                allowed_employee_ids = TicketService(
-                    self.session
-                )._service_entry_employee_ids(
-                    conversation.service_entry_id,
-                    business_unit_id=conversation.business_unit_id,
-                )
-                route_result = DigitalEmployeeRouter(
-                    self.session
-                ).route_text(
-                    business_unit_id=conversation.business_unit_id,
-                    subject=payload.content.strip().splitlines()[0][:120],
-                    body=payload.content.strip(),
-                    channel=conversation.channel,
-                    allowed_employee_ids=allowed_employee_ids,
-                )
-                reason_code = (
-                    route_result.decision.reason_code
-                    if route_result.decision is not None
-                    else "DEFAULT_EMPLOYEE"
-                )
-                current_employee = (
-                    self.session.get(DigitalEmployee, ticket.employee_id)
-                    if ticket.employee_id
-                    else None
-                )
-                preserve_current = (
-                    previous_workflow_state != WorkflowState.COMPLETED
-                    and reason_code
-                    in {
-                        "LOW_CONFIDENCE_DEFAULT",
-                        "NO_MATCH_DEFAULT",
-                    }
-                    and current_employee is not None
-                    and current_employee.status == "ACTIVE"
-                    and allowed_employee_ids is not None
-                    and current_employee.id in allowed_employee_ids
-                )
-                if preserve_current:
-                    if route_result.decision is not None:
-                        self.session.delete(route_result.decision)
-                else:
-                    ticket.employee_id = route_result.employee.id
-                    conversation.employee_id = route_result.employee.id
-                    if route_result.decision is not None:
-                        route_result.decision.ticket_id = ticket.id
-                        route_result.decision.conversation_id = (
-                            conversation.id
-                        )
-                    record_audit(
-                        self.session,
-                        correlation_id=correlation_id,
-                        event_type=(
-                            "customer_service.conversation.rerouted"
-                        ),
-                        actor_type="SERVICE",
-                        actor_id="digital_employee.router",
-                        resource_type="customer_conversation",
-                        resource_id=conversation.id,
-                        action="route",
-                        decision="EXECUTED",
-                        reason_code=reason_code,
-                        payload={
-                            "ticket_id": str(ticket.id),
-                            "previous_workflow_state": (
-                                previous_workflow_state
-                            ),
-                            "employee_id": str(
-                                route_result.employee.id
-                            ),
-                            "employee_key": (
-                                route_result.employee.employee_key
-                            ),
-                        },
-                    )
+            reroute_reason = self._maybe_reroute_employee(
+                conversation=conversation,
+                ticket=ticket,
+                content=payload.content,
+                turn_sequence=self._next_turn_sequence(conversation.id),
+                correlation_id=correlation_id,
+            )
             ticket.subject = payload.content.strip().splitlines()[0][:120]
             ticket.body = body
             ticket.status = TicketStatus.OPEN
@@ -1213,6 +1156,7 @@ class CustomerConversationService:
             ticket.version += 1
         else:
             previous_employee_id = None
+            reroute_reason = None
             ticket, created, _event_id = TicketService(self.session).create(
                 payload=TicketCreate(
                     business_unit_id=conversation.business_unit_id,
@@ -1329,9 +1273,12 @@ class CustomerConversationService:
                     from_turn=previous_turn,
                     to_employee=employee,
                     kind="AUTO_REROUTE",
-                    reason_code="TOPIC_CHANGED",
+                    reason_code=reroute_reason or "TOPIC_CHANGED",
                     actor_id="digital_employee.router",
                     correlation_id=correlation_id,
+                    # The reroute already moved the conversation; the
+                    # previous employee is the one the turn started with.
+                    from_employee_id=previous_employee_id,
                 )
                 handoff.to_turn_id = turn.id
                 turn.handoff_id = handoff.id
@@ -1730,6 +1677,8 @@ class CustomerConversationService:
             business_unit_id=conversation.business_unit_id,
             service_entry_id=conversation.service_entry_id,
             employee_id=conversation.employee_id,
+            employee_source=conversation.employee_source,
+            employee_locked_at=conversation.employee_locked_at,
             requester_ref=conversation.requester_ref,
             category_name=conversation.category_name,
             category_profile_id=conversation.category_profile_id,
@@ -1850,6 +1799,24 @@ class CustomerConversationService:
                 title="Conversation already belongs to this employee",
                 detail="Switching to the current employee is a no-op.",
             )
+        if conversation.service_entry_id is not None:
+            pool = service_entry_employee_ids(
+                self.session,
+                conversation.service_entry_id,
+                business_unit_id=conversation.business_unit_id,
+            )
+            if pool is None or employee.id not in pool:
+                # A conversation that came through an entry belongs to that
+                # entry's pool; a manual switch must not smuggle in an
+                # employee from another direction.
+                raise ApiProblem(
+                    status_code=409,
+                    code="HANDOFF_EMPLOYEE_OUTSIDE_ENTRY",
+                    title="目标员工不在业务入口内",
+                    detail=(
+                        "该会话来自业务入口，只能转交给入口内已启用的数字员工。"
+                    ),
+                )
         current_employee = (
             self.session.get(DigitalEmployee, conversation.employee_id)
             if conversation.employee_id
@@ -1886,6 +1853,12 @@ class CustomerConversationService:
             summary["operator_reason"] = reason
             handoff.summary_json = summary
         conversation.employee_id = employee.id
+        # A supervisor decided; the entry router must not take the
+        # conversation back on the next ambiguous message.
+        conversation.employee_source = "MANUAL"
+        conversation.employee_locked_at = datetime.now(UTC)
+        conversation.reroute_candidate_id = None
+        conversation.reroute_streak = 0
         conversation.version += 1
         ticket = (
             self.session.get(Ticket, conversation.current_ticket_id)
@@ -2125,6 +2098,274 @@ class CustomerConversationService:
             )
         ) or 0
         return int(current) + 1
+
+    def _maybe_reroute_employee(
+        self,
+        *,
+        conversation: CustomerConversation,
+        ticket: Ticket,
+        content: str,
+        turn_sequence: int,
+        correlation_id: str,
+    ) -> str | None:
+        """Move an existing conversation to another employee, if justified.
+
+        The employee is the conversation's owner, not a per-message choice. A
+        single message that merely resembles another employee's topics must not
+        change who the buyer is talking to; a move needs a margin, a genuine
+        capability gap and either an explicit request, a finished ticket, a
+        large gap or the same recommendation on several consecutive messages.
+        Returns the handoff reason when the conversation moved.
+        """
+        if conversation.service_entry_id is None:
+            return None
+        current_employee = (
+            self.session.get(DigitalEmployee, conversation.employee_id)
+            if conversation.employee_id is not None
+            else (
+                self.session.get(DigitalEmployee, ticket.employee_id)
+                if ticket.employee_id is not None
+                else None
+            )
+        )
+        if current_employee is None:
+            return None
+        if conversation.employee_locked_at is not None:
+            # A supervisor chose this employee; the router may not override it.
+            self._clear_reroute_evidence(conversation)
+            return None
+        allowed_employee_ids = TicketService(
+            self.session
+        )._service_entry_employee_ids(
+            conversation.service_entry_id,
+            business_unit_id=conversation.business_unit_id,
+        )
+        route_result = DigitalEmployeeRouter(self.session).route_text(
+            business_unit_id=conversation.business_unit_id,
+            subject=content.strip().splitlines()[0][:120],
+            body=content.strip(),
+            channel=conversation.channel,
+            allowed_employee_ids=allowed_employee_ids,
+            current_employee_id=current_employee.id,
+        )
+        decision = route_result.decision
+        if decision is not None:
+            decision.ticket_id = ticket.id
+            decision.conversation_id = conversation.id
+        assessment = route_result.assessment
+
+        if (
+            current_employee.status != "ACTIVE"
+            and route_result.employee.id != current_employee.id
+        ):
+            # A disabled employee cannot keep the conversation, no matter how
+            # sticky the routing policy is.
+            return self._apply_reroute(
+                conversation=conversation,
+                ticket=ticket,
+                employee=route_result.employee,
+                reason_code="CAPABILITY_GAP",
+                decision=decision,
+                turn_sequence=turn_sequence,
+                correlation_id=correlation_id,
+                explicit=True,
+            )
+
+        if (
+            allowed_employee_ids is not None
+            and current_employee.id not in allowed_employee_ids
+            and route_result.employee.id != current_employee.id
+        ):
+            # The entry's pool no longer offers the current employee.
+            return self._apply_reroute(
+                conversation=conversation,
+                ticket=ticket,
+                employee=route_result.employee,
+                reason_code="ENTRY_SCOPE_CHANGED",
+                decision=decision,
+                turn_sequence=turn_sequence,
+                correlation_id=correlation_id,
+                explicit=True,
+            )
+
+        if assessment is None:
+            self._clear_reroute_evidence(conversation)
+            self._pin_decision_to_current(decision, current_employee)
+            return None
+
+        explicit = explicit_employee_request(content)
+        evidence = assessment.margin_met and assessment.capability_gap
+        if evidence:
+            self._remember_reroute_candidate(
+                conversation,
+                assessment.candidate_employee_id,
+            )
+        else:
+            self._clear_reroute_evidence(conversation)
+
+        settings = get_settings()
+        reason_code: str | None = None
+        if explicit:
+            reason_code = "EXPLICIT_REQUEST"
+        elif evidence and assessment.strong_gap:
+            reason_code = "CAPABILITY_GAP"
+        elif (
+            evidence
+            and ticket.workflow_state == WorkflowState.COMPLETED
+        ):
+            # A finished ticket is a natural boundary: the next question may
+            # start with another employee.
+            reason_code = "TOPIC_CHANGED"
+        elif (
+            evidence
+            and conversation.reroute_streak
+            >= settings.conversation_reroute_min_streak
+        ):
+            reason_code = "SUSTAINED_TOPIC"
+
+        if reason_code is None:
+            self._pin_decision_to_current(decision, current_employee)
+            return None
+
+        if not explicit:
+            if (
+                conversation.auto_reroute_count
+                >= settings.conversation_reroute_max_per_conversation
+            ):
+                self._clear_reroute_evidence(conversation)
+                self._pin_decision_to_current(decision, current_employee)
+                return None
+            last_turn = conversation.last_auto_reroute_turn_sequence
+            if (
+                last_turn is not None
+                and turn_sequence - last_turn
+                < settings.conversation_reroute_cooldown_turns
+            ):
+                # Too soon: keep the current employee but keep the streak, so
+                # the move still happens once the cooldown ends.
+                self._pin_decision_to_current(decision, current_employee)
+                return None
+
+        candidate = (
+            self.session.get(
+                DigitalEmployee,
+                assessment.candidate_employee_id,
+            )
+            if assessment.candidate_employee_id is not None
+            else None
+        )
+        if candidate is None or candidate.status != "ACTIVE":
+            self._pin_decision_to_current(decision, current_employee)
+            return None
+        return self._apply_reroute(
+            conversation=conversation,
+            ticket=ticket,
+            employee=candidate,
+            reason_code=reason_code,
+            decision=decision,
+            turn_sequence=turn_sequence,
+            correlation_id=correlation_id,
+            explicit=explicit,
+        )
+
+    def _apply_reroute(
+        self,
+        *,
+        conversation: CustomerConversation,
+        ticket: Ticket,
+        employee: DigitalEmployee,
+        reason_code: str,
+        decision: DigitalEmployeeRouteDecision | None,
+        turn_sequence: int,
+        correlation_id: str,
+        explicit: bool,
+    ) -> str:
+        previous_employee_id = conversation.employee_id or ticket.employee_id
+        conversation.employee_id = employee.id
+        conversation.employee_source = "AUTO_HANDOFF"
+        ticket.employee_id = employee.id
+        if not explicit:
+            conversation.auto_reroute_count += 1
+            conversation.last_auto_reroute_turn_sequence = turn_sequence
+        conversation.reroute_candidate_id = None
+        conversation.reroute_streak = 0
+        if decision is not None:
+            decision.selected_employee_id = employee.id
+            decision.selected_employee_key = employee.employee_key
+            decision.reason_code = reason_code
+            candidates = list(decision.candidates_json or [])
+            for candidate in candidates:
+                if isinstance(candidate, dict):
+                    candidate["selected"] = (
+                        candidate.get("employee_id") == str(employee.id)
+                    )
+            decision.candidates_json = candidates
+        record_audit(
+            self.session,
+            correlation_id=correlation_id,
+            event_type="customer_service.conversation.rerouted",
+            actor_type="SERVICE",
+            actor_id="digital_employee.router",
+            resource_type="customer_conversation",
+            resource_id=conversation.id,
+            action="route",
+            decision="EXECUTED",
+            reason_code=reason_code,
+            payload={
+                "ticket_id": str(ticket.id),
+                "previous_employee_id": (
+                    str(previous_employee_id)
+                    if previous_employee_id is not None
+                    else None
+                ),
+                "employee_id": str(employee.id),
+                "employee_key": employee.employee_key,
+            },
+        )
+        return reason_code
+
+    @staticmethod
+    def _remember_reroute_candidate(
+        conversation: CustomerConversation,
+        candidate_id: UUID | None,
+    ) -> None:
+        if candidate_id is None:
+            conversation.reroute_candidate_id = None
+            conversation.reroute_streak = 0
+            return
+        if conversation.reroute_candidate_id == candidate_id:
+            conversation.reroute_streak += 1
+            return
+        conversation.reroute_candidate_id = candidate_id
+        conversation.reroute_streak = 1
+
+    @staticmethod
+    def _clear_reroute_evidence(conversation: CustomerConversation) -> None:
+        conversation.reroute_candidate_id = None
+        conversation.reroute_streak = 0
+
+    @staticmethod
+    def _pin_decision_to_current(
+        decision: DigitalEmployeeRouteDecision | None,
+        employee: DigitalEmployee,
+    ) -> None:
+        """Record that the router kept the conversation where it was."""
+        if decision is None:
+            return
+        decision.selected_employee_id = employee.id
+        decision.selected_employee_key = employee.employee_key
+        candidates = list(decision.candidates_json or [])
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                candidate["selected"] = (
+                    candidate.get("employee_id") == str(employee.id)
+                )
+        decision.candidates_json = candidates
+        decision.reason_code = "STICKY_CURRENT"
+        decision.reason = (
+            "问题更像其他员工，但会话继续由当前员工处理；"
+            "需要连续同向信号、明确要求或能力缺口才会转接。"
+        )
 
     def _conversation_initial_ticket(
         self,

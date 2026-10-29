@@ -338,6 +338,10 @@ class CustomerConversationView(BaseModel):
     business_unit_id: str
     service_entry_id: UUID | None
     employee_id: UUID | None
+    # ROUTER (entry router), AUTO_HANDOFF (automatic re-route) or MANUAL
+    # (supervisor switch, which also locks the conversation to that employee).
+    employee_source: str = "ROUTER"
+    employee_locked_at: datetime | None = None
     requester_ref: str
     category_name: str | None
     category_profile_id: UUID | None

@@ -9,10 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ticket_agent.audit.service import record_audit
-from ticket_agent.business_entries.models import (
-    BusinessServiceEntry,
-    BusinessServiceEntryEmployee,
-)
+from ticket_agent.business_entries.service import service_entry_employee_ids
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.digital_employees.router_service import DigitalEmployeeRouter
 from ticket_agent.digital_employees.service import DigitalEmployeeService
@@ -204,45 +201,11 @@ class TicketService:
         *,
         business_unit_id: str,
     ) -> set[UUID] | None:
-        if raw_entry_id is None:
-            return None
-        try:
-            entry_id = UUID(str(raw_entry_id))
-        except ValueError as exc:
-            raise ApiProblem(
-                status_code=422,
-                code="BUSINESS_SERVICE_ENTRY_INVALID",
-                title="业务入口无效",
-                detail="请求中的业务入口 ID 格式不正确。",
-            ) from exc
-        entry = self.session.get(BusinessServiceEntry, entry_id)
-        if (
-            entry is None
-            or entry.business_unit_id != business_unit_id
-            or entry.status != "ACTIVE"
-        ):
-            raise ApiProblem(
-                status_code=404,
-                code="BUSINESS_SERVICE_ENTRY_NOT_FOUND",
-                title="业务入口不可用",
-                detail="业务入口不存在、已停用或不属于当前业务单元。",
-            )
-        employee_ids = set(
-            self.session.scalars(
-                select(BusinessServiceEntryEmployee.employee_id).where(
-                    BusinessServiceEntryEmployee.service_entry_id == entry.id,
-                    BusinessServiceEntryEmployee.enabled.is_(True),
-                )
-            ).all()
+        return service_entry_employee_ids(
+            self.session,
+            raw_entry_id,
+            business_unit_id=business_unit_id,
         )
-        if not employee_ids:
-            raise ApiProblem(
-                status_code=409,
-                code="BUSINESS_SERVICE_ENTRY_NO_EMPLOYEE",
-                title="业务入口没有可用员工",
-                detail="请先为业务入口绑定至少一个数字员工。",
-            )
-        return employee_ids
 
     def list_tickets(
         self,

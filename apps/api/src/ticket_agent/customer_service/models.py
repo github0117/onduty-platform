@@ -43,6 +43,26 @@ class CustomerConversation(Base):
     employee_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("digital_employees.id", ondelete="SET NULL")
     )
+    # How the current employee was chosen: ROUTER (the entry router),
+    # AUTO_HANDOFF (an automatic re-route) or MANUAL (a supervisor switch).
+    # A manual switch also stamps ``employee_locked_at``; from then on the
+    # router may not take the conversation back.
+    employee_source: Mapped[str] = mapped_column(
+        String(16), default="ROUTER", nullable=False
+    )
+    employee_locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    # Evidence for the "two consecutive turns asked for the same other
+    # employee" rule. Reset whenever the router stops recommending a change.
+    reroute_candidate_id: Mapped[UUID | None] = mapped_column(Uuid)
+    reroute_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    auto_reroute_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    # Turn sequence of the last automatic re-route. Measured in turns (not
+    # buyer messages) so the cooldown means "N conversation rounds".
+    last_auto_reroute_turn_sequence: Mapped[int | None] = mapped_column(Integer)
     requester_ref: Mapped[str] = mapped_column(String(128), nullable=False)
     category_name: Mapped[str | None] = mapped_column(String(120))
     category_profile_id: Mapped[UUID | None] = mapped_column(Uuid)

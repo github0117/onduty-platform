@@ -35,6 +35,12 @@ HANDOFF_REASONS = {
     "CAPABILITY_GAP",
     "MANUAL",
     "ESCALATION",
+    # The buyer asked for another department in so many words.
+    "EXPLICIT_REQUEST",
+    # The same other employee was recommended on several messages in a row.
+    "SUSTAINED_TOPIC",
+    # The entry's employee pool no longer contains the current employee.
+    "ENTRY_SCOPE_CHANGED",
 }
 
 
@@ -134,8 +140,14 @@ def create_handoff(
     reason_code: str,
     actor_id: str,
     correlation_id: str | None = None,
+    from_employee_id: UUID | None = None,
 ) -> ConversationHandoff:
-    """Record one handoff. Idempotent per source turn."""
+    """Record one handoff. Idempotent per source turn.
+
+    ``from_employee_id`` is only needed when the caller has already moved the
+    conversation to the new employee; otherwise the conversation's current
+    employee is the one handing over.
+    """
     if kind not in HANDOFF_KINDS:
         raise ApiProblem(
             status_code=400,
@@ -177,7 +189,11 @@ def create_handoff(
         conversation_id=conversation.id,
         business_unit_id=conversation.business_unit_id,
         from_turn_id=from_turn_id,
-        from_employee_id=conversation.employee_id,
+        from_employee_id=(
+            from_employee_id
+            if from_employee_id is not None
+            else conversation.employee_id
+        ),
         to_employee_id=to_employee_id,
         kind=kind,
         reason_code=reason_code,
