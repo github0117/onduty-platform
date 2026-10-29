@@ -1,5 +1,6 @@
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
@@ -14,9 +15,12 @@ from ticket_agent.classification.conversation_signals import (
     classify_small_talk,
     repository_name,
 )
+from ticket_agent.customer_service.context import record_memory_turn
 from ticket_agent.customer_service.domain import TurnStatus
+from ticket_agent.customer_service.handoffs import create_handoff, latest_turn
 from ticket_agent.customer_service.models import (
     AgentPresence,
+    ConversationHandoff,
     ConversationMemory,
     ConversationTurn,
     ConversationTurnEvent,
@@ -32,6 +36,7 @@ from ticket_agent.customer_service.schemas import (
     AssignmentQueueItem,
     AssignmentResultItem,
     AssignmentRunResult,
+    ConversationHandoffView,
     ConversationReassignRequest,
     ConversationTurnView,
     CustomerConversationCreate,
@@ -63,6 +68,19 @@ from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.models import Ticket, WorkflowTransition
 from ticket_agent.tickets.schemas import RequesterInput, SourceInput, TicketCreate
 from ticket_agent.tickets.service import TicketService
+
+
+@dataclass(frozen=True)
+class BuyerMessageResult:
+    """Outcome of one inbound buyer message.
+
+    ``replayed`` means the caller reused a ``client_message_id`` that already
+    produced a turn: no message, turn or audit row was written this time.
+    """
+
+    conversation: CustomerConversation
+    turn_id: UUID | None
+    replayed: bool = False
 
 
 class CustomerConversationService:
@@ -925,7 +943,7 @@ class CustomerConversationService:
         *,
         principal: Principal,
         correlation_id: str,
-    ) -> tuple[CustomerConversation, UUID | None]:
+    ) -> BuyerMessageResult:
         conversation = self.session.scalar(
             select(CustomerConversation)
             .where(CustomerConversation.id == conversation_id)
@@ -938,6 +956,22 @@ class CustomerConversationService:
                 title="Conversation not found",
                 detail=f"Conversation {conversation_id} does not exist.",
             )
+        if payload.client_message_id:
+            replay = self.session.scalar(
+                select(ConversationTurn).where(
+                    ConversationTurn.conversation_id == conversation.id,
+                    ConversationTurn.client_message_id
+                    == payload.client_message_id,
+                )
+            )
+            if replay is not None:
+                # Same message submitted twice: return what the first submit
+                # produced instead of writing a second message and turn.
+                return BuyerMessageResult(
+                    conversation=conversation,
+                    turn_id=None,
+                    replayed=True,
+                )
         history = self.messages(conversation.id)
         enterprise_service = conversation.channel.startswith("enterprise")
         source_system = (
@@ -997,6 +1031,7 @@ class CustomerConversationService:
                 employee_id=conversation.employee_id,
                 intent="small_talk",
                 correlation_id=correlation_id,
+                client_message_id=payload.client_message_id,
                 attempt_count=1,
                 lease_expires_at=new_lease(lease_seconds),
                 analysis_json={
@@ -1017,6 +1052,8 @@ class CustomerConversationService:
             )
             self.session.add(turn)
             self.session.flush()
+            buyer_message.turn_id = turn.id
+            assistant_message.turn_id = turn.id
             record_turn_event(
                 self.session,
                 turn,
@@ -1052,6 +1089,7 @@ class CustomerConversationService:
                 turn.sequence,
                 payload.content,
                 small_talk_reply,
+                turn_id=turn.id,
             )
             conversation.status = "ACTIVE"
             conversation.version += 1
@@ -1069,16 +1107,30 @@ class CustomerConversationService:
             )
             self.session.commit()
             self.session.refresh(conversation)
-            return conversation, None
+            return BuyerMessageResult(
+                conversation=conversation,
+                turn_id=None,
+                replayed=False,
+            )
         existing_ticket = (
             self.session.get(Ticket, conversation.current_ticket_id)
             if conversation.current_ticket_id
             else None
         )
+        if existing_ticket is None:
+            # TicketService.create commits before the caller records
+            # current_ticket_id, so two first messages that arrive at the same
+            # instant can both reach the creation branch. The loser finds the
+            # ticket the winner already committed and joins it instead of
+            # failing on the idempotency key.
+            existing_ticket = self._conversation_initial_ticket(
+                conversation, source_system
+            )
         if existing_ticket is not None:
             ticket = existing_ticket
             created = True
             previous_workflow_state = ticket.workflow_state
+            previous_employee_id = ticket.employee_id
             if conversation.service_entry_id is not None:
                 allowed_employee_ids = TicketService(
                     self.session
@@ -1160,6 +1212,7 @@ class CustomerConversationService:
             ticket.workflow_state = WorkflowState.RECEIVED
             ticket.version += 1
         else:
+            previous_employee_id = None
             ticket, created, _event_id = TicketService(self.session).create(
                 payload=TicketCreate(
                     business_unit_id=conversation.business_unit_id,
@@ -1215,8 +1268,14 @@ class CustomerConversationService:
                 principal=principal,
                 correlation_id=correlation_id,
                 enqueue=False,
+                # Keep this conversation's row lock until this request commits:
+                # a concurrent message must not pick the same message sequence.
+                commit=False,
             )
         if created:
+            # Snapshot the turn this message continues before the new one
+            # exists; a handoff summarises the predecessor, not the successor.
+            previous_turn = latest_turn(self.session, conversation.id)
             buyer_message = CustomerMessage(
                 conversation_id=conversation.id,
                 sequence=sequence,
@@ -1244,6 +1303,7 @@ class CustomerConversationService:
                     employee.config_revision if employee else None
                 ),
                 correlation_id=correlation_id,
+                client_message_id=payload.client_message_id,
                 lease_expires_at=new_lease(
                     get_settings().conversation_turn_lease_seconds
                 ),
@@ -1255,6 +1315,26 @@ class CustomerConversationService:
             )
             self.session.add(turn)
             self.session.flush()
+            buyer_message.turn_id = turn.id
+            if (
+                previous_employee_id is not None
+                and ticket.employee_id is not None
+                and ticket.employee_id != previous_employee_id
+            ):
+                # The router moved the conversation to another employee: this
+                # turn must inherit what the previous one established.
+                handoff = create_handoff(
+                    self.session,
+                    conversation=conversation,
+                    from_turn=previous_turn,
+                    to_employee=employee,
+                    kind="AUTO_REROUTE",
+                    reason_code="TOPIC_CHANGED",
+                    actor_id="digital_employee.router",
+                    correlation_id=correlation_id,
+                )
+                handoff.to_turn_id = turn.id
+                turn.handoff_id = handoff.id
             record_turn_event(
                 self.session,
                 turn,
@@ -1286,8 +1366,16 @@ class CustomerConversationService:
                 route_decision.conversation_id = conversation.id
             self.session.commit()
             self.session.refresh(conversation)
-            return conversation, turn.id
-        return conversation, None
+            return BuyerMessageResult(
+                conversation=conversation,
+                turn_id=turn.id,
+                replayed=False,
+            )
+        return BuyerMessageResult(
+            conversation=conversation,
+            turn_id=None,
+            replayed=False,
+        )
 
     def append_assistant_reply(self, ticket_id: UUID, content: str) -> None:
         buyer_message = self.session.scalar(
@@ -1614,7 +1702,12 @@ class CustomerConversationService:
         self.session.refresh(conversation)
         return conversation
 
-    def view(self, conversation: CustomerConversation) -> CustomerConversationView:
+    def view(
+        self,
+        conversation: CustomerConversation,
+        *,
+        replayed: bool = False,
+    ) -> CustomerConversationView:
         ticket = (
             self.session.get(Ticket, conversation.current_ticket_id)
             if conversation.current_ticket_id
@@ -1624,6 +1717,12 @@ class CustomerConversationService:
             select(ConversationTurn)
             .where(ConversationTurn.conversation_id == conversation.id)
             .order_by(ConversationTurn.sequence.desc())
+            .limit(1)
+        )
+        last_handoff = self.session.scalar(
+            select(ConversationHandoff)
+            .where(ConversationHandoff.conversation_id == conversation.id)
+            .order_by(ConversationHandoff.created_at.desc())
             .limit(1)
         )
         return CustomerConversationView(
@@ -1651,9 +1750,186 @@ class CustomerConversationService:
                 if current_turn is not None
                 else None
             ),
+            latest_handoff=(
+                self.handoff_view(last_handoff)
+                if last_handoff is not None
+                else None
+            ),
+            replayed=replayed,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
         )
+
+    def handoff_view(
+        self,
+        handoff: ConversationHandoff,
+    ) -> ConversationHandoffView:
+        names: dict[UUID, str] = {}
+        employee_ids = [
+            employee_id
+            for employee_id in (
+                handoff.from_employee_id,
+                handoff.to_employee_id,
+            )
+            if employee_id is not None
+        ]
+        if employee_ids:
+            names = {
+                employee_id: name
+                for employee_id, name in self.session.execute(
+                    select(DigitalEmployee.id, DigitalEmployee.name).where(
+                        DigitalEmployee.id.in_(employee_ids)
+                    )
+                ).all()
+            }
+        return ConversationHandoffView(
+            id=handoff.id,
+            conversation_id=handoff.conversation_id,
+            from_turn_id=handoff.from_turn_id,
+            to_turn_id=handoff.to_turn_id,
+            from_employee_id=handoff.from_employee_id,
+            to_employee_id=handoff.to_employee_id,
+            from_employee_name=(
+                names.get(handoff.from_employee_id)
+                if handoff.from_employee_id
+                else None
+            ),
+            to_employee_name=(
+                names.get(handoff.to_employee_id)
+                if handoff.to_employee_id
+                else None
+            ),
+            kind=handoff.kind,
+            reason_code=handoff.reason_code,
+            summary=dict(handoff.summary_json or {}),
+            created_by=handoff.created_by,
+            created_at=handoff.created_at,
+        )
+
+    def switch_employee(
+        self,
+        conversation_id: UUID,
+        *,
+        employee_id: UUID,
+        reason: str | None,
+        principal: Principal,
+        correlation_id: str,
+    ) -> tuple[CustomerConversation, ConversationHandoff]:
+        """Hand a conversation to another digital employee and record it."""
+        conversation = self.session.scalar(
+            select(CustomerConversation)
+            .where(CustomerConversation.id == conversation_id)
+            .with_for_update()
+        )
+        if conversation is None:
+            raise ApiProblem(
+                status_code=404,
+                code="CONVERSATION_NOT_FOUND",
+                title="Conversation not found",
+                detail=f"Conversation {conversation_id} does not exist.",
+            )
+        employee = self.session.get(DigitalEmployee, employee_id)
+        if employee is None:
+            raise ApiProblem(
+                status_code=404,
+                code="EMPLOYEE_NOT_FOUND",
+                title="Digital employee not found",
+                detail=f"Digital employee {employee_id} does not exist.",
+            )
+        if employee.status != "ACTIVE":
+            raise ApiProblem(
+                status_code=409,
+                code="EMPLOYEE_NOT_ACTIVE",
+                title="Digital employee is not active",
+                detail="A conversation can only be handed to an active employee.",
+            )
+        if conversation.employee_id == employee.id:
+            raise ApiProblem(
+                status_code=409,
+                code="EMPLOYEE_UNCHANGED",
+                title="Conversation already belongs to this employee",
+                detail="Switching to the current employee is a no-op.",
+            )
+        current_employee = (
+            self.session.get(DigitalEmployee, conversation.employee_id)
+            if conversation.employee_id
+            else None
+        )
+        required_domain = (
+            current_employee.domain if current_employee is not None else "customer_service"
+        )
+        if employee.domain != required_domain:
+            # A customer conversation must stay inside its own domain; a hand
+            # off to HR or an operations agent would run the wrong playbook.
+            raise ApiProblem(
+                status_code=409,
+                code="EMPLOYEE_DOMAIN_MISMATCH",
+                title="Digital employee belongs to another domain",
+                detail=(
+                    "A conversation can only be handed to an employee of its "
+                    f"own domain ({required_domain})."
+                ),
+            )
+        from_turn = latest_turn(self.session, conversation.id)
+        handoff = create_handoff(
+            self.session,
+            conversation=conversation,
+            from_turn=from_turn,
+            to_employee=employee,
+            kind="OPERATOR_SWITCH",
+            reason_code="MANUAL",
+            actor_id=principal.actor_id,
+            correlation_id=correlation_id,
+        )
+        if reason:
+            summary = dict(handoff.summary_json)
+            summary["operator_reason"] = reason
+            handoff.summary_json = summary
+        conversation.employee_id = employee.id
+        conversation.version += 1
+        ticket = (
+            self.session.get(Ticket, conversation.current_ticket_id)
+            if conversation.current_ticket_id
+            else None
+        )
+        if ticket is not None:
+            ticket.employee_id = employee.id
+            ticket.version += 1
+            self.session.add(
+                WorkflowTransition(
+                    ticket_id=ticket.id,
+                    from_state=ticket.workflow_state,
+                    to_state=ticket.workflow_state,
+                    reason_code="EMPLOYEE_SWITCHED",
+                    actor_type="USER",
+                    actor_id=principal.actor_id,
+                )
+            )
+        record_audit(
+            self.session,
+            correlation_id=correlation_id,
+            event_type="customer_service.conversation.employee_switched",
+            actor_type="USER",
+            actor_id=principal.actor_id,
+            resource_type="customer_conversation",
+            resource_id=conversation.id,
+            action="switch_employee",
+            decision="EXECUTED",
+            reason_code="MANUAL",
+            payload={
+                "handoff_id": str(handoff.id),
+                "from_employee_id": (
+                    str(handoff.from_employee_id)
+                    if handoff.from_employee_id
+                    else None
+                ),
+                "to_employee_id": str(employee.id),
+                "reason": reason,
+            },
+        )
+        self.session.commit()
+        self.session.refresh(conversation)
+        return conversation, handoff
 
     def message_view(self, message: CustomerMessage) -> CustomerMessageView:
         return CustomerMessageView(
@@ -1662,6 +1938,7 @@ class CustomerConversationService:
             role=message.role,
             content=message.content,
             ticket_id=message.ticket_id,
+            turn_id=message.turn_id,
             created_by=message.created_by,
             created_at=message.created_at,
         )
@@ -1679,6 +1956,7 @@ class CustomerConversationService:
             correlation_id=turn.correlation_id,
             version=turn.version,
             attempt_count=turn.attempt_count,
+            handoff_id=turn.handoff_id,
             intent=turn.intent,
             analysis=turn.analysis_json,
             response_provider=turn.response_provider,
@@ -1701,6 +1979,7 @@ class CustomerConversationService:
         ticket_id: UUID | None,
         content: str,
         created_by: str = "digital_employee",
+        turn_id: UUID | None = None,
     ) -> CustomerMessage:
         message = CustomerMessage(
             conversation_id=conversation_id,
@@ -1708,6 +1987,7 @@ class CustomerConversationService:
             role="ASSISTANT",
             content=content,
             ticket_id=ticket_id,
+            turn_id=turn_id,
             created_by=created_by,
         )
         self.session.add(message)
@@ -1774,6 +2054,7 @@ class CustomerConversationService:
             turn.sequence,
             user_message.content if user_message else "",
             assistant_message.content,
+            turn_id=turn.id,
         )
         self.session.commit()
         return turn
@@ -1784,38 +2065,50 @@ class CustomerConversationService:
         turn_sequence: int,
         user_content: str,
         assistant_content: str,
+        *,
+        turn_id: UUID | None = None,
     ) -> None:
         memory = self.session.get(ConversationMemory, conversation_id)
-        if memory is None:
-            memory = ConversationMemory(
-                conversation_id=conversation_id,
-                summary="",
-                slots_json={},
-                last_turn_sequence=0,
-            )
-            self.session.add(memory)
+        previous_summary = memory.summary if memory is not None else ""
         line = (
             f"第 {turn_sequence} 轮 用户：{user_content.strip()[:500]} "
             f"客服：{assistant_content.strip()[:800]}"
         )
-        memory.summary = f"{memory.summary}\n{line}".strip()[-4000:]
-        slots = dict(memory.slots_json)
+        summary = f"{previous_summary}\n{line}".strip()[-4000:]
+        source_turn_id = str(turn_id) if turn_id is not None else None
+        updated_at = datetime.now(UTC).isoformat()
+        facts: dict[str, dict[str, object]] = {}
         repository = repository_name(user_content)
         if repository is None:
-            for previous_line in reversed(memory.summary.splitlines()):
+            for previous_line in reversed(previous_summary.splitlines()):
                 repository = repository_name(previous_line)
                 if repository is not None:
                     break
         if repository is not None and repository.casefold() != "owner/repo":
-            slots["repository"] = repository
+            facts["repository"] = {
+                "value": repository,
+                "status": "confirmed",
+                "source_turn_id": source_turn_id,
+                "updated_at": updated_at,
+            }
         order_id = _first_match(
             r"(\b[A-Z]{2,}(?:-[A-Z0-9]+){1,}\b)",
             user_content,
         )
         if order_id is not None:
-            slots["order_id"] = order_id
-        memory.slots_json = slots
-        memory.last_turn_sequence = turn_sequence
+            facts["order_id"] = {
+                "value": order_id,
+                "status": "confirmed",
+                "source_turn_id": source_turn_id,
+                "updated_at": updated_at,
+            }
+        record_memory_turn(
+            self.session,
+            conversation_id=conversation_id,
+            turn_sequence=turn_sequence,
+            summary=summary,
+            facts=facts,
+        )
 
     def _next_sequence(self, conversation_id: UUID) -> int:
         current = self.session.scalar(
@@ -1832,6 +2125,24 @@ class CustomerConversationService:
             )
         ) or 0
         return int(current) + 1
+
+    def _conversation_initial_ticket(
+        self,
+        conversation: CustomerConversation,
+        source_system: str,
+    ) -> Ticket | None:
+        """Return the initial ticket another message of this conversation made.
+
+        The conversation's first message opens a ticket whose source id is
+        derived from the conversation, so the ticket can be found before
+        ``current_ticket_id`` is committed.
+        """
+        return self.session.scalar(
+            select(Ticket).where(
+                Ticket.source_system == source_system,
+                Ticket.source_ticket_id == f"CONV-{conversation.id}-initial",
+            )
+        )
 
 
 def _as_utc(value: datetime) -> datetime:

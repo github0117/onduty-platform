@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -81,6 +82,10 @@ class CustomerMessage(Base):
     role: Mapped[str] = mapped_column(String(24), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     ticket_id: Mapped[UUID | None] = mapped_column(Uuid)
+    # Which turn produced this message. A logical reference (no FK) in the same
+    # style as ``ticket_id``: a database FK would make customer_messages and
+    # conversation_turns reference each other.
+    turn_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
     created_by: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -99,6 +104,17 @@ class ConversationTurn(Base):
             "ix_conversation_turns_conversation_status",
             "conversation_id",
             "status",
+        ),
+        # A caller-supplied id makes resubmission of the same message a replay
+        # instead of a second turn. Only rows that actually carry an id are
+        # constrained, so old rows stay valid.
+        Index(
+            "uq_conversation_turns_client_message",
+            "conversation_id",
+            "client_message_id",
+            unique=True,
+            postgresql_where=text("client_message_id IS NOT NULL"),
+            sqlite_where=text("client_message_id IS NOT NULL"),
         ),
     )
 
@@ -119,6 +135,12 @@ class ConversationTurn(Base):
         nullable=False,
     )
     correlation_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    client_message_id: Mapped[str | None] = mapped_column(String(128))
+    # Snapshot of what the runtime actually put in front of the answer:
+    # message sequences used, memory version, handoff id, budget, truncation.
+    # NULL means no assembly was recorded (fast paths and pre-M1 turns).
+    context_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    handoff_id: Mapped[UUID | None] = mapped_column(Uuid)
     # Optimistic concurrency guard for state transitions, mirroring the
     # customer_conversations/tickets pattern.
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -265,11 +287,82 @@ class ConversationMemory(Base):
         default=0,
         nullable=False,
     )
+    # v1 rows stored bare ``{"repository": ..., "order_id": ...}``. The reader
+    # upgrades them to the v2 shape, which tracks where each fact came from.
+    schema_version: Mapped[int] = mapped_column(
+        Integer,
+        default=2,
+        nullable=False,
+        server_default="1",
+    )
+    summarized_through_sequence: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+        server_default="0",
+    )
+    version: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        nullable=False,
+        server_default="1",
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
         onupdate=utc_now,
         nullable=False,
+    )
+
+
+class ConversationHandoff(Base):
+    """A recorded transfer of one conversation from one employee to another.
+
+    The handoff carries a deterministic summary of what the previous employee
+    had established, so the next turn can start from facts instead of from a
+    raw message window.
+    """
+
+    __tablename__ = "conversation_handoffs"
+    __table_args__ = (
+        # Retrying one transfer must not create a second record; handing the
+        # same turn to a different employee is a separate transfer.
+        UniqueConstraint(
+            "from_turn_id",
+            "to_employee_id",
+            name="uq_conversation_handoff_from_turn_target",
+        ),
+        Index(
+            "ix_conversation_handoffs_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("customer_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_turn_id: Mapped[UUID | None] = mapped_column(Uuid)
+    to_turn_id: Mapped[UUID | None] = mapped_column(Uuid)
+    from_employee_id: Mapped[UUID | None] = mapped_column(Uuid)
+    to_employee_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("digital_employees.id", ondelete="SET NULL"),
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary_json: Mapped[dict[str, object]] = mapped_column(
+        JSON,
+        default=dict,
+        nullable=False,
+    )
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
     )
 
 

@@ -27,6 +27,7 @@ class ConversationTurnView(BaseModel):
     correlation_id: str | None = None
     version: int = 1
     attempt_count: int = 0
+    handoff_id: UUID | None = None
     intent: str | None
     analysis: dict[str, Any]
     response_provider: str | None
@@ -68,10 +69,34 @@ class TurnReclaimResult(BaseModel):
     redispatched: int
 
 
+class ConversationHandoffView(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    from_turn_id: UUID | None
+    to_turn_id: UUID | None
+    from_employee_id: UUID | None
+    to_employee_id: UUID | None
+    from_employee_name: str | None = None
+    to_employee_name: str | None = None
+    kind: str
+    reason_code: str
+    summary: dict[str, Any]
+    created_by: str
+    created_at: datetime
+
+
+class ConversationHandoffCreate(BaseModel):
+    employee_id: UUID
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class CustomerMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
     product_id: str | None = Field(default=None, max_length=64)
     sku: str | None = Field(default=None, max_length=100)
+    # Caller-generated id: resubmitting the same id returns the existing turn
+    # instead of writing a second message.
+    client_message_id: str | None = Field(default=None, max_length=128)
 
 
 class BusinessAddressView(BaseModel):
@@ -301,6 +326,9 @@ class CustomerMessageView(BaseModel):
     role: Literal["BUYER", "ASSISTANT"]
     content: str
     ticket_id: UUID | None
+    # The turn this message belongs to, so a reader can go from a message to
+    # the run that produced or consumed it. NULL for pre-M1 messages.
+    turn_id: UUID | None = None
     created_by: str
     created_at: datetime
 
@@ -326,6 +354,9 @@ class CustomerConversationView(BaseModel):
     version: int
     messages: list[CustomerMessageView]
     current_turn: ConversationTurnView | None = None
+    latest_handoff: ConversationHandoffView | None = None
+    # True when this response is the replay of an earlier submission.
+    replayed: bool = False
     created_at: datetime
     updated_at: datetime
 

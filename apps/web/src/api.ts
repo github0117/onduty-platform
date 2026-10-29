@@ -725,6 +725,20 @@ export function takeOverCustomerConversation(
   );
 }
 
+export function switchCustomerConversationEmployee(
+  conversationId: string,
+  employeeId: string,
+  reason: string,
+): Promise<CustomerConversation> {
+  return request(
+    `/api/v1/customer-service/conversations/${conversationId}/employee`,
+    {
+      method: "POST",
+      body: JSON.stringify({ employee_id: employeeId, reason }),
+    },
+  );
+}
+
 export function releaseCustomerConversation(
   conversationId: string,
 ): Promise<CustomerConversation> {

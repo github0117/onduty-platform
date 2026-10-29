@@ -69,6 +69,7 @@ import {
   requestMcpActionCompensation,
   sendManualCustomerReply,
   streamCustomerConversationMessage,
+  switchCustomerConversationEmployee,
   takeOverCustomerConversation,
   watchCustomerConversation,
 } from "./api";
@@ -356,6 +357,8 @@ function CustomerChatDemo({
     useState<CustomerReplySuggestion | null>(null);
   const [manualSuggestionError, setManualSuggestionError] = useState("");
   const [profileEmployeeId, setProfileEmployeeId] = useState("");
+  const [switchEmployeeId, setSwitchEmployeeId] = useState("");
+  const [switchReason, setSwitchReason] = useState("");
   const [followLatest, setFollowLatest] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -780,6 +783,39 @@ function CustomerChatDemo({
     },
     onError: (error: Error) => message.error(error.message),
   });
+  const switchEmployee = useMutation({
+    mutationFn: ({
+      employeeId,
+      reason,
+    }: {
+      employeeId: string;
+      reason: string;
+    }) => {
+      if (!conversationId) throw new Error("当前还没有对话");
+      return switchCustomerConversationEmployee(
+        conversationId,
+        employeeId,
+        reason.trim(),
+      );
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        ["chat-demo-conversation", conversationId],
+        updated,
+      );
+      setSwitchEmployeeId("");
+      setSwitchReason("");
+      void queryClient.invalidateQueries({
+        queryKey: ["chat-demo-conversation", conversationId],
+      });
+      message.success(
+        updated.latest_handoff?.to_employee_name
+          ? `已交接给${updated.latest_handoff.to_employee_name}`
+          : "已完成数字员工交接",
+      );
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
   const requestManualSuggestion = useMutation({
     mutationFn: () => {
       if (!conversationId) throw new Error("当前还没有对话");
@@ -1071,8 +1107,89 @@ function CustomerChatDemo({
                   {currentTicket.risk.level}
                 </Tag>
               )}
+              {hasCapability("operations.manage") &&
+                conversationId &&
+                employees.data?.length ? (
+                <>
+                  {/* Direct children of the wrapping row: on a narrow window
+                      they move to the next line instead of being clipped. */}
+                  <Select
+                    size="small"
+                    placeholder="切换到数字员工"
+                    style={{ width: 140 }}
+                    value={switchEmployeeId || undefined}
+                    loading={employees.isLoading}
+                    onChange={(value: string) => setSwitchEmployeeId(value)}
+                    options={employees.data
+                      .filter(
+                        (employee) =>
+                          employee.status === "ACTIVE" &&
+                          // A customer conversation can only move to another
+                          // customer service employee; the switch API refuses
+                          // every other unit or domain.
+                          employee.domain === "customer_service" &&
+                          employee.id !== currentConversation?.employee_id,
+                      )
+                      .map((employee) => ({
+                        value: employee.id,
+                        label: employee.name,
+                      }))}
+                  />
+                  <Input
+                    size="small"
+                    placeholder="交接原因（可选）"
+                    style={{ width: 132 }}
+                    value={switchReason}
+                    maxLength={200}
+                    onChange={(event) => setSwitchReason(event.target.value)}
+                  />
+                  <Button
+                    size="small"
+                    type="primary"
+                    ghost
+                    loading={switchEmployee.isPending}
+                    disabled={!switchEmployeeId}
+                    onClick={() =>
+                      switchEmployee.mutate({
+                        employeeId: switchEmployeeId,
+                        reason: switchReason,
+                      })
+                    }
+                  >
+                    交接
+                  </Button>
+                </>
+              ) : null}
             </Space>
           </div>
+
+          {currentConversation?.latest_handoff && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ margin: "0 16px 8px" }}
+              message={
+                `由 ${currentConversation.latest_handoff.from_employee_name ?? "上一位员工"} ` +
+                `交接给 ${currentConversation.latest_handoff.to_employee_name ?? "接手员工"}`
+              }
+              description={
+                [
+                  currentConversation.latest_handoff.summary
+                    .operator_reason,
+                  currentConversation.latest_handoff.summary.open_actions
+                    ?.length
+                    ? `未完成事项 ${currentConversation.latest_handoff.summary.open_actions.length} 项`
+                    : "",
+                  currentConversation.latest_handoff.summary
+                    .pending_questions?.length
+                    ? `待确认 ${currentConversation.latest_handoff.summary.pending_questions.length} 项`
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "交接摘要已写入下一轮上下文"
+              }
+            />
+          )}
 
           <div
             ref={scrollRef}

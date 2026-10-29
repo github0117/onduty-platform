@@ -30,6 +30,7 @@ from ticket_agent.customer_service.schemas import (
     AgentPresenceView,
     AssignmentQueue,
     AssignmentRunResult,
+    ConversationHandoffCreate,
     ConversationReassignRequest,
     ConversationTurnEventList,
     ConversationTurnEventView,
@@ -356,6 +357,35 @@ def reclaim_customer_conversation_turns(
         reclaimed=len(turn_ids),
         redispatched=len(turn_ids),
     )
+
+
+@router.post(
+    "/customer-service/conversations/{conversation_id}/employee",
+    response_model=CustomerConversationView,
+)
+def switch_customer_conversation_employee(
+    conversation_id: UUID,
+    payload: ConversationHandoffCreate,
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+) -> CustomerConversationView:
+    """Hand the conversation to another digital employee.
+
+    The transfer is recorded as a handoff carrying a deterministic summary, and
+    the next turn assembles that summary as its context.
+    """
+    ensure_sync_batch_operator(principal)
+    service = CustomerConversationService(db)
+    conversation = _conversation_for_access(service, conversation_id, principal)
+    updated, _handoff = service.switch_employee(
+        conversation.id,
+        employee_id=payload.employee_id,
+        reason=payload.reason,
+        principal=principal,
+        correlation_id=correlation_id(request),
+    )
+    return service.view(updated)
 
 
 @router.get(
@@ -690,19 +720,19 @@ def add_customer_message(
     ensure_service_chat(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
-    conversation, turn_id = service.append_buyer_message(
+    result = service.append_buyer_message(
         conversation_id,
         payload,
         principal=principal,
         correlation_id=correlation_id(request),
     )
-    if turn_id is not None:
+    if result.turn_id is not None:
         background_tasks.add_task(
             process_conversation_turn,
-            turn_id,
+            result.turn_id,
             correlation_id(request),
         )
-    return service.view(conversation)
+    return service.view(result.conversation, replayed=result.replayed)
 
 
 @router.post(
@@ -719,13 +749,17 @@ def stream_customer_message(
     ensure_service_chat(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
-    conversation, turn_id = service.append_buyer_message(
+    result = service.append_buyer_message(
         conversation_id,
         payload,
         principal=principal,
         correlation_id=correlation_id(request),
     )
-    initial_view = service.view(conversation).model_dump(mode="json")
+    conversation, turn_id = result.conversation, result.turn_id
+    initial_view = service.view(
+        conversation,
+        replayed=result.replayed,
+    ).model_dump(mode="json")
     # Release the request's read transaction before the worker writes in its
     # own session (SQLite tests would otherwise block on a shared lock).
     db.close()

@@ -111,6 +111,31 @@ export interface CustomerMessage {
   role: "BUYER" | "ASSISTANT";
   content: string;
   ticket_id: string | null;
+  turn_id: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ConversationHandoff {
+  id: string;
+  conversation_id: string;
+  from_turn_id: string | null;
+  to_turn_id: string | null;
+  from_employee_id: string | null;
+  to_employee_id: string | null;
+  from_employee_name: string | null;
+  to_employee_name: string | null;
+  kind: string;
+  reason_code: string;
+  summary: {
+    confirmed_facts?: { key: string; value: unknown }[];
+    open_actions?: { summary: string | null }[];
+    commitments?: { text: string | null }[];
+    last_answer?: { turn_id: string; text: string } | null;
+    pending_questions?: string[];
+    unverified?: string[];
+    operator_reason?: string;
+  };
   created_by: string;
   created_at: string;
 }
@@ -136,6 +161,8 @@ export interface CustomerConversation {
   version: number;
   messages: CustomerMessage[];
   current_turn: ConversationTurn | null;
+  latest_handoff: ConversationHandoff | null;
+  replayed: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -152,6 +179,7 @@ export interface ConversationTurn {
   correlation_id: string | null;
   version: number;
   attempt_count: number;
+  handoff_id?: string | null;
   intent: string | null;
   analysis: Record<string, unknown>;
   response_provider: string | null;

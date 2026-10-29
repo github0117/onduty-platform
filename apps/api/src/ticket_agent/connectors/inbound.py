@@ -325,12 +325,18 @@ def _open_conversation_turn(
     correlation_id: str,
 ) -> tuple[CustomerConversation, UUID | None]:
     conversation = _conversation_for_thread(session, connector, row)
-    updated, turn_id = CustomerConversationService(session).append_buyer_message(
+    result = CustomerConversationService(session).append_buyer_message(
         conversation.id,
-        CustomerMessageCreate(content=row.content),
+        CustomerMessageCreate(
+            content=row.content,
+            # Keyed by the inbound record: replaying an already-processed
+            # inbound message must not open a second turn.
+            client_message_id=f"connector-inbound:{row.id}",
+        ),
         principal=_service_principal(connector, row.external_user_id),
         correlation_id=correlation_id,
     )
+    updated, turn_id = result.conversation, result.turn_id
     row.conversation_id = updated.id
     row.ticket_id = updated.current_ticket_id
     row.turn_id = turn_id

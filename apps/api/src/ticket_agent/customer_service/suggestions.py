@@ -17,6 +17,7 @@ from ticket_agent.classification.conversation_signals import (
 from ticket_agent.classification.conversation_signals import (
     repository_name as _repository_name,
 )
+from ticket_agent.customer_service.context import AssembledContext
 from ticket_agent.customer_service.models import (
     ConversationMemory,
     CustomerConversation,
@@ -61,6 +62,8 @@ class CustomerSuggestionState(TypedDict, total=False):
     conversation_id: UUID
     requested_by: str
     query: str
+    # Memory and handoff lines the assembler produced for this turn.
+    context_lines: list[str]
     repository: str | None
     skill: str
     skill_instructions: str
@@ -131,6 +134,7 @@ class CustomerReplySuggestionService:
         *,
         agent_id: str,
         correlation_id: str,
+        context: AssembledContext | None = None,
     ) -> CustomerReplySuggestionView:
         conversation = self.session.get(CustomerConversation, conversation_id)
         if conversation is None:
@@ -165,7 +169,13 @@ class CustomerReplySuggestionService:
                 title="Conversation has no current ticket",
                 detail="A reply suggestion requires an active conversation ticket.",
             )
-        query = self._query(conversation.id)
+        # The turn runtime assembles the window once; the manual suggestion
+        # endpoint has no assembler result and keeps its own read.
+        query = (
+            context.window_text()
+            if context is not None
+            else self._query(conversation.id)
+        )
         security_refusal = _security_boundary_refusal(
             _latest_buyer_question(query)
         )
@@ -232,6 +242,11 @@ class CustomerReplySuggestionService:
                     "employee": employee,
                     "ticket": ticket,
                     "usage_guard": usage_guard,
+                    "context_lines": (
+                        context.prompt_lines()
+                        if context is not None
+                        else []
+                    ),
                     "mcp_evidence": [],
                     "mcp_tool_calls": [],
                     "trace": [],
@@ -726,12 +741,21 @@ class CustomerReplySuggestionService:
             matched_rule_id="LANGGRAPH_REPLY_SUGGESTION",
             reason_codes=[],
         )
+        # Memory and handoff lines go in front of the ticket body so the model
+        # starts from established facts. Fast paths above never read the body,
+        # so the deterministic answers are unchanged.
+        context_lines = state.get("context_lines") or []
+        body = (
+            "\n".join([*context_lines, "", ticket.body])
+            if context_lines
+            else ticket.body
+        )
         draft = build_draft_service_for_employee(
             employee,
             usage_guard=state["usage_guard"],
         ).generate(
             subject=ticket.subject,
-            body=ticket.body,
+            body=body,
             analysis=self._analysis(ticket),
             routing=routing,
             knowledge_hits=hits,

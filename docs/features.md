@@ -119,6 +119,29 @@
   `CONVERSATION_TURN_MAX_ATTEMPTS` 标记 `FAILED_TERMINAL`；运维也可调用
   `POST /api/v1/customer-service/turns/reclaim` 手动触发（需要
   `operations.manage`）。
+- 多轮上下文按固定顺序装配：会话记忆 → 最近一次交接摘要 → 预算内的消息窗口 →
+  当前消息。装配结果写入 `conversation_turns.context_json` 并附在
+  `CONTEXT_ASSEMBLED` 事件里，可核对这一轮到底看到了哪几条、是否被截断；
+  消息窗口按“买家／客服（员工名）”标注，`customer_messages.turn_id` 指向产生
+  该条消息的轮次。
+- 会话记忆是结构化 v2（`facts` 带 `source_turn_id`、待办、承诺、悬而未决的问题、
+  滚动摘要与 `summarized_through_sequence`）；读到旧 v1 记忆时惰性升级并回写，
+  升级不改变历史内容。
+- 同一会话的轮次串行执行：后到的轮次保持 `PENDING` 且持有效租约，等上一轮结束
+  后自动接力；客户端可传 `client_message_id`，同键重复提交返回原轮次并标记
+  `replayed=true`，不会写出第二条买家消息。两条消息在同一瞬间到达时，只有一次
+  建单（`TicketService.create(commit=False)` 让会话行锁贯穿整个请求），两条消息
+  各自成为一个轮次。
+- 上下文窗口是因果的：只取“本消息之前”的消息。买家在上一轮还没答完时又发了下一条，
+  那条不会提前出现在上一轮的上下文里。
+- 员工交接落库到 `conversation_handoffs`（自动改路由 `AUTO_REROUTE` /
+  人工切换 `OPERATOR_SWITCH`），含确定性摘要（确认事实、待办、承诺、上一轮回答
+  与引用、未确认项），下一轮装配直接读取该摘要；主管可在客服会话页选择员工并
+  点“交接”（`POST /api/v1/customer-service/conversations/{conversation_id}/employee`，
+  需要 `operations.manage`），成功后消息上方出现“由 A 交接给 B”横幅。
+  交接目标必须是同一业务单元、同一领域的在岗员工：跨单元 400
+  `HANDOFF_EMPLOYEE_UNIT_MISMATCH`，跨领域 409 `EMPLOYEE_DOMAIN_MISMATCH`
+  （客服会话不能交给 HR 或运营员工）。
 - 答案依据判定统一走 `grounding_status_from_claims`：只有所有被引用声明都
   校验为 `supported` 才标记 `GROUNDED`；MCP 只读工具结果以
   `direct_tool_result` 计为已支持，抽取式知识回答必须通过声明校验器，未校验

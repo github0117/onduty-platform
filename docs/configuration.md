@@ -160,6 +160,35 @@ cd apps/api
 uv run pytest tests/integration/test_conversation_turn_events.py -v
 ```
 
+## 上下文装配、会话记忆与员工交接
+
+每轮实际使用的上下文由 `customer_service/context.py` 统一装配，顺序固定：
+会话记忆 → 最近一次交接摘要 → 消息窗口 → 当前消息，结果写入
+`conversation_turns.context_json` 并附在 `CONTEXT_ASSEMBLED` 事件里。
+
+- 消息窗口默认 `4000` 字符、最多 `20` 条（`DEFAULT_HISTORY_BUDGET_CHARS` /
+  `DEFAULT_HISTORY_MAX_MESSAGES`，当前是代码常量，不通过环境变量调整），且只取
+  `sequence` 小于当前消息的条目，排队期间后发的消息不会混进上一轮。
+- 会话记忆读取时自动把 v1 行升级为 v2 并回写；v2 的 `facts` 带 `source_turn_id`。
+- 同一会话的轮次串行执行，后到的轮次保持 `PENDING` 并持有有效租约，避免被回收器
+  误判为卡死；完成方结束时会接力派发下一轮（单次最多 10 轮）。首条消息建单使用
+  `TicketService.create(commit=False)`，会话行锁不会被内部提交打断；若仍与并发
+  建单相遇，按 `CONV-<会话>-initial` 复用同一张工单。
+- 客户端可传 `client_message_id` 做幂等重放；邮件连接器用收件行 id 派生该值。
+- 会话详情里的每条消息带 `turn_id`（迁移前的旧消息为 `null`）。
+- 员工交接写入 `conversation_handoffs`；主管切换员工调用
+  `POST /api/v1/customer-service/conversations/{conversation_id}/employee`
+  （需要 `operations.manage`），重复切换到同一位员工返回 409
+  `EMPLOYEE_UNCHANGED`，跨业务单元的员工返回 400
+  `HANDOFF_EMPLOYEE_UNIT_MISMATCH`，跨领域（如同一单元的 HR 员工）返回 409
+  `EMPLOYEE_DOMAIN_MISMATCH`。
+
+```bash
+cd apps/api
+uv run pytest tests/integration/test_conversation_context_handoff.py -v
+uv run python scripts/acceptance_conversation_runtime.py http://127.0.0.1:8000
+```
+
 ## 知识库嵌入与重建索引
 
 ```text

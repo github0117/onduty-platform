@@ -1629,6 +1629,109 @@ test("工作台接管失败会回滚且回复失败会恢复原文", async ({
   ).toHaveCount(0);
 });
 
+test("主管可以把会话交接给另一位数字员工并看到交接横幅", async ({
+  page,
+  request,
+}) => {
+  const { conversationId, ticketId } =
+    await createProductConversation(request);
+  const detailResponse = await request.get(
+    `/api/v1/customer-service/conversations/${conversationId}`,
+    { headers: apiHeaders },
+  );
+  expect(detailResponse.ok()).toBeTruthy();
+  const before = (await detailResponse.json()) as {
+    employee_id: string;
+  };
+  await page.addInitScript(
+    ({ conversationId, ticketId }) => {
+      window.localStorage.clear();
+      window.localStorage.setItem(
+        "digital-workforce:test-identity",
+        "platform-admin",
+      );
+      window.localStorage.setItem(
+        "digital-workforce:customer-chat-demo:v2:bu_demo:platform-admin:ecommerce",
+        JSON.stringify({ conversationId, ticketId }),
+      );
+    },
+    { conversationId, ticketId },
+  );
+  await page.goto("/customer-service?scenario=ecommerce");
+  // The sticky page header covers the top of the chat card once the window is
+  // scrolled; start from the top so the handoff controls are clickable.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  // Click the select itself: AntD's search input covers its placeholder text.
+  await page.locator(".chat-window-header").getByRole("combobox").click();
+  // The page only offers employees that can actually take this conversation,
+  // so take the first option instead of guessing from the catalogue.
+  const option = page.locator(".ant-select-item-option").first();
+  const targetName = (await option.innerText()).trim();
+  expect(targetName).toBeTruthy();
+  await option.click();
+  await page
+    .getByPlaceholder("交接原因（可选）")
+    .fill("客户希望换专家继续跟进");
+  // AntD inserts a space between two CJK characters in a button label.
+  const switchButton = page.getByRole("button", { name: /^交\s*接$/ });
+  await expect(switchButton).toBeEnabled();
+  await switchButton.click();
+  await expect(
+    page.getByText(new RegExp(`交接给 ${targetName}`)),
+  ).toBeVisible();
+  await expect(
+    page.getByText("客户希望换专家继续跟进"),
+  ).toBeVisible();
+
+  await expect
+    .poll(async () => {
+      const response = await request.get(
+        `/api/v1/customer-service/conversations/${conversationId}`,
+        { headers: apiHeaders },
+      );
+      const body = (await response.json()) as {
+        employee_id: string;
+        latest_handoff: { to_employee_name: string | null } | null;
+      };
+      return (
+        body.employee_id !== before.employee_id &&
+        body.latest_handoff?.to_employee_name === targetName
+      );
+    })
+    .toBe(true);
+
+  await page.reload();
+  await expect(
+    page.getByText(new RegExp(`交接给 ${targetName}`)),
+  ).toBeVisible();
+});
+
+test("普通客服看不到交接入口", async ({ page, request }) => {
+  const { conversationId, ticketId } =
+    await createProductConversation(request);
+  await page.addInitScript(
+    ({ conversationId, ticketId }) => {
+      window.localStorage.clear();
+      window.localStorage.setItem(
+        "digital-workforce:test-identity",
+        "service-agent",
+      );
+      window.localStorage.setItem(
+        "digital-workforce:customer-chat-demo:v2:bu_demo:service-agent:ecommerce",
+        JSON.stringify({ conversationId, ticketId }),
+      );
+    },
+    { conversationId, ticketId },
+  );
+  await page.goto("/customer-service?scenario=ecommerce");
+  await expect(
+    page.getByRole("button", { name: /^交\s*接$/ }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("切换到数字员工", { exact: true }),
+  ).toHaveCount(0);
+});
+
 test("工作台自动补派按钮调用补派接口并反馈结果", async ({ page }) => {
   await page.route(
     "**/api/v1/customer-service/assignment-queue/auto-assign",

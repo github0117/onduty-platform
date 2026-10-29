@@ -63,7 +63,13 @@ class TicketService:
         principal: Principal,
         correlation_id: str,
         enqueue: bool = True,
+        commit: bool = True,
     ) -> tuple[Ticket, bool, UUID | None]:
+        """Create a ticket, or return the one an earlier request created.
+
+        ``commit`` lets a caller that must keep the surrounding row locks (the
+        conversation runtime does) leave the commit to its own transaction.
+        """
         ensure_business_unit_access(principal, payload.business_unit_id)
         request_hash = self._request_hash(payload)
         existing = self.session.scalar(
@@ -187,8 +193,9 @@ class TicketService:
                 "employee_key": employee.employee_key,
             },
         )
-        self.session.commit()
-        self.session.refresh(ticket)
+        if commit:
+            self.session.commit()
+            self.session.refresh(ticket)
         return ticket, True, outbox_event_id
 
     def _service_entry_employee_ids(
