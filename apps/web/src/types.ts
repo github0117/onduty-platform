@@ -887,6 +887,8 @@ export interface AgentSkill {
   instructions: string;
   triggers: string[];
   tools: string[];
+  definition: Record<string, unknown> | null;
+  definition_version: number;
   status: string;
   version: number;
   created_by: string;

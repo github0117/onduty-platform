@@ -160,6 +160,14 @@ class ConversationTurn(Base):
     # message sequences used, memory version, handoff id, budget, truncation.
     # NULL means no assembly was recorded (fast paths and pre-M1 turns).
     context_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    # The Skill contract this turn ran. ``skill_snapshot_json`` freezes the
+    # definition (including its version), so editing the Skill later cannot
+    # change what a finished turn is judged against.
+    skill_code: Mapped[str | None] = mapped_column(String(128), index=True)
+    skill_version: Mapped[int | None] = mapped_column(Integer)
+    skill_snapshot_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    # Required steps / criteria and whether this turn satisfied them.
+    completion_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     handoff_id: Mapped[UUID | None] = mapped_column(Uuid)
     # Optimistic concurrency guard for state transitions, mirroring the
     # customer_conversations/tickets pattern.

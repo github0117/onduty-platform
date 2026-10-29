@@ -205,6 +205,8 @@ const friendlyApiErrors: Record<string, string> = {
     "连接器编码已存在，请换一个编码后重试。",
   CONNECTOR_VERSION_CONFLICT:
     "连接已被其他人修改，请刷新页面后重试。",
+  SKILL_VERSION_CONFLICT:
+    "Skill 已被其他人修改，请刷新页面后重试。",
   CONNECTOR_CONFIG_INVALID:
     "连接配置不完整或包含不允许的密钥字段，请检查后重试。",
   CONNECTOR_NOT_BOUND:
@@ -2060,6 +2062,7 @@ export function createAgentSkill(input: {
   instructions: string;
   triggers: string[];
   tools: string[];
+  definition?: Record<string, unknown>;
   status?: string;
 }): Promise<AgentSkill> {
   return request("/api/v1/skills", {
@@ -2080,7 +2083,9 @@ export function updateAgentSkill(
     instructions: string;
     triggers: string[];
     tools: string[];
+    definition: Record<string, unknown>;
     status: string;
+    expected_version: number;
   }>,
 ): Promise<AgentSkill> {
   return request(`/api/v1/skills/${skillId}`, {

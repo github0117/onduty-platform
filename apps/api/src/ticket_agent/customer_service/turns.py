@@ -278,11 +278,16 @@ class ConversationTurnOrchestrator:
             tool_calls=suggestion.tool_calls,
             intent=analysis.category_primary,
             analysis=self._analysis_payload(analysis),
+            skill_snapshot=suggestion.skill_snapshot,
+            completion=suggestion.completion,
             correlation_id=correlation_id,
         )
         if _can_complete_grounded_turn(
             ticket,
             suggestion.grounding_status,
+        ) and (
+            suggestion.completion is None
+            or bool(suggestion.completion.get("complete"))
         ):
             ticket.status = TicketStatus.RESOLVED
             transition_ticket(

@@ -629,7 +629,7 @@ def test_grounded_low_risk_presales_is_auto_approved(
         suggestion.json()["skill"] == "ecommerce-aftersales"
     ), suggestion.json()["trace"]
     assert suggestion.json()["trace"] == [
-        "route_skill → ecommerce-aftersales",
+        "route_skill → ecommerce-aftersales · CATEGORY",
         "retrieve_knowledge → 1 条知识",
         "generate_reply → local/local-keyword-v1",
     ]

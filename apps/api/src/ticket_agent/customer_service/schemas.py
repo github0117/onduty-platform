@@ -187,6 +187,11 @@ class CustomerReplySuggestionView(BaseModel):
     grounding_status: str
     citations: list[dict[str, Any]]
     skill: str
+    # Version of the structured contract (if any) and what the runtime
+    # checked this turn against. ``completion`` is None for loose skills.
+    skill_version: int | None = None
+    skill_snapshot: dict[str, Any] | None = None
+    completion: dict[str, Any] | None = None
     trace: list[str]
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
 

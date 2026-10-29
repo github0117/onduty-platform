@@ -195,6 +195,12 @@
 ## MCP 工具与审批闭环
 
 - Skill 支持数据库配置、版本更新、启停和员工绑定，LangGraph 运行时动态读取。
+- Skill 可配置版本化执行契约（步骤、证据前缀、完成条件、必填工具、禁止动作、
+  升级条件、回答格式）；缺必填步骤的轮次转人工，工单不会自动 `COMPLETED`。
+- 每轮冻结 Skill 契约与完成度快照（`SKILL_SELECTED` /
+  `COMPLETION_EVALUATED` 事件）；之后编辑 Skill 不改写历史轮次。
+- 未命中任何触发词时使用 `customer-service-general` 宽松 Skill，不再默认
+  套用员工的第一条绑定 Skill；旧的无契约 Skill 继续按宽松模式运行。
 - MCP 连接器支持注册、Streamable HTTP 健康检查、真实工具发现和员工级授权。
 - 已真实验证公开 DeepWiki MCP：发现 3 个只读工具，并成功查询
   `modelcontextprotocol/python-sdk` 的仓库文档结构；该能力用于研发支持员工，

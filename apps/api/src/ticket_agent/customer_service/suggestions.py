@@ -8,6 +8,10 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ticket_agent.agent_skills.contract import (
+    CompletionContext,
+    evaluate_definition,
+)
 from ticket_agent.agent_skills.service import AgentSkillService
 from ticket_agent.audit.service import record_audit
 from ticket_agent.classification.classifier import AnalysisResult
@@ -17,7 +21,7 @@ from ticket_agent.classification.conversation_signals import (
 from ticket_agent.classification.conversation_signals import (
     repository_name as _repository_name,
 )
-from ticket_agent.customer_service.context import AssembledContext
+from ticket_agent.customer_service.context import AssembledContext, load_memory
 from ticket_agent.customer_service.models import (
     ConversationMemory,
     CustomerConversation,
@@ -57,6 +61,11 @@ from ticket_agent.tools.execution import ToolExecutionService
 from ticket_agent.tools.registry import ToolPermissionError
 from ticket_agent.workflow.profile import resolve_knowledge_options
 
+# The explicit general skill, if a business unit creates one. Without it, a
+# no-match turn runs with no contract instead of borrowing the first bound
+# skill (the old ``skills[0]`` fallback).
+GENERAL_SKILL_CODE = "customer-service-general"
+
 
 class CustomerSuggestionState(TypedDict, total=False):
     conversation_id: UUID
@@ -68,6 +77,9 @@ class CustomerSuggestionState(TypedDict, total=False):
     skill: str
     skill_instructions: str
     skill_name: str
+    skill_definition: dict[str, Any] | None
+    skill_definition_version: int | None
+    skill_match_reason: str
     employee: DigitalEmployee
     ticket: Ticket
     usage_guard: ModelUsageGuard
@@ -334,6 +346,57 @@ class CustomerReplySuggestionService:
                 title="No grounded knowledge found",
                 detail="No knowledge supports a reply suggestion for this conversation.",
             )
+        skill_definition = state.get("skill_definition")
+        skill_code = str(state.get("skill") or GENERAL_SKILL_CODE)
+        skill_definition_version = state.get("skill_definition_version")
+        memory_snapshot = load_memory(self.session, conversation.id)
+        slots = (
+            {
+                name: (fact.get("value") if isinstance(fact, dict) else fact)
+                for name, fact in memory_snapshot.facts.items()
+            }
+            if memory_snapshot is not None
+            else {}
+        )
+        # Mirror grounding_status_from_claims: a claim that was never cited
+        # does not make an otherwise grounded answer incomplete, but an
+        # unsupported/uncertain verdict or an uncertified cited claim does.
+        unsupported_claims = sum(
+            1
+            for claim in draft.claims
+            if str(
+                claim.get("verification_verdict", "not_checked")
+            ).lower()
+            in {"unsupported", "uncertain"}
+            or (
+                claim.get("cited_chunk_ids")
+                and str(
+                    claim.get("verification_verdict", "not_checked")
+                ).lower()
+                != "supported"
+            )
+        )
+        completion = evaluate_definition(
+            skill_definition,
+            context=CompletionContext(
+                slots=slots,
+                citation_count=len(draft.citations),
+                tool_call_count=len(tool_calls),
+                tool_ids=frozenset(item.tool_id for item in tool_calls),
+                claim_count=len(draft.claims),
+                unsupported_claim_count=unsupported_claims,
+                grounding_status=draft.grounding_status,
+                risk_level=ticket.risk_level,
+            ),
+        )
+        # Freeze the contract this turn ran against. A later Skill edit must
+        # not change what this answer is judged by.
+        skill_snapshot = {
+            "code": skill_code,
+            "definition_version": skill_definition_version,
+            "definition": skill_definition,
+            "match_reason": state.get("skill_match_reason"),
+        }
         record_audit(
             self.session,
             correlation_id=correlation_id,
@@ -351,6 +414,11 @@ class CustomerReplySuggestionService:
                 "fallback_used": draft.fallback_used,
                 "citation_count": len(draft.citations),
                 "skill": skill,
+                "skill_complete": (
+                    completion.get("complete")
+                    if completion is not None
+                    else None
+                ),
                 "graph_trace": trace,
                 "mcp_tool_calls": [
                     {
@@ -376,6 +444,9 @@ class CustomerReplySuggestionService:
             grounding_status=draft.grounding_status,
             citations=draft.citations,
             skill=skill,
+            skill_version=skill_definition_version,
+            skill_snapshot=skill_snapshot,
+            completion=completion,
             trace=trace,
             tool_calls=tool_call_views,
         )
@@ -438,23 +509,55 @@ class CustomerReplySuggestionService:
                     key=lambda item: item[1],
                 )[0]
                 if matched_candidates
-                else skills[0] if skills else None
+                else None
             )
         )
         if matched is None:
-            raise ApiProblem(
-                status_code=409,
-                code="SKILL_NOT_CONFIGURED",
-                title="No employee skill is configured",
-                detail="Bind at least one ACTIVE skill to the digital employee.",
+            # No trigger matched. Never silently take the first bound skill:
+            # that made "退款" run the presales script whenever binding order
+            # happened to put it first. Use an explicit general skill if the
+            # unit configured one, otherwise run without a contract and let
+            # the gate treat the answer as unreviewed.
+            matched = next(
+                (
+                    skill
+                    for skill in skills
+                    if skill.code == GENERAL_SKILL_CODE
+                ),
+                None,
             )
+            match_reason = (
+                "GENERAL_FALLBACK" if matched is not None else "NO_SKILL_MATCH"
+            )
+        else:
+            match_reason = (
+                "CATEGORY" if matched is category_skill
+                else "LOGISTICS" if matched is logistics_skill
+                else "TRIGGER"
+            )
+        if matched is None:
+            return {
+                "skill": GENERAL_SKILL_CODE,
+                "skill_name": "通用客服",
+                "skill_instructions": "",
+                "skill_definition": None,
+                "skill_definition_version": None,
+                "skill_match_reason": match_reason,
+                "trace": [
+                    *state.get("trace", []),
+                    f"route_skill → {GENERAL_SKILL_CODE} · {match_reason}",
+                ],
+            }
         return {
             "skill": matched.code,
             "skill_name": matched.name,
             "skill_instructions": matched.instructions,
+            "skill_definition": matched.definition_json,
+            "skill_definition_version": matched.definition_version,
+            "skill_match_reason": match_reason,
             "trace": [
                 *state.get("trace", []),
-                f"route_skill → {matched.code}",
+                f"route_skill → {matched.code} · {match_reason}",
             ],
         }
 

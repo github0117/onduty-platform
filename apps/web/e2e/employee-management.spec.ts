@@ -769,6 +769,89 @@ test("编辑 Skill 保存更新后的规程", async ({ page }) => {
   await expect(page.getByText("Skill 已更新")).toBeVisible();
 });
 
+test("编辑 Skill 执行契约并提示版本冲突", async ({ page }) => {
+  await mockEmployeeShell(page);
+  const contractSkill = {
+    ...skill,
+    definition: {
+      schema_version: 1,
+      steps: [
+        {
+          id: "identify_order",
+          name: "确认订单",
+          required: true,
+          evidence: ["slot:order_id"],
+          completion: "order_id != null",
+        },
+      ],
+      completion_criteria: ["all_required_steps_done"],
+    },
+    definition_version: 2,
+  };
+  await page.route(
+    "**/api/v1/skills?business_unit_id=bu_demo",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([contractSkill]),
+      });
+    },
+  );
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.method() === "PATCH" &&
+      request.url().endsWith("/api/v1/skills/skill-e2e"),
+  );
+  await page.route("**/api/v1/skills/skill-e2e", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/problem+json",
+      body: JSON.stringify({
+        type: "https://api.example.com/problems/skill-version-conflict",
+        title: "Skill version conflict",
+        status: 409,
+        detail: "Skill has been changed by someone else.",
+        code: "SKILL_VERSION_CONFLICT",
+      }),
+    });
+  });
+  await openPage(page, "/employees/skills");
+  await expect(page.getByText("v2 结构化")).toBeVisible();
+  await page.getByRole("button", { name: /^编\s*辑$/ }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "编辑 Skill · ecommerce-aftersales",
+  });
+  const definitionInput = dialog.locator("textarea").nth(1);
+  await expect(definitionInput).toHaveValue(/identify_order/);
+  await definitionInput.fill("{");
+  const saveButton = dialog.getByRole("button", { name: /^保\s*存$/ });
+  await expect(saveButton).toBeDisabled();
+  await definitionInput.fill(
+    JSON.stringify({
+      schema_version: 1,
+      steps: [
+        {
+          id: "identify_order",
+          name: "确认订单",
+          required: true,
+          completion: "order_id != null",
+        },
+      ],
+    }),
+  );
+  await expect(saveButton).toBeEnabled();
+  await saveButton.click();
+  const request = await requestPromise;
+  expect(request.postDataJSON()).toMatchObject({
+    expected_version: 2,
+    definition: { steps: [{ id: "identify_order" }] },
+  });
+  await expect(
+    page.getByText("Skill 已被其他人修改，请刷新页面后重试。"),
+  ).toBeVisible();
+});
+
 test("编辑 MCP 连接器保存 URL、环境变量和状态", async ({ page }) => {
   await mockEmployeeShell(page);
   await page.route(

@@ -1980,6 +1980,8 @@ class CustomerConversationService:
         tool_calls: Sequence[dict[str, Any]],
         intent: str | None,
         analysis: dict[str, Any],
+        skill_snapshot: dict[str, Any] | None = None,
+        completion: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         actor_id: str = "digital_employee.runtime",
     ) -> ConversationTurn:
@@ -1991,20 +1993,81 @@ class CustomerConversationService:
                 title="Conversation turn not found",
                 detail=f"Conversation turn {turn_id} does not exist.",
             )
+        if skill_snapshot is not None:
+            turn.skill_code = str(skill_snapshot.get("code") or "") or None
+            raw_version = skill_snapshot.get("definition_version")
+            turn.skill_version = (
+                int(raw_version)
+                if isinstance(raw_version, int)
+                else None
+            )
+            turn.skill_snapshot_json = jsonable_encoder(skill_snapshot)
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="SKILL_SELECTED",
+                actor_id=actor_id,
+                correlation_id=correlation_id,
+                payload={
+                    "skill_code": turn.skill_code,
+                    "skill_version": turn.skill_version,
+                    "contract_present": (
+                        skill_snapshot.get("definition") is not None
+                    ),
+                    "match_reason": skill_snapshot.get("match_reason"),
+                },
+            )
+        if completion is not None:
+            turn.completion_json = jsonable_encoder(completion)
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="COMPLETION_EVALUATED",
+                actor_id=actor_id,
+                correlation_id=correlation_id,
+                payload={
+                    "skill_code": turn.skill_code,
+                    "complete": bool(completion.get("complete")),
+                    "incomplete_required": completion.get(
+                        "incomplete_required", []
+                    ),
+                    "criteria": completion.get("criteria", {}),
+                },
+            )
+        # A required Skill step that did not happen must not read as a finished
+        # answer. The reply is still recorded, but the turn goes to a human.
+        incomplete_skill = (
+            completion is not None and not bool(completion.get("complete"))
+        )
         transition_turn(
             self.session,
             turn,
-            TurnStatus.COMPLETED,
-            reason_code="ANSWER_PRODUCED",
+            (
+                TurnStatus.NEEDS_HUMAN
+                if incomplete_skill
+                else TurnStatus.COMPLETED
+            ),
+            reason_code=(
+                "SKILL_COMPLETION_INCOMPLETE"
+                if incomplete_skill
+                else "ANSWER_PRODUCED"
+            ),
             actor_id=actor_id,
             correlation_id=correlation_id,
-            stage_label="回答已完成",
+            stage_label=(
+                "需人工确认执行步骤" if incomplete_skill else "回答已完成"
+            ),
             payload={
                 "grounding_status": grounding_status,
                 "citation_count": len(citations),
                 "tool_call_count": len(tool_calls),
                 "provider": response_provider,
                 "model": response_model,
+                "skill_complete": (
+                    bool(completion.get("complete"))
+                    if completion is not None
+                    else None
+                ),
             },
         )
         turn.lease_expires_at = None

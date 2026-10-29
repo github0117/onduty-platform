@@ -54,6 +54,17 @@ class AgentSkill(Base):
         default=list,
         nullable=False,
     )
+    # Structured execution contract (see agent_skills/contract.py). NULL means
+    # the skill predates the contract: it still guides the model, but the
+    # runtime cannot assert step completion for it.
+    definition_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    # Bumped every time definition_json is written, independently of the
+    # human-facing ``version``, so a Turn can snapshot exactly what it ran.
+    definition_version: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
     status: Mapped[str] = mapped_column(
         String(20),
         default="ACTIVE",

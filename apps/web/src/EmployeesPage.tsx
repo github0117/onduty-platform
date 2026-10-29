@@ -959,13 +959,44 @@ function AgentSkillsCard() {
   const [instructions, setInstructions] = useState("");
   const [triggers, setTriggers] = useState("");
   const [tools, setTools] = useState("");
+  const [definition, setDefinition] = useState("");
   const [status, setStatus] = useState("ACTIVE");
   const skills = useQuery({
     queryKey: ["agent-skills"],
     queryFn: listAgentSkills,
   });
+  const definitionError = (() => {
+    if (!definition.trim()) {
+      return null;
+    }
+    try {
+      const parsed: unknown = JSON.parse(definition);
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
+        return "执行契约必须是 JSON 对象";
+      }
+      return null;
+    } catch (error) {
+      return `JSON 解析失败：${(error as Error).message}`;
+    }
+  })();
   const save = useMutation({
     mutationFn: () => {
+      let parsedDefinition: Record<string, unknown> | undefined;
+      if (definition.trim()) {
+        const parsed = JSON.parse(definition) as Record<string, unknown>;
+        // Only send the contract when it actually changed; otherwise every
+        // name edit would bump the contract version.
+        const original = editing?.definition
+          ? JSON.stringify(editing.definition)
+          : null;
+        if (JSON.stringify(parsed) !== original) {
+          parsedDefinition = parsed;
+        }
+      }
       const input = {
         name: name.trim(),
         description: description.trim(),
@@ -981,10 +1012,19 @@ function AgentSkillsCard() {
         status,
       };
       return editing
-        ? updateAgentSkill(editing.id, input)
+        ? updateAgentSkill(editing.id, {
+            ...input,
+            expected_version: editing.version,
+            ...(parsedDefinition
+              ? { definition: parsedDefinition }
+              : {}),
+          })
         : createAgentSkill({
             code: code.trim(),
             ...input,
+            ...(parsedDefinition
+              ? { definition: parsedDefinition }
+              : {}),
           });
     },
     onSuccess: async () => {
@@ -1010,6 +1050,11 @@ function AgentSkillsCard() {
     setInstructions(skill?.instructions ?? "");
     setTriggers(skill?.triggers.join(", ") ?? "");
     setTools(skill?.tools.join(", ") ?? "");
+    setDefinition(
+      skill?.definition
+        ? JSON.stringify(skill.definition, null, 2)
+        : "",
+    );
     setStatus(skill?.status ?? "ACTIVE");
     setOpen(true);
   };
@@ -1062,6 +1107,16 @@ function AgentSkillsCard() {
             render: (value: string[]) => value.join(", ") || "仅使用知识检索",
           },
           {
+            title: "契约",
+            width: 130,
+            render: (_, skill) =>
+              skill.definition ? (
+                <Tag color="blue">v{skill.definition_version} 结构化</Tag>
+              ) : (
+                <Tag>宽松模式</Tag>
+              ),
+          },
+          {
             title: "版本",
             dataIndex: "version",
             width: 70,
@@ -1098,7 +1153,8 @@ function AgentSkillsCard() {
           disabled:
             !name.trim() ||
             !instructions.trim() ||
-            (!editing && !code.trim()),
+            (!editing && !code.trim()) ||
+            definitionError !== null,
         }}
         onOk={() => save.mutate()}
       >
@@ -1154,6 +1210,19 @@ function AgentSkillsCard() {
               value={tools}
               onChange={(event) => setTools(event.target.value)}
               placeholder="knowledge.search, logistics.query"
+            />
+          </Form.Item>
+          <Form.Item
+            label="执行契约（JSON，可选）"
+            extra="结构化步骤与完成条件；留空为宽松模式，运行时不会断言步骤完成。示例：{&quot;schema_version&quot;: 1, &quot;steps&quot;: [{&quot;id&quot;: &quot;identify_order&quot;, &quot;name&quot;: &quot;确认订单&quot;, &quot;required&quot;: true, &quot;evidence&quot;: [&quot;slot:order_id&quot;], &quot;completion&quot;: &quot;order_id != null&quot;}]}"
+            validateStatus={definitionError ? "error" : undefined}
+            help={definitionError ?? undefined}
+          >
+            <TextArea
+              rows={8}
+              value={definition}
+              onChange={(event) => setDefinition(event.target.value)}
+              placeholder='{"schema_version": 1, "steps": []}'
             />
           </Form.Item>
           <Form.Item label="Skill 指令" required>
