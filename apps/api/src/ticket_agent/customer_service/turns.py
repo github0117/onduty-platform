@@ -260,6 +260,12 @@ class ConversationTurnOrchestrator:
             )
             return self._next_pending_turn(conversation.id, exclude=turn.id)
 
+        # A human may have taken over while the answer was generated. Re-read
+        # the row before writing anything the human would talk over.
+        self.session.refresh(turn)
+        if parse_turn_status(turn.status) is TurnStatus.CANCELLED:
+            self.session.rollback()
+            return self._next_pending_turn(conversation.id, exclude=turn.id)
         if suggestion.grounding_status == "NO_KNOWLEDGE":
             record_knowledge_gap(
                 self.session,
@@ -287,22 +293,30 @@ class ConversationTurnOrchestrator:
             content=assistant_content,
             turn_id=turn.id,
         )
-        CustomerConversationService(self.session).complete_turn(
-            turn_id=turn.id,
-            assistant_message=assistant,
-            response_provider=suggestion.provider,
-            response_model=suggestion.model,
-            grounding_status=suggestion.grounding_status,
-            citations=suggestion.citations,
-            trace=suggestion.trace,
-            tool_calls=suggestion.tool_calls,
-            intent=analysis.category_primary,
-            analysis=self._analysis_payload(analysis),
-            skill_snapshot=suggestion.skill_snapshot,
-            completion=suggestion.completion,
-            gate=suggestion.gate,
-            correlation_id=correlation_id,
-        )
+        try:
+            CustomerConversationService(self.session).complete_turn(
+                turn_id=turn.id,
+                assistant_message=assistant,
+                response_provider=suggestion.provider,
+                response_model=suggestion.model,
+                grounding_status=suggestion.grounding_status,
+                citations=suggestion.citations,
+                trace=suggestion.trace,
+                tool_calls=suggestion.tool_calls,
+                intent=analysis.category_primary,
+                analysis=self._analysis_payload(analysis),
+                skill_snapshot=suggestion.skill_snapshot,
+                completion=suggestion.completion,
+                gate=suggestion.gate,
+                correlation_id=correlation_id,
+            )
+        except ApiProblem as exc:
+            if exc.code != "TURN_CANCELLED":
+                raise
+            # The takeover cancelled this turn after the row snapshot above;
+            # discard the generated message and its events.
+            self.session.rollback()
+            return self._next_pending_turn(conversation.id, exclude=turn.id)
         if _can_complete_grounded_turn(
             ticket,
             suggestion.grounding_status,
@@ -503,6 +517,12 @@ class ConversationTurnOrchestrator:
         *,
         retryable: bool = True,
     ) -> None:
+        self.session.refresh(turn)
+        if parse_turn_status(turn.status) is TurnStatus.CANCELLED:
+            # A human owns the conversation now; a failure notice would be
+            # noise talking over them.
+            self.session.rollback()
+            return
         target = (
             TurnStatus.FAILED_RETRYABLE
             if retryable

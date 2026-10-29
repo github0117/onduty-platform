@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, select
 from sqlalchemy.orm import Session
 
 from ticket_agent.audit.service import record_audit
@@ -16,10 +16,22 @@ from ticket_agent.classification.conversation_signals import (
     classify_small_talk,
     repository_name,
 )
-from ticket_agent.customer_service.context import record_memory_turn
-from ticket_agent.customer_service.domain import TurnStatus
+from ticket_agent.customer_service.context import (
+    MemorySnapshot,
+    assemble_context,
+    record_memory_turn,
+)
+from ticket_agent.customer_service.domain import (
+    TERMINAL_TURN_STATUSES,
+    TurnStatus,
+    parse_turn_status,
+)
 from ticket_agent.customer_service.gate import GateContext, evaluate_gate
-from ticket_agent.customer_service.handoffs import create_handoff, latest_turn
+from ticket_agent.customer_service.handoffs import (
+    create_handoff,
+    latest_human_message,
+    latest_turn,
+)
 from ticket_agent.customer_service.models import (
     AgentPresence,
     ConversationHandoff,
@@ -38,8 +50,11 @@ from ticket_agent.customer_service.schemas import (
     AssignmentQueueItem,
     AssignmentResultItem,
     AssignmentRunResult,
+    ConversationHandoffList,
     ConversationHandoffView,
     ConversationReassignRequest,
+    ConversationTurnDetailView,
+    ConversationTurnList,
     ConversationTurnView,
     CustomerConversationCreate,
     CustomerConversationList,
@@ -54,6 +69,10 @@ from ticket_agent.customer_service.schemas import (
     CustomerServiceMetrics,
     CustomerServiceNotificationList,
     CustomerServiceNotificationView,
+    OperationalTurnList,
+    OperationalTurnView,
+    RuntimeGapItem,
+    RuntimeHealthView,
 )
 from ticket_agent.customer_service.turn_events import (
     list_turn_events,
@@ -70,12 +89,31 @@ from ticket_agent.digital_employees.router_service import (
     explicit_employee_request,
 )
 from ticket_agent.identity.models import Principal
+from ticket_agent.knowledge.models import KnowledgeGapOccurrence
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.models import Ticket, WorkflowTransition
 from ticket_agent.tickets.schemas import RequesterInput, SourceInput, TicketCreate
 from ticket_agent.tickets.service import TicketService
+from ticket_agent.tickets.transitions import transition_ticket
+
+# Ticket states a human takeover may move to TAKEN_OVER. The list mirrors
+# ALLOWED_WORKFLOW_TRANSITIONS; a completed ticket stays completed because the
+# workflow has no edge back for an automated caller.
+_HUMAN_TAKEOVER_TICKET_STATES = frozenset(
+    {
+        WorkflowState.RECEIVED,
+        WorkflowState.CLASSIFYING,
+        WorkflowState.RISK_EVALUATED,
+        WorkflowState.ROUTING,
+        WorkflowState.DRAFTING,
+        WorkflowState.PENDING_REVIEW,
+        WorkflowState.SYNCING,
+        WorkflowState.NEEDS_HUMAN,
+        WorkflowState.FAILED_RETRYABLE,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -946,8 +984,365 @@ class CustomerConversationService:
             )
         return turn
 
-    def turn_events(self, turn_id: UUID) -> list[ConversationTurnEvent]:
-        return list_turn_events(self.session, turn_id=turn_id)
+    def turn_events(
+        self,
+        turn_id: UUID,
+        *,
+        after_sequence: int | None = None,
+        limit: int | None = None,
+    ) -> list[ConversationTurnEvent]:
+        return list_turn_events(
+            self.session,
+            turn_id=turn_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+
+    def turn_event_count(self, turn_id: UUID) -> int:
+        return int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(ConversationTurnEvent)
+                .where(ConversationTurnEvent.turn_id == turn_id)
+            )
+            or 0
+        )
+
+    def turn_by_id(self, turn_id: UUID) -> ConversationTurn:
+        turn = self.session.get(ConversationTurn, turn_id)
+        if turn is None:
+            raise ApiProblem(
+                status_code=404,
+                code="CONVERSATION_TURN_NOT_FOUND",
+                title="Conversation turn not found",
+                detail=f"Conversation turn {turn_id} does not exist.",
+            )
+        return turn
+
+    def turns(
+        self,
+        conversation_id: UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> ConversationTurnList:
+        condition = ConversationTurn.conversation_id == conversation_id
+        total = (
+            self.session.scalar(
+                select(func.count())
+                .select_from(ConversationTurn)
+                .where(condition)
+            )
+            or 0
+        )
+        rows = self.session.scalars(
+            select(ConversationTurn)
+            .where(condition)
+            .order_by(ConversationTurn.sequence.desc())
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return ConversationTurnList(
+            items=[self.turn_view(row) for row in rows],
+            total=total,
+        )
+
+    def turn_detail(self, turn: ConversationTurn) -> ConversationTurnDetailView:
+        return ConversationTurnDetailView(
+            **self.turn_view(turn).model_dump(),
+            context=turn.context_json,
+            skill_code=turn.skill_code,
+            skill_version=turn.skill_version,
+            skill_snapshot=turn.skill_snapshot_json,
+            completion=turn.completion_json,
+        )
+
+    def handoffs(
+        self,
+        conversation_id: UUID,
+        *,
+        limit: int = 100,
+    ) -> ConversationHandoffList:
+        rows = self.session.scalars(
+            select(ConversationHandoff)
+            .where(ConversationHandoff.conversation_id == conversation_id)
+            .order_by(ConversationHandoff.created_at.asc())
+            .limit(limit)
+        ).all()
+        return ConversationHandoffList(
+            items=[self.handoff_view(row) for row in rows],
+            total=len(rows),
+        )
+
+    def retry_turn(
+        self,
+        turn_id: UUID,
+        *,
+        actor_id: str,
+        correlation_id: str,
+    ) -> ConversationTurn:
+        """Put a retryable turn back in the queue.
+
+        Only ``FAILED_RETRYABLE`` can be retried: a finished turn must not be
+        replayed (it already wrote messages and ticket state), and a queued or
+        running turn is already owned by a worker.
+        """
+        turn = self.session.scalar(
+            select(ConversationTurn)
+            .where(ConversationTurn.id == turn_id)
+            .with_for_update()
+        )
+        if turn is None:
+            raise ApiProblem(
+                status_code=404,
+                code="CONVERSATION_TURN_NOT_FOUND",
+                title="Conversation turn not found",
+                detail=f"Conversation turn {turn_id} does not exist.",
+            )
+        status = parse_turn_status(turn.status)
+        if status in TERMINAL_TURN_STATUSES:
+            raise ApiProblem(
+                status_code=409,
+                code="TURN_ALREADY_TERMINAL",
+                title="Turn is already terminal",
+                detail=f"Turn {turn_id} is {status.value} and cannot be retried.",
+            )
+        if status in {TurnStatus.PENDING, TurnStatus.RUNNING}:
+            raise ApiProblem(
+                status_code=409,
+                code="TURN_IN_PROGRESS",
+                title="Turn is already in progress",
+                detail=f"Turn {turn_id} is {status.value}.",
+            )
+        transition_turn(
+            self.session,
+            turn,
+            TurnStatus.PENDING,
+            reason_code="OPERATOR_RETRY",
+            actor_id=actor_id,
+            actor_type="AGENT",
+            correlation_id=correlation_id,
+            stage_label="等待重试",
+            payload={"previous_status": status.value},
+        )
+        turn.lease_expires_at = new_lease(
+            get_settings().conversation_turn_lease_seconds
+        )
+        turn.error_code = None
+        turn.error_message = None
+        turn.completed_at = None
+        self.session.commit()
+        self.session.refresh(turn)
+        return turn
+
+    def operational_turns(
+        self,
+        *,
+        business_unit_id: str,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> OperationalTurnList:
+        condition = CustomerConversation.business_unit_id == business_unit_id
+        if status:
+            condition = condition & (ConversationTurn.status == status)
+        total = (
+            self.session.scalar(
+                select(func.count())
+                .select_from(ConversationTurn)
+                .join(
+                    CustomerConversation,
+                    CustomerConversation.id == ConversationTurn.conversation_id,
+                )
+                .where(condition)
+            )
+            or 0
+        )
+        rows = self.session.execute(
+            select(ConversationTurn, CustomerConversation)
+            .join(
+                CustomerConversation,
+                CustomerConversation.id == ConversationTurn.conversation_id,
+            )
+            .where(condition)
+            .order_by(ConversationTurn.created_at.desc())
+            .limit(limit)
+        ).all()
+        return OperationalTurnList(
+            items=[
+                OperationalTurnView(
+                    id=turn.id,
+                    conversation_id=turn.conversation_id,
+                    ticket_id=turn.ticket_id,
+                    business_unit_id=conversation.business_unit_id,
+                    requester_ref=conversation.requester_ref,
+                    sequence=turn.sequence,
+                    status=turn.status,
+                    stage_label=turn.stage_label,
+                    correlation_id=turn.correlation_id,
+                    attempt_count=turn.attempt_count,
+                    gate_decision=(
+                        str(turn.gate_json.get("decision"))
+                        if turn.gate_json
+                        and turn.gate_json.get("decision") is not None
+                        else None
+                    ),
+                    error_code=turn.error_code,
+                    error_message=turn.error_message,
+                    lease_expires_at=turn.lease_expires_at,
+                    created_at=turn.created_at,
+                    updated_at=turn.updated_at,
+                )
+                for turn, conversation in rows
+            ],
+            total=total,
+        )
+
+    def runtime_health(
+        self,
+        *,
+        business_unit_id: str,
+        window_hours: int = 24,
+    ) -> RuntimeHealthView:
+        """Runtime counters an operator needs before trusting auto-send.
+
+        Rates are computed over the window's turns; a NULL gate (pre-M3 turn)
+        counts as neither auto-send nor review. Scanning rows in Python keeps
+        the calculation identical on PostgreSQL and SQLite; the window keeps
+        it bounded.
+        """
+        now = datetime.now(UTC)
+        since = now - timedelta(hours=window_hours)
+        turns = list(
+            self.session.scalars(
+                select(ConversationTurn)
+                .join(
+                    CustomerConversation,
+                    CustomerConversation.id == ConversationTurn.conversation_id,
+                )
+                .where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    ConversationTurn.created_at >= since,
+                )
+            ).all()
+        )
+        decisions = [
+            str(turn.gate_json.get("decision"))
+            for turn in turns
+            if turn.gate_json and turn.gate_json.get("decision")
+        ]
+        auto_send_count = sum(1 for item in decisions if item == "AUTO_SEND")
+        human_review_count = sum(
+            1 for item in decisions if item == "HUMAN_REVIEW"
+        )
+        blocked_count = sum(1 for item in decisions if item == "BLOCK")
+        unverified_count = sum(
+            1
+            for turn in turns
+            if turn.grounding_status in {"UNVERIFIED", "UNSUPPORTED"}
+        )
+        handoff_count = (
+            self.session.scalar(
+                select(func.count())
+                .select_from(ConversationHandoff)
+                .join(
+                    CustomerConversation,
+                    CustomerConversation.id
+                    == ConversationHandoff.conversation_id,
+                )
+                .where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    ConversationHandoff.created_at >= since,
+                )
+            )
+            or 0
+        )
+        stuck_turn_count = (
+            self.session.scalar(
+                select(func.count())
+                .select_from(ConversationTurn)
+                .join(
+                    CustomerConversation,
+                    CustomerConversation.id == ConversationTurn.conversation_id,
+                )
+                .where(
+                    CustomerConversation.business_unit_id == business_unit_id,
+                    ConversationTurn.status.in_(
+                        [TurnStatus.PENDING.value, TurnStatus.RUNNING.value]
+                    ),
+                    ConversationTurn.lease_expires_at.is_not(None),
+                    ConversationTurn.lease_expires_at < now,
+                )
+            )
+            or 0
+        )
+        # ``max(uuid)`` does not exist on PostgreSQL, so aggregate the task id
+        # as text; any linked repair task is enough to tell the operator the
+        # gap already has one.
+        top_gaps = [
+            RuntimeGapItem(
+                query=query,
+                occurrence_count=int(count),
+                repair_task_id=(
+                    UUID(str(raw_task_id)) if raw_task_id else None
+                ),
+            )
+            for query, count, raw_task_id in self.session.execute(
+                select(
+                    KnowledgeGapOccurrence.normalized_query,
+                    func.count(KnowledgeGapOccurrence.id),
+                    func.max(
+                        cast(KnowledgeGapOccurrence.repair_task_id, String)
+                    ),
+                )
+                .where(
+                    KnowledgeGapOccurrence.business_unit_id == business_unit_id,
+                    KnowledgeGapOccurrence.created_at >= since,
+                )
+                .group_by(KnowledgeGapOccurrence.normalized_query)
+                .order_by(func.count(KnowledgeGapOccurrence.id).desc())
+                .limit(5)
+            ).all()
+        ]
+        turn_count = len(turns)
+        return RuntimeHealthView(
+            business_unit_id=business_unit_id,
+            window_hours=window_hours,
+            turn_count=turn_count,
+            completed_count=sum(
+                1 for turn in turns if turn.status == TurnStatus.COMPLETED.value
+            ),
+            needs_human_count=sum(
+                1 for turn in turns if turn.status == TurnStatus.NEEDS_HUMAN.value
+            ),
+            failed_count=sum(
+                1
+                for turn in turns
+                if turn.status
+                in {
+                    TurnStatus.FAILED_RETRYABLE.value,
+                    TurnStatus.FAILED_TERMINAL.value,
+                }
+            ),
+            cancelled_count=sum(
+                1 for turn in turns if turn.status == TurnStatus.CANCELLED.value
+            ),
+            auto_send_count=auto_send_count,
+            human_review_count=human_review_count,
+            blocked_count=blocked_count,
+            unverified_count=unverified_count,
+            handoff_count=int(handoff_count),
+            stuck_turn_count=int(stuck_turn_count),
+            auto_send_rate=(
+                auto_send_count / turn_count if turn_count else None
+            ),
+            unverified_rate=(
+                unverified_count / turn_count if turn_count else None
+            ),
+            handoff_rate=(
+                int(handoff_count) / turn_count if turn_count else None
+            ),
+            top_gaps=top_gaps,
+        )
 
     def append_buyer_message(
         self,
@@ -985,32 +1380,34 @@ class CustomerConversationService:
                     turn_id=None,
                     replayed=True,
                 )
-        history = self.messages(conversation.id)
         enterprise_service = conversation.channel.startswith("enterprise")
         source_system = (
             "enterprise_service_desk" if enterprise_service else "ecommerce_demo"
         )
-        context = "\n".join(
-            f"{'买家' if item.role == 'BUYER' else '客服'}：{item.content}"
-            for item in history[-6:]
-        )
-        body = (
-            f"历史对话：\n{context}\n\n当前问题：\n{payload.content}"
-            if context
-            else payload.content
-        )
+        # The ticket body is the current question only. Earlier messages stay
+        # in the conversation and are assembled as structured context by the
+        # runtime; copying them into the ticket duplicated text and made the
+        # ticket drift from the message it belongs to.
+        body = payload.content.strip()
         sequence = self._next_sequence(conversation.id)
+        # A human owns the conversation: no digital answer may talk over them.
+        # The message is still stored so the human can see and answer it.
+        human_owner_id = conversation.assigned_agent_id
         small_talk_kind = classify_small_talk(payload.content)
         small_talk_employee = (
             self.session.get(DigitalEmployee, conversation.employee_id)
             if conversation.employee_id
             else None
         )
-        small_talk_reply = _small_talk_reply(
-            payload.content,
-            enterprise_service=enterprise_service,
-            kind=small_talk_kind,
-            employee=small_talk_employee,
+        small_talk_reply = (
+            None
+            if human_owner_id is not None
+            else _small_talk_reply(
+                payload.content,
+                enterprise_service=enterprise_service,
+                kind=small_talk_kind,
+                employee=small_talk_employee,
+            )
         )
         if small_talk_reply is not None:
             # Greetings and self-introduction need no evidence, so the gate
@@ -1036,6 +1433,26 @@ class CustomerConversationService:
                 ticket_id=ticket_id,
                 created_by=principal.actor_id,
             )
+            self.session.add(buyer_message)
+            self.session.flush()
+            # The fast path reads what the conversation already established:
+            # memory facts and the latest handoff. Without this the greeting
+            # ignored everything the buyer had said before it.
+            fast_path_context = assemble_context(
+                self.session,
+                conversation_id=conversation.id,
+                current_message=buyer_message,
+            )
+            small_talk_reply = (
+                _small_talk_reply(
+                    payload.content,
+                    enterprise_service=enterprise_service,
+                    kind=small_talk_kind,
+                    employee=small_talk_employee,
+                    memory=fast_path_context.memory,
+                )
+                or small_talk_reply
+            )
             assistant_message = CustomerMessage(
                 conversation_id=conversation.id,
                 sequence=sequence + 1,
@@ -1044,7 +1461,7 @@ class CustomerConversationService:
                 ticket_id=ticket_id,
                 created_by="digital_employee",
             )
-            self.session.add_all([buyer_message, assistant_message])
+            self.session.add(assistant_message)
             self.session.flush()
             lease_seconds = get_settings().conversation_turn_lease_seconds
             turn = ConversationTurn(
@@ -1064,6 +1481,7 @@ class CustomerConversationService:
                 analysis_json={
                     "small_talk_kind": small_talk_kind,
                 },
+                context_json=fast_path_context.payload,
                 response_provider="deterministic",
                 response_model=(
                     "employee-self-introduction-v1"
@@ -1089,6 +1507,14 @@ class CustomerConversationService:
                 actor_id="digital_employee.small_talk",
                 correlation_id=correlation_id,
                 payload={"fast_path": "small_talk"},
+            )
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="CONTEXT_ASSEMBLED",
+                actor_id="digital_employee.small_talk",
+                correlation_id=correlation_id,
+                payload={**fast_path_context.payload, "fast_path": "small_talk"},
             )
             transition_turn(
                 self.session,
@@ -1180,8 +1606,48 @@ class CustomerConversationService:
             )
             ticket.subject = payload.content.strip().splitlines()[0][:120]
             ticket.body = body
-            ticket.status = TicketStatus.OPEN
-            ticket.workflow_state = WorkflowState.RECEIVED
+            if human_owner_id is not None:
+                # A human is answering this conversation. Reopening the ticket
+                # as RECEIVED would make the workbench refuse their reply, and
+                # resetting it would look like the employee is still handling
+                # it.
+                ticket.status = TicketStatus.WAITING_HUMAN
+                ticket.needs_human = True
+                ticket.human_reason = "HUMAN_TAKEOVER"
+                if ticket.workflow_state == WorkflowState.RECEIVED:
+                    transition_ticket(
+                        self.session,
+                        ticket,
+                        WorkflowState.NEEDS_HUMAN,
+                        reason_code="HUMAN_TAKEOVER",
+                        actor_type="USER",
+                        actor_id=human_owner_id,
+                    )
+                elif ticket.workflow_state == WorkflowState.COMPLETED:
+                    # A finished ticket is not reopened by the takeover itself;
+                    # it only reopens once the buyer speaks again while a human
+                    # owns the conversation. Without this edge the workbench
+                    # rejects the human reply as "already completed".
+                    transition_ticket(
+                        self.session,
+                        ticket,
+                        WorkflowState.RECEIVED,
+                        reason_code="CONVERSATION_REOPENED",
+                        actor_type="USER",
+                        actor_id=human_owner_id,
+                        allow_terminal=True,
+                    )
+                    transition_ticket(
+                        self.session,
+                        ticket,
+                        WorkflowState.NEEDS_HUMAN,
+                        reason_code="HUMAN_TAKEOVER",
+                        actor_type="USER",
+                        actor_id=human_owner_id,
+                    )
+            else:
+                ticket.status = TicketStatus.OPEN
+                ticket.workflow_state = WorkflowState.RECEIVED
             ticket.version += 1
         else:
             previous_employee_id = None
@@ -1329,6 +1795,39 @@ class CustomerConversationService:
             if conversation.employee_id is None:
                 conversation.employee_id = ticket.employee_id
             conversation.status = "ACTIVE"
+            if human_owner_id is not None:
+                # A human owns the conversation right now: this turn exists so
+                # the message is visible and replayable, but it must never be
+                # claimed by the digital worker. NEEDS_HUMAN is terminal, and
+                # the router only dispatches PENDING turns.
+                transition_turn(
+                    self.session,
+                    turn,
+                    TurnStatus.RUNNING,
+                    reason_code="HUMAN_HANDLING",
+                    actor_id=human_owner_id,
+                    actor_type="AGENT",
+                    correlation_id=correlation_id,
+                )
+                transition_turn(
+                    self.session,
+                    turn,
+                    TurnStatus.NEEDS_HUMAN,
+                    reason_code="HUMAN_TAKEOVER",
+                    actor_id=human_owner_id,
+                    actor_type="AGENT",
+                    correlation_id=correlation_id,
+                    stage_label="已由人工接管，等待人工回复",
+                    payload={"handover_agent_id": human_owner_id},
+                )
+                turn.lease_expires_at = None
+                self.session.commit()
+                self.session.refresh(conversation)
+                return BuyerMessageResult(
+                    conversation=conversation,
+                    turn_id=None,
+                    replayed=False,
+                )
             from ticket_agent.digital_employees.models import (
                 DigitalEmployeeRouteDecision,
             )
@@ -1513,12 +2012,101 @@ class CustomerConversationService:
                     f"{capacity} active conversations."
                 ),
             )
+        previous_agent_id = conversation.assigned_agent_id
         conversation.assigned_agent_id = agent_id
         conversation.assigned_at = datetime.now(UTC)
         conversation.version += 1
+        cancelled_turn_ids = self._cancel_active_turns(
+            conversation.id, actor_id=agent_id
+        )
+        ticket = (
+            self.session.get(Ticket, conversation.current_ticket_id)
+            if conversation.current_ticket_id is not None
+            else None
+        )
+        if (
+            ticket is not None
+            and ticket.workflow_state
+            in _HUMAN_TAKEOVER_TICKET_STATES
+        ):
+            # The human now owns the work: the ticket must say so, otherwise
+            # the workbench refuses their manual reply.
+            transition_ticket(
+                self.session,
+                ticket,
+                WorkflowState.TAKEN_OVER,
+                reason_code="HUMAN_TAKEOVER",
+                actor_type="USER",
+                actor_id=agent_id,
+            )
+            ticket.status = TicketStatus.IN_PROGRESS
+            ticket.needs_human = True
+            ticket.human_reason = "HUMAN_TAKEOVER"
+            ticket.version += 1
+        if previous_agent_id is None:
+            # A human takes the conversation from the digital employee. The
+            # next turn (after the human hands it back) must inherit what the
+            # employee had established, and the replay must show the handover.
+            create_handoff(
+                self.session,
+                conversation=conversation,
+                from_turn=latest_turn(self.session, conversation.id),
+                to_employee=None,
+                kind="HUMAN_TAKEOVER",
+                reason_code="MANUAL",
+                actor_id=agent_id,
+                extra_summary={
+                    "taken_over_by": agent_id,
+                    "cancelled_turn_ids": [
+                        str(turn_id) for turn_id in cancelled_turn_ids
+                    ],
+                },
+                dedupe=False,
+            )
         self.session.commit()
         self.session.refresh(conversation)
         return conversation
+
+    def _cancel_active_turns(
+        self,
+        conversation_id: UUID,
+        *,
+        actor_id: str,
+    ) -> Sequence[UUID]:
+        """Cancel turns a human is about to answer instead.
+
+        A digital employee answer produced after takeover would either talk
+        over the human or race the human's reply into the outbox. Queued and
+        running turns are cancelled together; a turn that already reached a
+        terminal status is left untouched.
+        """
+        turns = list(
+            self.session.scalars(
+                select(ConversationTurn)
+                .where(
+                    ConversationTurn.conversation_id == conversation_id,
+                    ConversationTurn.status.in_(
+                        [TurnStatus.PENDING.value, TurnStatus.RUNNING.value]
+                    ),
+                )
+                .with_for_update()
+            ).all()
+        )
+        cancelled: list[UUID] = []
+        for turn in turns:
+            transition_turn(
+                self.session,
+                turn,
+                TurnStatus.CANCELLED,
+                reason_code="HUMAN_TAKEOVER",
+                actor_id=actor_id,
+                actor_type="AGENT",
+                stage_label="人工已接管",
+                payload={"handoff_kind": "HUMAN_TAKEOVER"},
+            )
+            turn.lease_expires_at = None
+            cancelled.append(turn.id)
+        return cancelled
 
     def release(self, conversation_id: UUID, *, agent_id: str) -> CustomerConversation:
         conversation = self.session.scalar(
@@ -1535,12 +2123,52 @@ class CustomerConversationService:
                 title="Conversation assigned to another agent",
                 detail="Only the assigned agent can release this conversation.",
             )
+        returning_agent_id = conversation.assigned_agent_id
         conversation.assigned_agent_id = None
         conversation.assigned_at = None
         conversation.version += 1
+        if returning_agent_id is not None:
+            self._record_human_return(
+                conversation,
+                agent_id=returning_agent_id,
+            )
         self.session.commit()
         self.session.refresh(conversation)
         return conversation
+
+    def _record_human_return(
+        self,
+        conversation: CustomerConversation,
+        *,
+        agent_id: str,
+        human_message: CustomerMessage | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        """Record that the human handed the conversation back.
+
+        The employee that resumes must know a person answered in the
+        meantime; otherwise the next turn reasons from its own older answer.
+        """
+        employee = (
+            self.session.get(DigitalEmployee, conversation.employee_id)
+            if conversation.employee_id is not None
+            else None
+        )
+        create_handoff(
+            self.session,
+            conversation=conversation,
+            from_turn=latest_turn(self.session, conversation.id),
+            to_employee=employee,
+            kind="HUMAN_RETURN",
+            reason_code="MANUAL",
+            actor_id=agent_id,
+            correlation_id=correlation_id,
+            human_message=human_message or latest_human_message(
+                self.session, conversation.id
+            ),
+            extra_summary={"returned_by": agent_id},
+            dedupe=False,
+        )
 
     def send_manual_reply(
         self,
@@ -1593,16 +2221,15 @@ class CustomerConversationService:
             )
         content = payload.content.strip()
         reply_sequence = self._next_sequence(conversation.id)
-        self.session.add(
-            CustomerMessage(
-                conversation_id=conversation.id,
-                sequence=reply_sequence,
-                role="ASSISTANT",
-                content=content,
-                ticket_id=ticket.id,
-                created_by=agent_id,
-            )
+        reply_message = CustomerMessage(
+            conversation_id=conversation.id,
+            sequence=reply_sequence,
+            role="ASSISTANT",
+            content=content,
+            ticket_id=ticket.id,
+            created_by=agent_id,
         )
+        self.session.add(reply_message)
         self.session.flush()
         conversation.version += 1
         if payload.resolve:
@@ -1626,6 +2253,12 @@ class CustomerConversationService:
                     ticket_id=ticket.id,
                     created_by="digital_employee",
                 )
+            )
+            self._record_human_return(
+                conversation,
+                agent_id=agent_id,
+                human_message=reply_message,
+                correlation_id=correlation_id,
             )
             self.session.add(
                 WorkflowTransition(
@@ -2016,13 +2649,27 @@ class CustomerConversationService:
         correlation_id: str | None = None,
         actor_id: str = "digital_employee.runtime",
     ) -> ConversationTurn:
-        turn = self.session.get(ConversationTurn, turn_id)
+        turn = self.session.scalar(
+            select(ConversationTurn)
+            .where(ConversationTurn.id == turn_id)
+            .with_for_update()
+        )
         if turn is None:
             raise ApiProblem(
                 status_code=404,
                 code="CONVERSATION_TURN_NOT_FOUND",
                 title="Conversation turn not found",
                 detail=f"Conversation turn {turn_id} does not exist.",
+            )
+        if parse_turn_status(turn.status) is TurnStatus.CANCELLED:
+            # A human took over while this answer was being generated. The
+            # assistant message was already flushed in this transaction; the
+            # caller rolls back so neither the reply nor its events survive.
+            raise ApiProblem(
+                status_code=409,
+                code="TURN_CANCELLED",
+                title="Turn was cancelled",
+                detail="A human took over the conversation during this turn.",
             )
         if skill_snapshot is not None:
             turn.skill_code = str(skill_snapshot.get("code") or "") or None
@@ -2229,6 +2876,10 @@ class CustomerConversationService:
         large gap or the same recommendation on several consecutive messages.
         Returns the handoff reason when the conversation moved.
         """
+        if conversation.assigned_agent_id is not None:
+            # A human owns the conversation. Routing must not move it to
+            # another employee underneath them.
+            return None
         if conversation.service_entry_id is None:
             return None
         current_employee = (
@@ -2539,6 +3190,7 @@ def _small_talk_reply(
     enterprise_service: bool,
     kind: SmallTalkKind | None,
     employee: DigitalEmployee | None,
+    memory: MemorySnapshot | None = None,
 ) -> str | None:
     del content
     if kind is None:
@@ -2552,6 +3204,19 @@ def _small_talk_reply(
             "可以。请说明你遇到的具体问题、涉及的对象和期望结果；"
             "如果是研发仓库问题，请提供 owner/repo 格式的公开仓库。"
         )
+    if kind == "greeting":
+        order_fact = (
+            memory.facts.get("order_id") if memory is not None else None
+        )
+        order_id = order_fact.get("value") if order_fact else None
+        if order_id:
+            # The buyer came back to an order this conversation already
+            # confirmed. A generic self-introduction would drop that memory.
+            name = f"我是{employee.name}。" if employee is not None else ""
+            return (
+                f"你好，{name}我记得你在跟进订单 {order_id}，"
+                "需要继续处理哪一步？"
+            )
     return _employee_introduction(
         employee=employee,
         enterprise_service=enterprise_service,

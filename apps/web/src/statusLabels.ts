@@ -170,6 +170,51 @@ export const eventTypeLabels: Record<string, string> = {
   human: "人工处理",
 };
 
+export const turnStatusLabels: Record<string, string> = {
+  PENDING: "排队中",
+  RUNNING: "处理中",
+  COMPLETED: "已完成",
+  NEEDS_HUMAN: "等待人工",
+  FAILED_RETRYABLE: "失败可重试",
+  FAILED_TERMINAL: "失败终态",
+  CANCELLED: "已取消",
+};
+
+export const turnEventTypeLabels: Record<string, string> = {
+  TURN_CREATED: "入队",
+  TURN_STARTED: "开始处理",
+  TURN_RESUMED: "恢复处理",
+  TURN_RETRY_SCHEDULED: "重新排队",
+  TURN_RECLAIMED: "超时回收",
+  CONTEXT_ASSEMBLED: "组装上下文",
+  GATE_EVALUATED: "发送门禁评估",
+  COMPLETION_EVALUATED: "Skill 完成度校验",
+  SKILL_SELECTED: "选择 Skill",
+  HANDOFF_CREATED: "创建交接",
+  TURN_COMPLETED: "完成",
+  TURN_NEEDS_HUMAN: "转人工",
+  TURN_FAILED: "失败（可重试）",
+  TURN_FAILED_TERMINAL: "失败（终态）",
+  TURN_CANCELLED: "取消",
+};
+
+export const handoffKindLabels: Record<string, string> = {
+  AUTO_REROUTE: "系统自动转接",
+  OPERATOR_SWITCH: "人工切换员工",
+  HUMAN_TAKEOVER: "人工接管",
+  HUMAN_RETURN: "人工交还",
+};
+
+export const handoffReasonLabels: Record<string, string> = {
+  EXPLICIT_REQUEST: "客户明确要求转接",
+  CAPABILITY_GAP: "当前员工不具备该问题能力",
+  TOPIC_CHANGED: "工单已结束，话题已切换",
+  SUSTAINED_TOPIC: "连续多轮指向同一员工",
+  ENTRY_SCOPE_CHANGED: "入口员工范围调整",
+  MANUAL: "人工操作",
+  ESCALATION: "升级处理",
+};
+
 export const employeeStatusLabels: Record<string, string> = {
   ACTIVE: "已启用",
   TRIAL: "试用中",

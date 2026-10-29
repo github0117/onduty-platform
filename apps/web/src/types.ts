@@ -131,7 +131,11 @@ export interface ConversationHandoff {
     confirmed_facts?: { key: string; value: unknown }[];
     open_actions?: { summary: string | null }[];
     commitments?: { text: string | null }[];
-    last_answer?: { turn_id: string; text: string } | null;
+    last_answer?: {
+      turn_id: string | null;
+      text: string;
+      by?: string;
+    } | null;
     pending_questions?: string[];
     unverified?: string[];
     operator_reason?: string;
@@ -205,6 +209,98 @@ export interface ConversationTurn {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+}
+
+export interface ConversationTurnEvent {
+  id: string;
+  turn_id: string;
+  conversation_id: string;
+  sequence: number;
+  event_type: string;
+  status: string;
+  stage_label: string | null;
+  actor_type: string;
+  actor_id: string;
+  correlation_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ConversationTurnEventList {
+  conversation_id: string;
+  turn_id: string;
+  events: ConversationTurnEvent[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface ConversationTurnList {
+  items: ConversationTurn[];
+  total: number;
+}
+
+/** Turn plus the frozen inputs recorded for it; NULL means pre-runtime-v2. */
+export interface ConversationTurnDetail extends ConversationTurn {
+  context: Record<string, unknown> | null;
+  skill_code: string | null;
+  skill_version: number | null;
+  skill_snapshot: Record<string, unknown> | null;
+  completion: Record<string, unknown> | null;
+}
+
+export interface ConversationHandoffList {
+  items: ConversationHandoff[];
+  total: number;
+}
+
+export interface OperationalTurn {
+  id: string;
+  conversation_id: string;
+  ticket_id: string | null;
+  business_unit_id: string;
+  requester_ref: string;
+  sequence: number;
+  status: string;
+  stage_label: string;
+  correlation_id: string | null;
+  attempt_count: number;
+  gate_decision: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  lease_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationalTurnList {
+  items: OperationalTurn[];
+  total: number;
+}
+
+export interface RuntimeGapItem {
+  query: string;
+  occurrence_count: number;
+  repair_task_id: string | null;
+}
+
+export interface RuntimeHealth {
+  business_unit_id: string;
+  window_hours: number;
+  turn_count: number;
+  completed_count: number;
+  needs_human_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  auto_send_count: number;
+  human_review_count: number;
+  blocked_count: number;
+  unverified_count: number;
+  handoff_count: number;
+  stuck_turn_count: number;
+  auto_send_rate: number | null;
+  unverified_rate: number | null;
+  handoff_rate: number | null;
+  top_gaps: RuntimeGapItem[];
 }
 
 export interface BusinessServiceEntry {

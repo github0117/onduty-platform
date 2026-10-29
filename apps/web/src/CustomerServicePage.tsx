@@ -76,6 +76,7 @@ import {
 import EmployeeProfileDrawer from "./EmployeeProfileDrawer";
 import type {
   AssignmentRunResult,
+  ConversationHandoff,
   CustomerConversation,
   CustomerReplySuggestion,
   McpActionIncident,
@@ -113,6 +114,23 @@ const REROUTE_REASON_LABELS: Record<string, string> = {
   MANUAL: "人工交接",
   ESCALATION: "升级处理",
 };
+
+function handoffHeadline(handoff: ConversationHandoff): string {
+  if (handoff.kind === "AUTO_REROUTE") {
+    return `系统自动转接：${handoff.from_employee_name ?? "数字员工"} → ${
+      handoff.to_employee_name ?? "接手员工"
+    }`;
+  }
+  if (handoff.kind === "HUMAN_TAKEOVER") {
+    return `人工接管：${handoff.from_employee_name ?? "数字员工"} → 人工`;
+  }
+  if (handoff.kind === "HUMAN_RETURN") {
+    return `人工交还：人工 → ${handoff.to_employee_name ?? "数字员工"}`;
+  }
+  return `由 ${handoff.from_employee_name ?? "数字员工"} 交接给 ${
+    handoff.to_employee_name ?? "接手员工"
+  }`;
+}
 
 const categoryLabels: Record<string, string> = {
   ecommerce_presales: "售前咨询",
@@ -1182,16 +1200,7 @@ function CustomerChatDemo({
               type="info"
               showIcon
               style={{ margin: "0 16px 8px" }}
-              message={
-                (currentConversation.latest_handoff.kind === "AUTO_REROUTE"
-                  ? "系统自动转接："
-                  : "由 ") +
-                `${currentConversation.latest_handoff.from_employee_name ?? "上一位员工"} ` +
-                (currentConversation.latest_handoff.kind === "AUTO_REROUTE"
-                  ? "→ "
-                  : "交接给 ") +
-                `${currentConversation.latest_handoff.to_employee_name ?? "接手员工"}`
-              }
+              message={handoffHeadline(currentConversation.latest_handoff)}
               description={
                 [
                   REROUTE_REASON_LABELS[

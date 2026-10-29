@@ -59,6 +59,7 @@ import type {
   TicketDetail,
 } from "./types";
 import { message } from "./feedback";
+import TurnReplayDrawer from "./TurnReplayDrawer";
 
 const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
@@ -127,6 +128,7 @@ export default function CustomerServiceWorkbench({
   const [addressActionError, setAddressActionError] = useState("");
   const [addressActionMessage, setAddressActionMessage] = useState("");
   const [addressApprovalId, setAddressApprovalId] = useState("");
+  const [replayOpen, setReplayOpen] = useState(false);
   const [addressForm, setAddressForm] = useState({
     recipient: "",
     phone: "",
@@ -832,6 +834,13 @@ export default function CustomerServiceWorkbench({
                 </Tag>
               )}
               {assignedAgentId && <Tag>{assignedAgentId}</Tag>}
+              <Button
+                size="small"
+                disabled={!selectedConversationId}
+                onClick={() => setReplayOpen(true)}
+              >
+                运行回放
+              </Button>
             </Space>
           </div>
           <div
@@ -1653,6 +1662,12 @@ export default function CustomerServiceWorkbench({
               )}
             </Space>
           </Modal>
+          <TurnReplayDrawer
+            conversationId={selectedConversationId}
+            focusTurnId={conversation.data?.current_turn?.id ?? null}
+            open={replayOpen}
+            onClose={() => setReplayOpen(false)}
+          />
           {conversation.error || ticket.error ? (
             <Alert
               type="error"

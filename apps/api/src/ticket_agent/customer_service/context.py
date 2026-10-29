@@ -403,13 +403,15 @@ def _message_line(
 ) -> str:
     if message.role == "BUYER":
         speaker = "买家"
+    elif message.turn_id is not None:
+        speaker = f"客服（{labels.get(message.turn_id, '数字员工')}）"
+    elif (message.created_by or "") not in {"", "digital_employee"}:
+        # A manual reply has no turn: a person wrote it through the
+        # workbench. Labeling it as the digital employee would make the next
+        # turn believe it had said something it never said.
+        speaker = "客服（人工）"
     else:
-        fallback = "数字员工"
-        speaker = (
-            f"客服（{labels.get(message.turn_id, fallback)}）"
-            if message.turn_id is not None
-            else f"客服（{fallback}）"
-        )
+        speaker = "客服（数字员工）"
     text = message.content.strip()
     if len(text) > 600:
         text = f"{text[:600]}…"

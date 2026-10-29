@@ -416,6 +416,10 @@ body {
   padding-bottom: 8px;
 }
 
+.turn-row-active > td {
+  background: #eef6ff !important;
+}
+
 .trace-time {
   display: block;
   margin-top: 4px;

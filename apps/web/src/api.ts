@@ -28,6 +28,11 @@ import type {
   DigitalEmployeeTemplate,
   CustomerConversation,
   CustomerConversationList,
+  ConversationHandoffList,
+  ConversationTurn,
+  ConversationTurnDetail,
+  ConversationTurnEventList,
+  ConversationTurnList,
   CustomerBusinessAction,
   CustomerBusinessContext,
   CustomerReplyOptimization,
@@ -83,9 +88,11 @@ import type {
   McpToolApprovalList,
   ModelBudget,
   ModelMetrics,
+  OperationalTurnList,
   ProductKnowledgeSyncResult,
   RagMetrics,
   RuntimeConfig,
+  RuntimeHealth,
   SyncMetrics,
   TicketDetail,
   TicketList,
@@ -747,6 +754,75 @@ export function releaseCustomerConversation(
   return request(
     `/api/v1/customer-service/conversations/${conversationId}/release`,
     { method: "POST" },
+  );
+}
+
+export function listCustomerConversationTurns(
+  conversationId: string,
+  limit = 50,
+  offset = 0,
+): Promise<ConversationTurnList> {
+  return request(
+    `/api/v1/customer-service/conversations/${conversationId}` +
+      `/turns?limit=${limit}&offset=${offset}`,
+  );
+}
+
+export function getCustomerConversationTurn(
+  conversationId: string,
+  turnId: string,
+): Promise<ConversationTurnDetail> {
+  return request(
+    `/api/v1/customer-service/conversations/${conversationId}` +
+      `/turns/${turnId}`,
+  );
+}
+
+export function listCustomerConversationTurnEvents(
+  conversationId: string,
+  turnId: string,
+  options: { afterSequence?: number; limit?: number } = {},
+): Promise<ConversationTurnEventList> {
+  const params = new URLSearchParams();
+  if (options.afterSequence !== undefined) {
+    params.set("after_sequence", String(options.afterSequence));
+  }
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request(
+    `/api/v1/customer-service/conversations/${conversationId}` +
+      `/turns/${turnId}/events${suffix}`,
+  );
+}
+
+export function listCustomerConversationHandoffs(
+  conversationId: string,
+  limit = 100,
+): Promise<ConversationHandoffList> {
+  return request(
+    `/api/v1/customer-service/conversations/${conversationId}` +
+      `/handoffs?limit=${limit}`,
+  );
+}
+
+export function retryCustomerConversationTurn(
+  turnId: string,
+): Promise<ConversationTurn> {
+  return request(`/api/v1/customer-service/turns/${turnId}/retry`, {
+    method: "POST",
+  });
+}
+
+export function getOperationalTurns(
+  status?: string,
+): Promise<OperationalTurnList> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request(`/api/v1/operations/turns${suffix}`);
+}
+
+export function getRuntimeHealth(windowHours = 24): Promise<RuntimeHealth> {
+  return request(
+    `/api/v1/operations/runtime-health?window_hours=${windowHours}`,
   );
 }
 

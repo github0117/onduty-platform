@@ -65,6 +65,78 @@ class ConversationTurnEventList(BaseModel):
     conversation_id: UUID
     turn_id: UUID
     events: list[ConversationTurnEventView]
+    total: int = 0
+    has_more: bool = False
+
+
+class ConversationTurnList(BaseModel):
+    items: list[ConversationTurnView]
+    total: int
+
+
+class ConversationTurnDetailView(ConversationTurnView):
+    """Everything a reader needs to replay one turn.
+
+    The list view stays small; this one adds the frozen inputs and verdicts:
+    what context was assembled, which Skill contract ran, and the completion
+    and gate decisions. NULL means the turn predates that record.
+    """
+
+    context: dict[str, Any] | None = None
+    skill_code: str | None = None
+    skill_version: int | None = None
+    skill_snapshot: dict[str, Any] | None = None
+    completion: dict[str, Any] | None = None
+
+
+class OperationalTurnView(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    ticket_id: UUID | None
+    business_unit_id: str
+    requester_ref: str
+    sequence: int
+    status: str
+    stage_label: str
+    correlation_id: str | None
+    attempt_count: int
+    gate_decision: str | None
+    error_code: str | None
+    error_message: str | None
+    lease_expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OperationalTurnList(BaseModel):
+    items: list[OperationalTurnView]
+    total: int
+
+
+class RuntimeGapItem(BaseModel):
+    query: str
+    occurrence_count: int
+    repair_task_id: UUID | None
+
+
+class RuntimeHealthView(BaseModel):
+    business_unit_id: str
+    window_hours: int
+    turn_count: int
+    completed_count: int
+    needs_human_count: int
+    failed_count: int
+    cancelled_count: int
+    auto_send_count: int
+    human_review_count: int
+    blocked_count: int
+    unverified_count: int
+    handoff_count: int
+    stuck_turn_count: int
+    auto_send_rate: float | None
+    unverified_rate: float | None
+    handoff_rate: float | None
+    top_gaps: list[RuntimeGapItem]
 
 
 class TurnReclaimResult(BaseModel):
@@ -91,6 +163,11 @@ class ConversationHandoffView(BaseModel):
 class ConversationHandoffCreate(BaseModel):
     employee_id: UUID
     reason: str | None = Field(default=None, max_length=500)
+
+
+class ConversationHandoffList(BaseModel):
+    items: list[ConversationHandoffView]
+    total: int
 
 
 class CustomerMessageCreate(BaseModel):

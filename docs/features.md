@@ -134,8 +134,22 @@
   各自成为一个轮次。
 - 上下文窗口是因果的：只取“本消息之前”的消息。买家在上一轮还没答完时又发了下一条，
   那条不会提前出现在上一轮的上下文里。
+- 回放与运营：工作台“运行回放”抽屉列出会话每一轮的状态、阶段、门禁与事件
+  时间线（`GET .../turns`、`.../turns/{turn_id}`，事件接口
+  `.../turns/{turn_id}/events` 支持 `after_sequence` 分页），并显示冻结的
+  上下文 / Skill / 完成度快照与交接记录。运营页展示运行时健康
+  （`GET /api/v1/operations/runtime-health`：自动发送率、未核验率、交接率、
+  卡死轮次、知识缺口 Top 5）与运行队列（`GET /api/v1/operations/turns`，
+  支持状态筛选）；`FAILED_RETRYABLE` 轮次可由管理员重试
+  （`POST /api/v1/customer-service/turns/{turn_id}/retry`，202，仅重试
+  可重试轮次）。
+- 人工接管期间数字员工不插话：接管取消排队/执行中的轮次，买家新消息只生成
+  `NEEDS_HUMAN` 轮次（工单 `WAITING_HUMAN`）；人工回复并交还后写入
+  `HUMAN_RETURN` 交接，数字员工恢复接待，人工消息在上下文里标注为
+  “客服（人工）”。
 - 员工交接落库到 `conversation_handoffs`（自动改路由 `AUTO_REROUTE` /
-  人工切换 `OPERATOR_SWITCH`），含确定性摘要（确认事实、待办、承诺、上一轮回答
+  人工切换 `OPERATOR_SWITCH` / 人工接管 `HUMAN_TAKEOVER` / 人工交还
+  `HUMAN_RETURN`），含确定性摘要（确认事实、待办、承诺、上一轮回答
   与引用、未确认项），下一轮装配直接读取该摘要；主管可在客服会话页选择员工并
   点“交接”（`POST /api/v1/customer-service/conversations/{conversation_id}/employee`，
   需要 `operations.manage`），成功后消息上方出现“由 A 交接给 B”横幅。

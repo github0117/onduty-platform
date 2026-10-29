@@ -166,14 +166,20 @@ def list_turn_events(
     session: Session,
     *,
     turn_id: UUID,
+    after_sequence: int | None = None,
+    limit: int | None = None,
 ) -> list[ConversationTurnEvent]:
-    return list(
-        session.scalars(
-            select(ConversationTurnEvent)
-            .where(ConversationTurnEvent.turn_id == turn_id)
-            .order_by(ConversationTurnEvent.sequence)
-        )
+    statement = select(ConversationTurnEvent).where(
+        ConversationTurnEvent.turn_id == turn_id
     )
+    if after_sequence is not None:
+        statement = statement.where(
+            ConversationTurnEvent.sequence > after_sequence
+        )
+    statement = statement.order_by(ConversationTurnEvent.sequence)
+    if limit is not None:
+        statement = statement.limit(limit)
+    return list(session.scalars(statement))
 
 
 def new_lease(seconds: int, *, now: datetime | None = None) -> datetime:

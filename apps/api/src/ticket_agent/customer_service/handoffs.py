@@ -56,12 +56,35 @@ def latest_turn(
     )
 
 
+def latest_human_message(
+    session: Session,
+    conversation_id: UUID,
+) -> CustomerMessage | None:
+    """The newest reply a human typed, if any.
+
+    Digital answers are attributed to ``digital_employee``; anything else on
+    the assistant side was written by a person through the workbench.
+    """
+    return session.scalar(
+        select(CustomerMessage)
+        .where(
+            CustomerMessage.conversation_id == conversation_id,
+            CustomerMessage.role == "ASSISTANT",
+            CustomerMessage.created_by.is_not(None),
+            CustomerMessage.created_by != "digital_employee",
+        )
+        .order_by(CustomerMessage.sequence.desc())
+        .limit(1)
+    )
+
+
 def build_handoff_summary(
     session: Session,
     *,
     conversation_id: UUID,
     from_turn: ConversationTurn | None,
     memory: MemorySnapshot | None = None,
+    human_message: CustomerMessage | None = None,
 ) -> dict[str, object]:
     """Build the handoff summary from stored state only, never from a model."""
     snapshot = memory or load_memory(session, conversation_id)
@@ -120,6 +143,17 @@ def build_handoff_summary(
         if status and status != "GROUNDED":
             unverified.append(f"上一轮回答未核验（{status}）")
 
+    if human_message is not None:
+        # A human answered while owning the conversation. The employee that
+        # takes it back must treat that reply as the latest thing said on its
+        # behalf, not as its own answer.
+        last_answer = {
+            "turn_id": None,
+            "text": human_message.content,
+            "citations": [],
+            "by": "human",
+        }
+
     return {
         "confirmed_facts": confirmed_facts,
         "open_actions": open_actions,
@@ -141,12 +175,20 @@ def create_handoff(
     actor_id: str,
     correlation_id: str | None = None,
     from_employee_id: UUID | None = None,
+    human_message: CustomerMessage | None = None,
+    extra_summary: dict[str, object] | None = None,
+    dedupe: bool = True,
 ) -> ConversationHandoff:
     """Record one handoff. Idempotent per source turn.
 
     ``from_employee_id`` is only needed when the caller has already moved the
     conversation to the new employee; otherwise the conversation's current
-    employee is the one handing over.
+    employee is the one handing over. A ``HUMAN_RETURN`` has no employee on
+    the giving side: a person is handing it back.
+
+    ``dedupe=False`` is for takeover/return, where the caller has already
+    established that this is a new human cycle; the per-turn key would merge
+    a second cycle with the first one.
     """
     if kind not in HANDOFF_KINDS:
         raise ApiProblem(
@@ -174,7 +216,7 @@ def create_handoff(
         )
     from_turn_id = from_turn.id if from_turn is not None else None
     to_employee_id = to_employee.id if to_employee is not None else None
-    if from_turn_id is not None:
+    if dedupe and from_turn_id is not None:
         # Same source turn and same target: this is a retry of one transfer.
         # A different target is a new transfer and gets its own record.
         existing = session.scalar(
@@ -185,23 +227,31 @@ def create_handoff(
         )
         if existing is not None:
             return existing
+    summary = build_handoff_summary(
+        session,
+        conversation_id=conversation.id,
+        from_turn=from_turn,
+        human_message=human_message,
+    )
+    if extra_summary:
+        summary.update(extra_summary)
     handoff = ConversationHandoff(
         conversation_id=conversation.id,
         business_unit_id=conversation.business_unit_id,
         from_turn_id=from_turn_id,
         from_employee_id=(
-            from_employee_id
-            if from_employee_id is not None
-            else conversation.employee_id
+            None
+            if kind == "HUMAN_RETURN"
+            else (
+                from_employee_id
+                if from_employee_id is not None
+                else conversation.employee_id
+            )
         ),
         to_employee_id=to_employee_id,
         kind=kind,
         reason_code=reason_code,
-        summary_json=build_handoff_summary(
-            session,
-            conversation_id=conversation.id,
-            from_turn=from_turn,
-        ),
+        summary_json=summary,
         created_by=actor_id,
     )
     session.add(handoff)
