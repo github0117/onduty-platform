@@ -432,6 +432,12 @@ def _maybe_send_auto_reply(inbound_id: UUID, *, correlation_id: str) -> None:
         if turn is not None:
             if turn.status != "COMPLETED":
                 return
+            # Unattended sending requires the accuracy gate to have cleared the
+            # answer. A turn with no gate (legacy row or evaluation failure)
+            # fails closed: a human sends it.
+            gate = turn.gate_json or {}
+            if gate.get("decision") != "AUTO_SEND":
+                return
             ticket = (
                 session.get(Ticket, turn.ticket_id)
                 if turn.ticket_id is not None

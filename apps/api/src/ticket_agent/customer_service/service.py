@@ -18,6 +18,7 @@ from ticket_agent.classification.conversation_signals import (
 )
 from ticket_agent.customer_service.context import record_memory_turn
 from ticket_agent.customer_service.domain import TurnStatus
+from ticket_agent.customer_service.gate import GateContext, evaluate_gate
 from ticket_agent.customer_service.handoffs import create_handoff, latest_turn
 from ticket_agent.customer_service.models import (
     AgentPresence,
@@ -1012,6 +1013,20 @@ class CustomerConversationService:
             employee=small_talk_employee,
         )
         if small_talk_reply is not None:
+            # Greetings and self-introduction need no evidence, so the gate
+            # clears them explicitly. Leaving gate_json NULL would make the
+            # connector treat them as unreviewed and never auto-send.
+            small_talk_gate = evaluate_gate(
+                GateContext(
+                    grounding_status="NOT_REQUIRED",
+                    claims=[],
+                    citations=[],
+                    risk_level=None,
+                    ticket_needs_human=False,
+                    skill_completion=None,
+                    path="small_talk",
+                )
+            )
             ticket_id = conversation.current_ticket_id
             buyer_message = CustomerMessage(
                 conversation_id=conversation.id,
@@ -1056,6 +1071,7 @@ class CustomerConversationService:
                     else "small-talk-v1"
                 ),
                 grounding_status="NOT_REQUIRED",
+                gate_json=jsonable_encoder(small_talk_gate),
                 citations_json=[],
                 trace_json=["small_talk_fast_path"],
                 tool_calls_json=[],
@@ -1082,6 +1098,18 @@ class CustomerConversationService:
                 actor_id="digital_employee.small_talk",
                 correlation_id=correlation_id,
             )
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="GATE_EVALUATED",
+                actor_id="digital_employee.small_talk",
+                correlation_id=correlation_id,
+                payload={
+                    "decision": small_talk_gate["decision"],
+                    "reasons": small_talk_gate["reasons"],
+                    "version": small_talk_gate["version"],
+                },
+            )
             transition_turn(
                 self.session,
                 turn,
@@ -1093,6 +1121,7 @@ class CustomerConversationService:
                 payload={
                     "grounding_status": "NOT_REQUIRED",
                     "small_talk_kind": small_talk_kind,
+                    "gate_decision": small_talk_gate["decision"],
                 },
             )
             turn.lease_expires_at = None
@@ -1935,6 +1964,7 @@ class CustomerConversationService:
             response_provider=turn.response_provider,
             response_model=turn.response_model,
             grounding_status=turn.grounding_status,
+            gate=turn.gate_json,
             citations=turn.citations_json,
             trace=turn.trace_json,
             tool_calls=turn.tool_calls_json,
@@ -1982,6 +2012,7 @@ class CustomerConversationService:
         analysis: dict[str, Any],
         skill_snapshot: dict[str, Any] | None = None,
         completion: dict[str, Any] | None = None,
+        gate: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         actor_id: str = "digital_employee.runtime",
     ) -> ConversationTurn:
@@ -2034,6 +2065,23 @@ class CustomerConversationService:
                     "criteria": completion.get("criteria", {}),
                 },
             )
+        if gate is not None:
+            # The gate verdict is frozen onto the turn so auto-send and later
+            # audits read the same decision instead of re-deriving it.
+            turn.gate_json = jsonable_encoder(gate)
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="GATE_EVALUATED",
+                actor_id=actor_id,
+                correlation_id=correlation_id,
+                payload={
+                    "decision": gate.get("decision"),
+                    "reasons": gate.get("reasons", []),
+                    "version": gate.get("version"),
+                    "checks": gate.get("checks", {}),
+                },
+            )
         # A required Skill step that did not happen must not read as a finished
         # answer. The reply is still recorded, but the turn goes to a human.
         incomplete_skill = (
@@ -2068,6 +2116,7 @@ class CustomerConversationService:
                     if completion is not None
                     else None
                 ),
+                "gate_decision": gate.get("decision") if gate else None,
             },
         )
         turn.lease_expires_at = None

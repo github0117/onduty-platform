@@ -169,6 +169,15 @@ export interface CustomerConversation {
   updated_at: string;
 }
 
+export interface AccuracyGate {
+  version: number;
+  decision: "AUTO_SEND" | "HUMAN_REVIEW" | "BLOCK";
+  path: string;
+  grounding_status: string;
+  reasons: string[];
+  checks: Record<string, unknown>;
+}
+
 export interface ConversationTurn {
   id: string;
   conversation_id: string;
@@ -187,6 +196,7 @@ export interface ConversationTurn {
   response_provider: string | null;
   response_model: string | null;
   grounding_status: string | null;
+  gate?: AccuracyGate | null;
   citations: Array<Record<string, unknown>>;
   trace: string[];
   tool_calls: Array<Record<string, unknown>>;
@@ -288,6 +298,7 @@ export interface CustomerReplySuggestion {
   model: string;
   fallback_used: boolean;
   grounding_status: string;
+  gate?: AccuracyGate | null;
   citations: Array<{
     chunk_id: string;
     document_id: string;

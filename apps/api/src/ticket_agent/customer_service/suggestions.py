@@ -22,6 +22,10 @@ from ticket_agent.classification.conversation_signals import (
     repository_name as _repository_name,
 )
 from ticket_agent.customer_service.context import AssembledContext, load_memory
+from ticket_agent.customer_service.gate import (
+    GateContext,
+    evaluate_gate,
+)
 from ticket_agent.customer_service.models import (
     ConversationMemory,
     CustomerConversation,
@@ -35,6 +39,10 @@ from ticket_agent.knowledge.claim_verifier import (
     get_claim_verifier,
 )
 from ticket_agent.knowledge.embedding_factory import get_embedding_provider
+from ticket_agent.knowledge.grounding import (
+    GroundingViolation,
+    validate_numeric_claims,
+)
 from ticket_agent.knowledge.service import KnowledgeHit, KnowledgeService
 from ticket_agent.mcp_connectors.runtime import (
     McpExecutionResult,
@@ -216,6 +224,17 @@ class CustomerReplySuggestionService:
                 grounding_status="POLICY_BLOCKED",
                 citations=[],
                 skill="developer-repository-support",
+                gate=evaluate_gate(
+                    GateContext(
+                        grounding_status="POLICY_BLOCKED",
+                        claims=[],
+                        citations=[],
+                        risk_level=ticket.risk_level,
+                        ticket_needs_human=ticket.needs_human,
+                        skill_completion=None,
+                        path="policy_refusal",
+                    )
+                ),
                 trace=[
                     "security_guard → 拒绝私有仓库和敏感凭据访问",
                     "tool_execution → 未调用 DeepWiki 或其他业务工具",
@@ -336,6 +355,17 @@ class CustomerReplySuggestionService:
                     grounding_status="APPROVAL_REQUIRED",
                     citations=[],
                     skill=skill,
+                    gate=evaluate_gate(
+                        GateContext(
+                            grounding_status="APPROVAL_REQUIRED",
+                            claims=[],
+                            citations=[],
+                            risk_level=ticket.risk_level,
+                            ticket_needs_human=ticket.needs_human,
+                            skill_completion=None,
+                            path="mcp_approval",
+                        )
+                    ),
                     trace=trace,
                     tool_calls=tool_call_views,
                 )
@@ -397,6 +427,17 @@ class CustomerReplySuggestionService:
             "definition": skill_definition,
             "match_reason": state.get("skill_match_reason"),
         }
+        gate = evaluate_gate(
+            GateContext(
+                grounding_status=draft.grounding_status,
+                claims=draft.claims,
+                citations=draft.citations,
+                risk_level=ticket.risk_level,
+                ticket_needs_human=ticket.needs_human,
+                skill_completion=completion,
+                path=_gate_path(draft.provider),
+            )
+        )
         record_audit(
             self.session,
             correlation_id=correlation_id,
@@ -419,6 +460,10 @@ class CustomerReplySuggestionService:
                     if completion is not None
                     else None
                 ),
+                "gate": {
+                    "decision": gate["decision"],
+                    "reasons": gate["reasons"],
+                },
                 "graph_trace": trace,
                 "mcp_tool_calls": [
                     {
@@ -447,6 +492,7 @@ class CustomerReplySuggestionService:
             skill_version=skill_definition_version,
             skill_snapshot=skill_snapshot,
             completion=completion,
+            gate=gate,
             trace=trace,
             tool_calls=tool_call_views,
         )
@@ -1021,6 +1067,17 @@ def _resolved_repository(
     )
 
 
+def _gate_path(provider: str) -> str:
+    """Name the answer path so a gate verdict can be read without the draft."""
+    return {
+        "mcp_fast_path": "mcp_tool",
+        "rag_fast_path": "knowledge_fast_path",
+        "system_policy": "policy",
+        "security_policy": "policy_refusal",
+        "local-rules": "fallback_rules",
+    }.get(provider, "llm_draft")
+
+
 def _security_boundary_refusal(query: str) -> str | None:
     lowered = query.lower()
     sensitive_terms = (
@@ -1066,20 +1123,29 @@ def _security_boundary_refusal(query: str) -> str | None:
 def _tool_evidence_claims(
     text: str,
     chunk_id: str,
+    content: str,
 ) -> list[dict[str, object]]:
     """A tool result IS the evidence, so the claim is supported by it.
 
     This is deliberately different from ``not_checked``: a not-checked claim
-    may never be reported as ``GROUNDED``.
+    may never be reported as ``GROUNDED``. Numeric commitments still have to
+    appear verbatim in the tool result; formatting must not invent numbers.
     """
+    verdict = "supported"
+    reason = "direct_tool_result"
+    try:
+        validate_numeric_claims(text, [content])
+    except GroundingViolation as exc:
+        verdict = "unsupported"
+        reason = exc.code
     return [
         {
             "text": text,
             "claim_type": "instruction",
             "cited_chunk_ids": [chunk_id],
-            "verification_verdict": "supported",
+            "verification_verdict": verdict,
             "verification_confidence": 0.95,
-            "verification_reason": "direct_tool_result",
+            "verification_reason": reason,
             "verification_provider": "deepwiki_mcp",
         }
     ]
@@ -1164,7 +1230,7 @@ def _technical_documentation_draft(
         if text is None:
             return None
         citations = [dict(item.citation)]
-        claims = _tool_evidence_claims(text, item.chunk_id)
+        claims = _tool_evidence_claims(text, item.chunk_id, item.content)
         return DraftResult(
             text=text,
             citations=citations,
@@ -1186,7 +1252,7 @@ def _technical_documentation_draft(
             f"DeepWiki 对问题的回答如下：{content}"
         )
         citations = [dict(item.citation)]
-        claims = _tool_evidence_claims(text, item.chunk_id)
+        claims = _tool_evidence_claims(text, item.chunk_id, item.content)
         return DraftResult(
             text=text,
             citations=citations,
@@ -1236,7 +1302,7 @@ def _technical_documentation_draft(
             + "。以上内容来自 DeepWiki 实时只读工具结果。"
         )
     citations = [dict(item.citation)]
-    claims = _tool_evidence_claims(text, item.chunk_id)
+    claims = _tool_evidence_claims(text, item.chunk_id, item.content)
     return DraftResult(
         text=text,
         citations=citations,

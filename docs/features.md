@@ -201,6 +201,15 @@
   `COMPLETION_EVALUATED` 事件）；之后编辑 Skill 不改写历史轮次。
 - 未命中任何触发词时使用 `customer-service-general` 宽松 Skill，不再默认
   套用员工的第一条绑定 Skill；旧的无契约 Skill 继续按宽松模式运行。
+- 每轮评估准确性三态门禁（`AUTO_SEND` / `HUMAN_REVIEW` / `BLOCK`）：
+  未核验、未支撑 claim、政策无引用、数字无依据、Skill 未完成、高风险、
+  待人工或需审批都不会自动发送；门禁结果与原因随轮次持久化并记录
+  `GATE_EVALUATED`，工单自动解决也要求 `AUTO_SEND`。
+- 连接器自动回信只发送通过 `AUTO_SEND` 的轮次；寒暄会显式记录
+  `NOT_REQUIRED` 门禁后回复。
+- 同一无知识问题重复出现会累积为知识缺口，达到阈值自动开一张
+  `运行时知识缺口：…` 修复任务，后续出现挂到同一任务，修复任务列表显示
+  缺口次数。
 - MCP 连接器支持注册、Streamable HTTP 健康检查、真实工具发现和员工级授权。
 - 已真实验证公开 DeepWiki MCP：发现 3 个只读工具，并成功查询
   `modelcontextprotocol/python-sdk` 的仓库文档结构；该能力用于研发支持员工，

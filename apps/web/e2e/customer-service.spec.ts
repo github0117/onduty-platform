@@ -1182,6 +1182,7 @@ test("未接管会话也可以生成有知识依据的 AI 建议", async ({
   await expect(
     page.getByText(/建议已填入中间回复框/),
   ).toBeVisible();
+  await expect(page.getByText(/发送门禁：/).first()).toBeVisible();
 });
 
 test("AI 建议知识未命中时显示持续错误说明", async ({

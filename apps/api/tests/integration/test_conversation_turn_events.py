@@ -106,15 +106,18 @@ def test_turn_lifecycle_events_are_ordered_and_queryable(
     assert [event["event_type"] for event in events] == [
         "TURN_CREATED",
         "TURN_STARTED",
+        "GATE_EVALUATED",
         "TURN_COMPLETED",
     ]
     assert [event["status"] for event in events] == [
         "PENDING",
         "RUNNING",
+        "RUNNING",
         "COMPLETED",
     ]
-    assert [event["sequence"] for event in events] == [1, 2, 3]
+    assert [event["sequence"] for event in events] == [1, 2, 3, 4]
     assert all(event["correlation_id"] for event in events)
+    assert events[-2]["payload"]["decision"] == "AUTO_SEND"
     assert events[-1]["payload"]["reason_code"] == "SMALL_TALK_ANSWERED"
 
     detail = client.get(
@@ -208,7 +211,7 @@ def test_illegal_and_repeated_turn_transitions_are_rejected(
         assert stale.value.code == "CONVERSATION_TURN_VERSION_CONFLICT"
         session.rollback()
 
-    assert len(_events(conversation_id, turn_id)) == 3
+    assert len(_events(conversation_id, turn_id)) == 4
 
 
 def test_duplicate_dispatch_of_finished_turn_is_idempotent(

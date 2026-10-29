@@ -87,6 +87,8 @@ import { getActiveBusinessUnitId, useAuth } from "./auth";
 import {
   conversationStatusLabels,
   draftStateLabels,
+  gateDecisionLabels,
+  gateReasonLabel,
   groundingStatusLabels,
   humanReasonLabels,
   localizedLabel,
@@ -4810,6 +4812,27 @@ export default function CustomerServicePage({
                     }
                     description={
                       <Space direction="vertical" size={2}>
+                        {replySuggestion.data.gate && (
+                          <Text
+                            type={
+                              replySuggestion.data.gate.decision === "AUTO_SEND"
+                                ? "success"
+                                : "warning"
+                            }
+                          >
+                            发送门禁：
+                            {localizedLabel(
+                              gateDecisionLabels,
+                              replySuggestion.data.gate.decision,
+                              replySuggestion.data.gate.decision,
+                            )}
+                            {replySuggestion.data.gate.reasons.length > 0
+                              ? `（${replySuggestion.data.gate.reasons
+                                  .map(gateReasonLabel)
+                                  .join("；")}）`
+                              : "（证据与 Skill 校验均通过）"}
+                          </Text>
+                        )}
                         <Text>
                           {replySuggestion.data.citations.length > 0
                             ? `知识依据：${replySuggestion.data.citations

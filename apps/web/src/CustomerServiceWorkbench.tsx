@@ -43,6 +43,8 @@ import {
 import {
   conversationStatusLabels,
   draftStateLabels,
+  gateDecisionLabels,
+  gateReasonLabel,
   humanReasonLabels,
   localizedLabel,
   queueLabels,
@@ -51,7 +53,11 @@ import {
   ticketSecondaryLabels,
   workflowStateLabels,
 } from "./statusLabels";
-import type { CustomerConversation, TicketDetail } from "./types";
+import type {
+  AccuracyGate,
+  CustomerConversation,
+  TicketDetail,
+} from "./types";
 import { message } from "./feedback";
 
 const { Paragraph, Text, Title } = Typography;
@@ -106,6 +112,9 @@ export default function CustomerServiceWorkbench({
   const [manualReplyText, setManualReplyText] = useState("");
   const [suggestionError, setSuggestionError] = useState("");
   const [suggestionStatus, setSuggestionStatus] = useState("");
+  const [suggestionGate, setSuggestionGate] = useState<AccuracyGate | null>(
+    null,
+  );
   const [autoAssignStatus, setAutoAssignStatus] = useState("");
   const [editingReview, setEditingReview] = useState(false);
   const [reviewText, setReviewText] = useState("");
@@ -267,6 +276,7 @@ export default function CustomerServiceWorkbench({
     setManualReplyText("");
     setSuggestionError("");
     setSuggestionStatus("");
+    setSuggestionGate(null);
     setEditingReview(false);
     setReviewText("");
     setPendingReplyText("");
@@ -411,6 +421,7 @@ export default function CustomerServiceWorkbench({
       setManualReplyText(result.text);
       setActionTab("handle");
       setSuggestionError("");
+      setSuggestionGate(result.gate ?? null);
       setSuggestionStatus(
         `建议已填入中间回复框 · ${result.provider}/${result.model} · ${
           result.citations.length
@@ -424,6 +435,7 @@ export default function CustomerServiceWorkbench({
     },
     onError: (error: Error) => {
       setSuggestionStatus("");
+      setSuggestionGate(null);
       setSuggestionError(
         error instanceof ApiError
           ? error.code === "KNOWLEDGE_NOT_FOUND"
@@ -1142,10 +1154,40 @@ export default function CustomerServiceWorkbench({
                     )}
                     {suggestionStatus && (
                       <Alert
-                        type="success"
+                        type={
+                          suggestionGate &&
+                          suggestionGate.decision !== "AUTO_SEND"
+                            ? "warning"
+                            : "success"
+                        }
                         showIcon
                         message="AI 回复建议已生成"
-                        description={suggestionStatus}
+                        description={
+                          <Space direction="vertical" size={2}>
+                            {suggestionGate && (
+                              <Text
+                                type={
+                                  suggestionGate.decision === "AUTO_SEND"
+                                    ? "success"
+                                    : "warning"
+                                }
+                              >
+                                发送门禁：
+                                {localizedLabel(
+                                  gateDecisionLabels,
+                                  suggestionGate.decision,
+                                  suggestionGate.decision,
+                                )}
+                                {suggestionGate.reasons.length > 0
+                                  ? `（${suggestionGate.reasons
+                                      .map(gateReasonLabel)
+                                      .join("；")}）`
+                                  : "（证据与 Skill 校验均通过）"}
+                              </Text>
+                            )}
+                            <Text>{suggestionStatus}</Text>
+                          </Space>
+                        }
                       />
                     )}
                     {suggestionError && (

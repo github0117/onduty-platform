@@ -35,6 +35,7 @@ from ticket_agent.customer_service.turn_events import (
 )
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.ecommerce.models import EcommerceCategoryProfile
+from ticket_agent.knowledge.gap_events import record_knowledge_gap
 from ticket_agent.model_gateway.profile import build_classifier_for_employee
 from ticket_agent.routing.policy import get_routing_policy
 from ticket_agent.shared.db import SessionLocal
@@ -231,6 +232,17 @@ class ConversationTurnOrchestrator:
             # Business-level rejections (no knowledge, no skill, missing
             # context) are terminal: re-running the same turn cannot fix them.
             # Only explicitly transient problems are retried.
+            if exc.code == "KNOWLEDGE_NOT_FOUND":
+                # "We had nothing to answer from" is a knowledge gap, not a
+                # broken runtime: record it so repeated questions open a
+                # repair task instead of only failing tickets.
+                record_knowledge_gap(
+                    self.session,
+                    business_unit_id=ticket.business_unit_id,
+                    query=user_message.content,
+                    ticket_id=ticket.id,
+                    turn_id=turn.id,
+                )
             self._fail(
                 turn,
                 conversation,
@@ -248,6 +260,14 @@ class ConversationTurnOrchestrator:
             )
             return self._next_pending_turn(conversation.id, exclude=turn.id)
 
+        if suggestion.grounding_status == "NO_KNOWLEDGE":
+            record_knowledge_gap(
+                self.session,
+                business_unit_id=ticket.business_unit_id,
+                query=user_message.content,
+                ticket_id=ticket.id,
+                turn_id=turn.id,
+            )
         assistant_content = suggestion.text
         if on_text_delta is not None:
             streamed_text = "".join(streamed_parts)
@@ -280,11 +300,13 @@ class ConversationTurnOrchestrator:
             analysis=self._analysis_payload(analysis),
             skill_snapshot=suggestion.skill_snapshot,
             completion=suggestion.completion,
+            gate=suggestion.gate,
             correlation_id=correlation_id,
         )
         if _can_complete_grounded_turn(
             ticket,
             suggestion.grounding_status,
+            suggestion.gate,
         ) and (
             suggestion.completion is None
             or bool(suggestion.completion.get("complete"))
@@ -640,9 +662,15 @@ def process_conversation_turn_stream(
 def _can_complete_grounded_turn(
     ticket: Ticket,
     grounding_status: str,
+    gate: dict[str, object] | None,
 ) -> bool:
+    # Completing a ticket is an irreversible claim that the question is
+    # settled. The gate must have cleared the answer for unattended sending;
+    # a missing gate (old code path, failed evaluation) fails closed.
     return (
         grounding_status == "GROUNDED"
+        and gate is not None
+        and gate.get("decision") == "AUTO_SEND"
         and not ticket.needs_human
         and ticket.risk_level not in {"R2", "R3"}
     )

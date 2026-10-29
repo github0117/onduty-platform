@@ -141,6 +141,10 @@ class Settings(BaseSettings):
     claim_verifier_timeout_seconds: float = 20.0
     claim_verifier_enforce: bool = False
     claim_verifier_fallback_to_local: bool = True
+    # Repeated NO_KNOWLEDGE turns for the same question open a repair task;
+    # one phrasing miss should not create paperwork.
+    knowledge_gap_repair_threshold: int = 3
+    knowledge_gap_window_days: int = 30
     ticket_integration_provider: Literal["local", "http_json"] = "local"
     ticket_api_base_url: str = ""
     ticket_api_key: str = ""

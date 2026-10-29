@@ -33,6 +33,9 @@ class ConversationTurnView(BaseModel):
     response_provider: str | None
     response_model: str | None
     grounding_status: str | None
+    # Accuracy gate verdict for this turn. NULL on turns completed before the
+    # gate existed; readers must treat NULL as "not cleared for auto-send".
+    gate: dict[str, Any] | None = None
     citations: list[dict[str, Any]]
     trace: list[str]
     tool_calls: list[dict[str, Any]]
@@ -192,6 +195,9 @@ class CustomerReplySuggestionView(BaseModel):
     skill_version: int | None = None
     skill_snapshot: dict[str, Any] | None = None
     completion: dict[str, Any] | None = None
+    # Whether this draft may leave without a human (AUTO_SEND) or must be
+    # reviewed (HUMAN_REVIEW), plus the machine-readable reasons.
+    gate: dict[str, Any] | None = None
     trace: list[str]
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -26,11 +26,16 @@ from ticket_agent.connectors.models import (
 from ticket_agent.connectors.outbound import deliver_outbound_message
 from ticket_agent.connectors.service import compute_signature
 from ticket_agent.customer_service.models import (
+    ConversationTurn,
     CustomerConversation,
     CustomerMessage,
 )
+from ticket_agent.customer_service.suggestions import (
+    CustomerReplySuggestionService,
+)
 from ticket_agent.shared.db import SessionLocal
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
+from ticket_agent.tickets.drafts import DraftResult
 from ticket_agent.tickets.models import Ticket
 
 ADMIN = {"X-Actor-Id": "connector-admin", "X-Actor-Role": "admin"}
@@ -568,6 +573,81 @@ def test_small_talk_auto_reply_and_outbound_delivery(
             select(func.count()).select_from(ExternalOutboundMessage)
         )
     assert outbound_count == 1
+
+
+def test_auto_reply_requires_auto_send_gate(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An answer the gate held for review must not leave the connector."""
+    monkeypatch.setenv(SECRET_ENV, SECRET)
+    employee = _create_employee(client)
+    entry = _create_entry(client)
+    connector = _create_connector(client)
+    _bind(client, str(connector["id"]), entry, employee)
+
+    class _HeldGraph:
+        def invoke(self, _state: dict[str, object]) -> dict[str, object]:
+            return {
+                "draft": DraftResult(
+                    text="门禁维修需由设施团队处理。",
+                    citations=[],
+                    claims=[
+                        {
+                            "text": "门禁维修需由设施团队处理。",
+                            "claim_type": "policy",
+                            "cited_chunk_ids": [],
+                            "verification_verdict": "supported",
+                            "verification_confidence": 0.9,
+                            "verification_reason": "test",
+                            "verification_provider": "test",
+                        }
+                    ],
+                    provider="stub",
+                    model="stub-v1",
+                    fallback_used=False,
+                    grounding_status="GROUNDED",
+                ),
+                "skill": "stub-skill",
+                "skill_definition": None,
+                "skill_definition_version": None,
+                "trace": ["stub"],
+                "mcp_tool_calls": [],
+            }
+
+    monkeypatch.setattr(
+        CustomerReplySuggestionService,
+        "_build_graph",
+        lambda self: _HeldGraph(),
+    )
+
+    accepted = _webhook(
+        client,
+        str(connector["id"]),
+        _payload(
+            content="办公室门禁失灵了怎么处理？",
+            message_id="<gate-held@example.com>",
+            thread_id="<gate-held-thread@example.com>",
+        ),
+    )
+    assert accepted.status_code == 202, accepted.text
+
+    messages = client.get(
+        f"/api/v1/connectors/{connector['id']}/messages",
+        headers=AUDITOR,
+    ).json()
+    assert messages["inbound"][0]["status"] == "PROCESSED"
+    assert messages["outbound"] == []
+
+    with SessionLocal() as session:
+        turn = session.scalar(
+            select(ConversationTurn).order_by(
+                ConversationTurn.sequence.desc()
+            )
+        )
+        assert turn is not None
+        assert turn.gate_json is not None
+        assert turn.gate_json["decision"] == "HUMAN_REVIEW"
 
 
 def test_manual_reply_bridges_to_outbound(

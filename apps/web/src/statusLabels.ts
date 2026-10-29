@@ -42,7 +42,43 @@ export const groundingStatusLabels: Record<string, string> = {
   PARTIALLY_GROUNDED: "部分有知识依据",
   NO_KNOWLEDGE: "无知识依据",
   APPROVAL_REQUIRED: "需要写操作审批",
+  UNVERIFIED: "回答未完成声明核验",
+  UNSUPPORTED: "存在无依据声明",
+  POLICY_BLOCKED: "安全策略拒绝",
+  NOT_REQUIRED: "无需知识依据",
 };
+
+export const gateDecisionLabels: Record<string, string> = {
+  AUTO_SEND: "可直接发送",
+  HUMAN_REVIEW: "需人工复核",
+  BLOCK: "已阻断",
+};
+
+export const gateReasonLabels: Record<string, string> = {
+  UNSUPPORTED_CLAIM: "存在无依据的声明",
+  UNCERTAIN_CLAIM: "存在不确定的声明",
+  UNCHECKED_CITED_CLAIM: "引用的声明尚未核验",
+  POLICY_CLAIM_WITHOUT_CITATION: "政策/操作声明缺少引用",
+  UNSUPPORTED_NUMERIC_CLAIM: "金额、时效等数字无依据",
+  SKILL_INCOMPLETE: "Skill 必需步骤未完成",
+  HIGH_RISK: "高风险工单",
+  TICKET_NEEDS_HUMAN: "工单已要求人工处理",
+  APPROVAL_REQUIRED: "写操作需要审批",
+};
+
+export function gateReasonLabel(reason: string): string {
+  const known = gateReasonLabels[reason];
+  if (known) {
+    return known;
+  }
+  if (reason.startsWith("GROUNDING_")) {
+    const status = reason.slice("GROUNDING_".length);
+    return `证据状态未通过：${
+      groundingStatusLabels[status] ?? status
+    }`;
+  }
+  return reason;
+}
 
 export const knowledgeDocumentStatusLabels: Record<string, string> = {
   DRAFT: "草稿",

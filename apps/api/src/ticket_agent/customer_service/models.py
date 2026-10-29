@@ -168,6 +168,8 @@ class ConversationTurn(Base):
     skill_snapshot_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     # Required steps / criteria and whether this turn satisfied them.
     completion_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    # Accuracy gate verdict: whether this answer may leave without a human.
+    gate_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     handoff_id: Mapped[UUID | None] = mapped_column(Uuid)
     # Optimistic concurrency guard for state transitions, mirroring the
     # customer_conversations/tickets pattern.
