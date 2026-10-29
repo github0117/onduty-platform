@@ -189,6 +189,69 @@ uv run pytest tests/integration/test_conversation_context_handoff.py -v
 uv run python scripts/acceptance_conversation_runtime.py http://127.0.0.1:8000
 ```
 
+## 会话员工粘性路由
+
+会话的员工归属是会话属性，不是每条消息的重新选择。入口路由只在证据足够时改派：
+
+- `CONVERSATION_REROUTE_MARGIN`（默认 `0.15`）：候选员工必须比当前员工高出多少分，
+  才算“有证据”。
+- `CONVERSATION_REROUTE_STRONG_MARGIN`（默认 `0.30`）：达到这个差距视为能力缺口，
+  第一条消息就可以改派。
+- `CONVERSATION_REROUTE_MIN_STREAK`（默认 `2`）：连续多少轮推荐同一候选才按
+  `SUSTAINED_TOPIC` 改派。
+- `CONVERSATION_REROUTE_COOLDOWN_TURNS`（默认 `3`）：两次自动改派之间至少间隔多少
+  **轮次**（按 `conversation_turns.sequence` 计算，不是消息条数）。
+- `CONVERSATION_REROUTE_MAX_PER_CONVERSATION`（默认 `2`）：单个会话自动改派上限。
+
+改派原因写入 `conversation_handoffs.reason_code`：
+`EXPLICIT_REQUEST`（买家明确要求转接）、`CAPABILITY_GAP`（当前员工能力缺口）、
+`TOPIC_CHANGED`（上一张工单已完成）、`SUSTAINED_TOPIC`（连续多轮同主题）、
+`ENTRY_SCOPE_CHANGED`（入口员工池不再包含当前员工）。主管手动切换写入
+`employee_source=MANUAL` 和 `employee_locked_at`，此后路由不再覆盖该会话。
+
+```bash
+cd apps/api
+uv run pytest tests/integration/test_conversation_employee_stickiness.py -v
+```
+
+## 领域包（DOMAIN_PACKS_DIR）
+
+领域包声明“一个业务方向提供哪些工作流”。内置两个包：
+`customer_service`（`customer_service_ticket_v1`）和
+`human_resources`（`hr_onboarding_document_collection_v1`）。新方向不必改代码，
+把领域包放到 `DOMAIN_PACKS_DIR` 指向的目录即可（一域一文件，`*.toml`）：
+
+```toml
+# /etc/ticket-agent/domain-packs/manufacturing.toml
+key = "manufacturing"
+name = "工业制造"
+default_workflow = "manufacturing_equipment_ticket_v1"
+
+[[workflows]]
+key = "manufacturing_equipment_ticket_v1"
+handler = "ticket_agent.workflow.customer_service:CustomerServiceTicketWorkflow"
+label = "设备报修流程"
+```
+
+- `KEY`：写入 `digital_employees.domain` 的领域标识。
+- `DEFAULT_WORKFLOW`：该领域的默认流程，必须属于本包。
+- `HANDLER`：`module:Class`，懒加载。类需实现
+  `key` + `process(ticket_id, correlation_id)`（`workflow/base.py`）。
+  复用现有流程形态时直接指向现有类即可。
+- 工作流 key 与领域 key 全局唯一；重复、未知字段、缺省流程不属于本包、
+  handler 无法导入都会让**进程启动失败**（API、Celery worker 和 beat 都会在启动时
+  校验），不会等到第一张工单才暴露。
+- `DOMAIN_PACKS_DIR` 为空表示只用内置包；配置了目录但目录不存在同样启动失败。
+
+入口员工池是硬边界：来自业务入口的会话，主管手动切换只能转给该入口内已启用的
+员工，否则返回 `409 HANDOFF_EMPLOYEE_OUTSIDE_ENTRY`；无入口的会话仍按领域
+（`409 EMPLOYEE_DOMAIN_MISMATCH`）校验。
+
+```bash
+cd apps/api
+uv run pytest tests/unit/test_domain_packs.py tests/integration/test_conversation_context_handoff.py -v
+```
+
 ## 知识库嵌入与重建索引
 
 ```text

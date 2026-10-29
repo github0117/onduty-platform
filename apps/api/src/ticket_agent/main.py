@@ -26,6 +26,7 @@ from ticket_agent.digital_employees.draft_router import (
     router as employee_draft_router,
 )
 from ticket_agent.digital_employees.router import router as employee_router
+from ticket_agent.domains.registry import validate_domain_packs
 from ticket_agent.ecommerce.router import router as ecommerce_router
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
@@ -64,6 +65,8 @@ from ticket_agent.workforce.router import router as workforce_router
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     del app
+    # A malformed domain pack must fail startup, not the first ticket.
+    validate_domain_packs()
     if settings.is_development:
         init_db()
     yield

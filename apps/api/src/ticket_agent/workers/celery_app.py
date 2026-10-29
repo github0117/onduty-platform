@@ -1,8 +1,12 @@
 from celery import Celery
 
+from ticket_agent.domains.registry import validate_domain_packs
 from ticket_agent.shared.settings import get_settings
 
 settings = get_settings()
+# Worker and beat resolve workflows from domain packs too; a broken pack must
+# stop them at import instead of failing one ticket at a time.
+validate_domain_packs()
 
 celery_app = Celery(
     "ticket_agent",
