@@ -14,10 +14,12 @@ from ticket_agent.classification.conversation_signals import (
     classify_small_talk,
     repository_name,
 )
+from ticket_agent.customer_service.domain import TurnStatus
 from ticket_agent.customer_service.models import (
     AgentPresence,
     ConversationMemory,
     ConversationTurn,
+    ConversationTurnEvent,
     CustomerConversation,
     CustomerMessage,
     CustomerServiceNotification,
@@ -46,10 +48,17 @@ from ticket_agent.customer_service.schemas import (
     CustomerServiceNotificationList,
     CustomerServiceNotificationView,
 )
+from ticket_agent.customer_service.turn_events import (
+    list_turn_events,
+    new_lease,
+    record_turn_event,
+    transition_turn,
+)
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.digital_employees.router_service import DigitalEmployeeRouter
 from ticket_agent.identity.models import Principal
 from ticket_agent.shared.errors import ApiProblem
+from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.models import Ticket, WorkflowTransition
 from ticket_agent.tickets.schemas import RequesterInput, SourceInput, TicketCreate
@@ -885,6 +894,30 @@ class CustomerConversationService:
             )
         return conversation
 
+    def get_turn(
+        self, conversation_id: UUID, turn_id: UUID
+    ) -> ConversationTurn:
+        turn = self.session.scalar(
+            select(ConversationTurn).where(
+                ConversationTurn.id == turn_id,
+                ConversationTurn.conversation_id == conversation_id,
+            )
+        )
+        if turn is None:
+            raise ApiProblem(
+                status_code=404,
+                code="CONVERSATION_TURN_NOT_FOUND",
+                title="Conversation turn not found",
+                detail=(
+                    f"Conversation turn {turn_id} does not exist in "
+                    f"conversation {conversation_id}."
+                ),
+            )
+        return turn
+
+    def turn_events(self, turn_id: UUID) -> list[ConversationTurnEvent]:
+        return list_turn_events(self.session, turn_id=turn_id)
+
     def append_buyer_message(
         self,
         conversation_id: UUID,
@@ -952,16 +985,20 @@ class CustomerConversationService:
             )
             self.session.add_all([buyer_message, assistant_message])
             self.session.flush()
+            lease_seconds = get_settings().conversation_turn_lease_seconds
             turn = ConversationTurn(
                 conversation_id=conversation.id,
                 ticket_id=ticket_id,
                 sequence=self._next_turn_sequence(conversation.id),
-                status="COMPLETED",
+                status=TurnStatus.PENDING.value,
                 stage_label="问候已直接回复",
                 user_message_id=buyer_message.id,
                 assistant_message_id=assistant_message.id,
                 employee_id=conversation.employee_id,
                 intent="small_talk",
+                correlation_id=correlation_id,
+                attempt_count=1,
+                lease_expires_at=new_lease(lease_seconds),
                 analysis_json={
                     "small_talk_kind": small_talk_kind,
                 },
@@ -979,6 +1016,37 @@ class CustomerConversationService:
                 completed_at=datetime.now(UTC),
             )
             self.session.add(turn)
+            self.session.flush()
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="TURN_CREATED",
+                actor_id="digital_employee.small_talk",
+                correlation_id=correlation_id,
+                payload={"fast_path": "small_talk"},
+            )
+            transition_turn(
+                self.session,
+                turn,
+                TurnStatus.RUNNING,
+                reason_code="SMALL_TALK_FAST_PATH",
+                actor_id="digital_employee.small_talk",
+                correlation_id=correlation_id,
+            )
+            transition_turn(
+                self.session,
+                turn,
+                TurnStatus.COMPLETED,
+                reason_code="SMALL_TALK_ANSWERED",
+                actor_id="digital_employee.small_talk",
+                correlation_id=correlation_id,
+                stage_label="问候已直接回复",
+                payload={
+                    "grounding_status": "NOT_REQUIRED",
+                    "small_talk_kind": small_talk_kind,
+                },
+            )
+            turn.lease_expires_at = None
             self._update_memory(
                 conversation.id,
                 turn.sequence,
@@ -1168,12 +1236,16 @@ class CustomerConversationService:
                 conversation_id=conversation.id,
                 ticket_id=ticket.id,
                 sequence=self._next_turn_sequence(conversation.id),
-                status="RUNNING",
+                status=TurnStatus.PENDING.value,
                 stage_label="正在识别问题",
                 user_message_id=buyer_message.id,
                 employee_id=ticket.employee_id,
                 employee_config_revision=(
                     employee.config_revision if employee else None
+                ),
+                correlation_id=correlation_id,
+                lease_expires_at=new_lease(
+                    get_settings().conversation_turn_lease_seconds
                 ),
                 analysis_json={},
                 citations_json=[],
@@ -1182,6 +1254,21 @@ class CustomerConversationService:
                 started_at=datetime.now(UTC),
             )
             self.session.add(turn)
+            self.session.flush()
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="TURN_CREATED",
+                actor_id=principal.actor_id,
+                actor_type="USER",
+                correlation_id=correlation_id,
+                payload={
+                    "ticket_id": str(ticket.id),
+                    "employee_id": (
+                        str(ticket.employee_id) if ticket.employee_id else None
+                    ),
+                },
+            )
             conversation.current_ticket_id = ticket.id
             if conversation.employee_id is None:
                 conversation.employee_id = ticket.employee_id
@@ -1502,6 +1589,27 @@ class CustomerConversationService:
                 "content_length": len(content),
             },
         )
+        if conversation.external_connector_id is not None:
+            from ticket_agent.connectors.models import ExternalConnector
+            from ticket_agent.connectors.outbound import (
+                enqueue_conversation_reply,
+            )
+
+            connector = self.session.get(
+                ExternalConnector,
+                conversation.external_connector_id,
+            )
+            if connector is not None:
+                enqueue_conversation_reply(
+                    self.session,
+                    connector=connector,
+                    conversation=conversation,
+                    content=content,
+                    idempotency_key=(
+                        f"manual:{conversation.id}:{reply_sequence}"
+                    ),
+                    correlation_id=correlation_id,
+                )
         self.session.commit()
         self.session.refresh(conversation)
         return conversation
@@ -1568,6 +1676,9 @@ class CustomerConversationService:
             stage_label=turn.stage_label,
             employee_id=turn.employee_id,
             employee_config_revision=turn.employee_config_revision,
+            correlation_id=turn.correlation_id,
+            version=turn.version,
+            attempt_count=turn.attempt_count,
             intent=turn.intent,
             analysis=turn.analysis_json,
             response_provider=turn.response_provider,
@@ -1616,6 +1727,8 @@ class CustomerConversationService:
         tool_calls: Sequence[dict[str, Any]],
         intent: str | None,
         analysis: dict[str, Any],
+        correlation_id: str | None = None,
+        actor_id: str = "digital_employee.runtime",
     ) -> ConversationTurn:
         turn = self.session.get(ConversationTurn, turn_id)
         if turn is None:
@@ -1625,8 +1738,23 @@ class CustomerConversationService:
                 title="Conversation turn not found",
                 detail=f"Conversation turn {turn_id} does not exist.",
             )
-        turn.status = "COMPLETED"
-        turn.stage_label = "回答已完成"
+        transition_turn(
+            self.session,
+            turn,
+            TurnStatus.COMPLETED,
+            reason_code="ANSWER_PRODUCED",
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+            stage_label="回答已完成",
+            payload={
+                "grounding_status": grounding_status,
+                "citation_count": len(citations),
+                "tool_call_count": len(tool_calls),
+                "provider": response_provider,
+                "model": response_model,
+            },
+        )
+        turn.lease_expires_at = None
         turn.assistant_message_id = assistant_message.id
         turn.response_provider = response_provider
         turn.response_model = response_model

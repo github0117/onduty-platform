@@ -224,7 +224,9 @@ class HROnboardingWorkflow:
                 claims_json=claims,
                 generator_provider="local",
                 generator_model="hr-onboarding-template-v1",
-                grounding_status="GROUNDED",
+                # The template text was not checked against the cited
+                # passage, so it cannot claim to be grounded (invariant I3).
+                grounding_status="UNVERIFIED",
             )
         )
         self.tool_execution.succeed(

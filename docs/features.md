@@ -109,6 +109,20 @@
 - 自动回复受置信度、敏感动作、工具权限和策略审批共同约束；模型 fallback、
   引用声明未校验或校验不通过时一律转人工。
 - 客服会话沙盒支持提问、引用、人工改写、点踩和自动修复任务。
+- 每轮对话是独立的运行时事务：`conversation_turns` 带 `correlation_id`、
+  乐观锁 `version`、`attempt_count` 和 worker 租约，状态只能沿合法边迁移，
+  非法跳转返回 `409 INVALID_TURN_TRANSITION`；每次迁移写入
+  `conversation_turn_events`，可通过
+  `GET /api/v1/customer-service/conversations/{conversation_id}/turns/{turn_id}/events`
+  查看这一轮从排队、认领、上下文组装到完成/失败的全过程。
+- 租约过期的轮次由 Celery Beat 每 30 秒回收并重新派发，超过
+  `CONVERSATION_TURN_MAX_ATTEMPTS` 标记 `FAILED_TERMINAL`；运维也可调用
+  `POST /api/v1/customer-service/turns/reclaim` 手动触发（需要
+  `operations.manage`）。
+- 答案依据判定统一走 `grounding_status_from_claims`：只有所有被引用声明都
+  校验为 `supported` 才标记 `GROUNDED`；MCP 只读工具结果以
+  `direct_tool_result` 计为已支持，抽取式知识回答必须通过声明校验器，未校验
+  一律 `UNVERIFIED`。
 - 工作台可从会话自动识别订单，展示客户、物流、售后和收货地址上下文。
 - 收货地址修改走 R2 人工审批，支持重复申请幂等、超时结果未知和只读对账；
   沙箱提供正常、超时和明确拒绝三种模式。
@@ -190,6 +204,30 @@
 - 补偿动作必须使用 `reverse` 或 `compensate` 工具，并创建新的管理员审批。
 - 补偿成功后才允许把“已执行但结果错误”的事故关闭。
 - 客服页面提供 MCP 写操作审批列表、审计参数、审批意见和执行结果。
+
+## 外部连接中心（邮件渠道与只读业务系统）
+
+- 统一的连接器注册表：`connector_type=email` 或 `http_json`，方向支持
+  `INBOUND` / `OUTBOUND` / `BIDIRECTIONAL`，按业务单元隔离并带版本号。
+- 邮件渠道使用真实 IMAP 拉取未读邮件、SMTP 回信；按 `References → In-Reply-To →
+  Message-ID` 归并会话，出站 `Message-ID`、`In-Reply-To`、`References` 保持线程。
+- Celery Beat 每 60 秒轮询启用的邮件连接器；同一 `Message-ID` 由唯一约束
+  `(connector_id, external_message_id)` 保证只入库一次。
+- 入站消息先落库再处理，未绑定业务入口、连接器停用或方向不允许时保留失败记录并
+  返回明确错误，不会静默丢信。
+- 处理成功的邮件会创建/复用客服会话、工单和对话轮次；只有数字员工回答完成且工单
+  完成时才自动回信，出站回复通过 Outbox 重试，失败保留错误并支持人工重试。
+- 人工客服在会话工作台发送的回复会自动桥接到邮件连接器（幂等键按会话与回复序号
+  生成），外部会话与站内会话共用同一套工单和审计。
+- 只读 HTTP JSON 连接器支持健康检查与 GET 查询，4xx 明确拒绝、429/5xx 标记可重试；
+  写操作仍只走既有 MCP 审批链路。
+- Webhook 入站按 `X-Connector-Signature`（`sha256=<hex>` HMAC）验签，未配置或错误
+  签名分别返回 503/401；webhook 路由不依赖 OIDC，避免身份网关阻断签名流量。
+- 密钥只保存环境变量名（`secret_ref`），值从进程环境或 `CONNECTOR_SECRETS_JSON`
+  读取；创建/更新接口递归拒绝包含 `password`、`token`、`api_key` 等字段的配置。
+- 管理页面位于“员工与能力 · 外部连接（邮件 / MCP）”，支持列表、创建、启停、健康
+  检查、业务入口绑定、最近消息和失败重试；只读角色只能查看，写入口按
+  `mcp.connectors.write` 隐藏。
 
 ## 客服视图、工作台与服务席位
 

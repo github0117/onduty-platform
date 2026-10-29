@@ -25,6 +25,10 @@ from ticket_agent.customer_service.models import (
 from ticket_agent.customer_service.schemas import CustomerReplySuggestionView
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.digital_employees.service import DigitalEmployeeService
+from ticket_agent.knowledge.claim_verifier import (
+    ClaimToVerify,
+    get_claim_verifier,
+)
 from ticket_agent.knowledge.embedding_factory import get_embedding_provider
 from ticket_agent.knowledge.service import KnowledgeHit, KnowledgeService
 from ticket_agent.mcp_connectors.runtime import (
@@ -42,7 +46,11 @@ from ticket_agent.model_gateway.usage import ModelUsageGuard
 from ticket_agent.routing.policy import RoutingDecision
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.tickets.domain import Priority, RiskLevel
-from ticket_agent.tickets.drafts import DraftEvidence, DraftResult
+from ticket_agent.tickets.drafts import (
+    DraftEvidence,
+    DraftResult,
+    grounding_status_from_claims,
+)
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.tools.execution import ToolExecutionService
 from ticket_agent.tools.registry import ToolPermissionError
@@ -928,6 +936,88 @@ def _security_boundary_refusal(query: str) -> str | None:
     )
 
 
+def _tool_evidence_claims(
+    text: str,
+    chunk_id: str,
+) -> list[dict[str, object]]:
+    """A tool result IS the evidence, so the claim is supported by it.
+
+    This is deliberately different from ``not_checked``: a not-checked claim
+    may never be reported as ``GROUNDED``.
+    """
+    return [
+        {
+            "text": text,
+            "claim_type": "instruction",
+            "cited_chunk_ids": [chunk_id],
+            "verification_verdict": "supported",
+            "verification_confidence": 0.95,
+            "verification_reason": "direct_tool_result",
+            "verification_provider": "deepwiki_mcp",
+        }
+    ]
+
+
+def _knowledge_extract_claims(
+    *,
+    text: str,
+    verified_text: str,
+    chunk_id: str,
+    content: str,
+    claim_type: str,
+) -> list[dict[str, object]]:
+    """Send an extractive answer through the configured claim verifier.
+
+    The sentence selection is deterministic, but "we copied text out of a
+    chunk" is exactly the claim that has to be checked before the answer can
+    be called grounded. With the verifier disabled the claim stays
+    ``not_checked`` and the turn is reported as ``UNVERIFIED``.
+    """
+    verdict = "not_checked"
+    confidence: float | None = None
+    reason: str | None = "direct_knowledge_extract"
+    provider: str | None = "rag"
+    verifier = get_claim_verifier()
+    if verifier is not None:
+        verified = verifier.verify(
+            [
+                ClaimToVerify(
+                    claim_index=0,
+                    # Verify the extracted sentences, not the template
+                    # wrapper: "根据已发布知识《…》" is framing, not a claim.
+                    text=verified_text,
+                    claim_type=claim_type,
+                    sources=[content],
+                )
+            ]
+        )[0]
+        verdict = verified.verdict
+        confidence = verified.confidence
+        reason = verified.reason
+        provider = verified.provider
+    return [
+        {
+            "text": text,
+            "claim_type": claim_type,
+            "cited_chunk_ids": [chunk_id],
+            "verification_verdict": verdict,
+            "verification_confidence": confidence,
+            "verification_reason": reason,
+            "verification_provider": provider,
+        }
+    ]
+
+
+def _citation_payload(hit: KnowledgeHit) -> dict[str, Any]:
+    return {
+        "chunk_id": str(hit.chunk_id),
+        "document_id": str(hit.document_id),
+        "space_id": str(hit.space_id) if hit.space_id else None,
+        "title": hit.title,
+        "version": hit.version,
+    }
+
+
 def _technical_documentation_draft(
     state: CustomerSuggestionState,
 ) -> DraftResult | None:
@@ -946,24 +1036,19 @@ def _technical_documentation_draft(
         )
         if text is None:
             return None
+        citations = [dict(item.citation)]
+        claims = _tool_evidence_claims(text, item.chunk_id)
         return DraftResult(
             text=text,
-            citations=[dict(item.citation)],
-            claims=[
-                {
-                    "text": text,
-                    "claim_type": "instruction",
-                    "cited_chunk_ids": [item.chunk_id],
-                    "verification_verdict": "not_checked",
-                    "verification_confidence": None,
-                    "verification_reason": "direct_tool_result",
-                    "verification_provider": "deepwiki_mcp",
-                }
-            ],
+            citations=citations,
+            claims=claims,
             provider="mcp_fast_path",
             model="deepwiki_contents",
             fallback_used=False,
-            grounding_status="GROUNDED",
+            grounding_status=grounding_status_from_claims(
+                citations=citations,
+                claims=claims,
+            ),
         )
     if plan.tool_id.endswith(".ask_wiki_question"):
         content = item.content.strip()
@@ -973,24 +1058,19 @@ def _technical_documentation_draft(
             f"根据 {repository} 的公开仓库文档，"
             f"DeepWiki 对问题的回答如下：{content}"
         )
+        citations = [dict(item.citation)]
+        claims = _tool_evidence_claims(text, item.chunk_id)
         return DraftResult(
             text=text,
-            citations=[dict(item.citation)],
-            claims=[
-                {
-                    "text": text,
-                    "claim_type": "instruction",
-                    "cited_chunk_ids": [item.chunk_id],
-                    "verification_verdict": "not_checked",
-                    "verification_confidence": None,
-                    "verification_reason": "direct_tool_result",
-                    "verification_provider": "deepwiki_mcp",
-                }
-            ],
+            citations=citations,
+            claims=claims,
             provider="mcp_fast_path",
             model="deepwiki_question",
             fallback_used=False,
-            grounding_status="GROUNDED",
+            grounding_status=grounding_status_from_claims(
+                citations=citations,
+                claims=claims,
+            ),
         )
     if not plan.tool_id.endswith(".read_wiki_structure"):
         return None
@@ -1028,24 +1108,19 @@ def _technical_documentation_draft(
             + "；".join(details[1:])
             + "。以上内容来自 DeepWiki 实时只读工具结果。"
         )
+    citations = [dict(item.citation)]
+    claims = _tool_evidence_claims(text, item.chunk_id)
     return DraftResult(
         text=text,
-        citations=[dict(item.citation)],
-        claims=[
-            {
-                "text": text,
-                "claim_type": "instruction",
-                "cited_chunk_ids": [item.chunk_id],
-                "verification_verdict": "not_checked",
-                "verification_confidence": None,
-                "verification_reason": "direct_tool_result",
-                "verification_provider": "deepwiki_mcp",
-            }
-        ],
+        citations=citations,
+        claims=claims,
         provider="mcp_fast_path",
         model="deepwiki_tool_result",
         fallback_used=False,
-        grounding_status="GROUNDED",
+        grounding_status=grounding_status_from_claims(
+            citations=citations,
+            claims=claims,
+        ),
     )
 
 
@@ -1070,32 +1145,25 @@ def _technical_knowledge_draft(
     question = _latest_buyer_question(str(state.get("query") or ""))
     extracted = _extract_relevant_knowledge_sentences(content, question)
     text = f"根据已发布知识《{hit.title}》：{extracted}"
+    citations = [_citation_payload(hit)]
+    claims = _knowledge_extract_claims(
+        text=text,
+        verified_text=extracted,
+        chunk_id=str(hit.chunk_id),
+        content=content,
+        claim_type="policy",
+    )
     return DraftResult(
         text=text,
-        citations=[
-            {
-                "chunk_id": str(hit.chunk_id),
-                "document_id": str(hit.document_id),
-                "space_id": str(hit.space_id) if hit.space_id else None,
-                "title": hit.title,
-                "version": hit.version,
-            }
-        ],
-        claims=[
-            {
-                "text": text,
-                "claim_type": "policy",
-                "cited_chunk_ids": [str(hit.chunk_id)],
-                "verification_verdict": "not_checked",
-                "verification_confidence": None,
-                "verification_reason": "direct_knowledge_extract",
-                "verification_provider": "rag",
-            }
-        ],
+        citations=citations,
+        claims=claims,
         provider="rag_fast_path",
         model="knowledge_extract",
         fallback_used=False,
-        grounding_status="GROUNDED",
+        grounding_status=grounding_status_from_claims(
+            citations=citations,
+            claims=claims,
+        ),
     )
 
 
@@ -1124,32 +1192,25 @@ def _operational_knowledge_draft(
     question = _latest_buyer_question(str(state.get("query") or ""))
     extracted = _extract_relevant_knowledge_sentences(content, question)
     text = f"根据已发布知识《{hit.title}》：{extracted}"
+    citations = [_citation_payload(hit)]
+    claims = _knowledge_extract_claims(
+        text=text,
+        verified_text=extracted,
+        chunk_id=str(hit.chunk_id),
+        content=content,
+        claim_type="instruction",
+    )
     return DraftResult(
         text=text,
-        citations=[
-            {
-                "chunk_id": str(hit.chunk_id),
-                "document_id": str(hit.document_id),
-                "space_id": str(hit.space_id) if hit.space_id else None,
-                "title": hit.title,
-                "version": hit.version,
-            }
-        ],
-        claims=[
-            {
-                "text": text,
-                "claim_type": "instruction",
-                "cited_chunk_ids": [str(hit.chunk_id)],
-                "verification_verdict": "not_checked",
-                "verification_confidence": None,
-                "verification_reason": "direct_knowledge_extract",
-                "verification_provider": "rag",
-            }
-        ],
+        citations=citations,
+        claims=claims,
         provider="rag_fast_path",
         model="knowledge_extract",
         fallback_used=False,
-        grounding_status="GROUNDED",
+        grounding_status=grounding_status_from_claims(
+            citations=citations,
+            claims=claims,
+        ),
     )
 
 

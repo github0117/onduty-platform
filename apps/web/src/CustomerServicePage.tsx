@@ -699,7 +699,7 @@ function CustomerChatDemo({
   const currentTurn = currentConversation?.current_turn ?? null;
   const turnInFlight = Boolean(
     currentTurn &&
-      ["RECEIVED", "RUNNING"].includes(currentTurn.status),
+      ["PENDING", "RECEIVED", "RUNNING"].includes(currentTurn.status),
   );
   const currentTicketMessages = messages.filter(
     (item) =>

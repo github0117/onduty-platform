@@ -39,6 +39,10 @@ celery_app.conf.update(
             "task": "ticket_agent.customer_service.notify_supervisors",
             "schedule": 60.0,
         },
+        "reclaim-conversation-turns-every-30-seconds": {
+            "task": "ticket_agent.customer_service.reclaim_turns",
+            "schedule": 30.0,
+        },
         "auto-assign-customer-conversations-every-10-seconds": {
             "task": "ticket_agent.customer_service.auto_assign",
             "schedule": 10.0,
@@ -46,6 +50,10 @@ celery_app.conf.update(
         "reconcile-mcp-incidents-every-120-seconds": {
             "task": "ticket_agent.mcp.reconcile_incidents",
             "schedule": 120.0,
+        },
+        "poll-email-connectors-every-60-seconds": {
+            "task": "ticket_agent.connectors.poll_email",
+            "schedule": 60.0,
         },
     },
 )

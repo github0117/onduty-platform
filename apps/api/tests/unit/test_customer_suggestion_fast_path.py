@@ -162,6 +162,10 @@ def test_technical_documentation_draft_uses_live_tool_evidence() -> None:
     assert "owner/repo" in draft.text
     assert "1 Overview" in draft.text
     assert draft.citations[0]["source_type"] == "mcp"
+    # A tool result is direct evidence: the claim is supported, never
+    # "not_checked", so GROUNDED is honest here.
+    assert draft.claims[0]["verification_verdict"] == "supported"
+    assert draft.grounding_status == "GROUNDED"
 
     follow_up = _technical_documentation_draft(
         {
@@ -407,6 +411,9 @@ def test_technical_knowledge_uses_extractive_rag() -> None:
     assert "不得查询私有仓库" in draft.text
     assert draft.citations[0]["title"] == "研发仓库查询规范"
     assert "优先使用 read_wiki_structure" not in draft.text
+    # Extractive text still has to pass the configured claim verifier.
+    assert draft.claims[0]["verification_verdict"] == "supported"
+    assert draft.grounding_status == "GROUNDED"
 
 
 def test_operational_question_uses_published_knowledge() -> None:
@@ -504,3 +511,37 @@ def test_buyer_history_excludes_current_turn_and_assistant_replies() -> None:
     # The last buyer turn is the current question; it is excluded.
     assert _buyer_history(transcript) == ["我买的保温杯漏水了"]
     assert _buyer_history("没有买家标记") == []
+
+
+def test_extractive_claim_without_verifier_is_not_grounded(
+    monkeypatch,
+) -> None:
+    from ticket_agent.customer_service import suggestions
+
+    monkeypatch.setattr(suggestions, "get_claim_verifier", lambda: None)
+    hit = KnowledgeHit(
+        chunk_id=uuid4(),
+        document_id=uuid4(),
+        title="企业通知配置指南",
+        version="1.0.0",
+        content="管理员进入后台设置，打开消息通知，选择团队范围和通知渠道。",
+        score=0.8,
+    )
+
+    draft = _operational_knowledge_draft(
+        {
+            "query": "买家：如何配置团队消息通知？",
+            "knowledge_hits": [hit],
+            "ticket": Ticket(
+                business_unit_id="bu_demo",
+                category_primary="product_howto",
+                subject="如何配置企业通知",
+                body="请问管理员如何为团队配置消息通知？",
+            ),
+        }
+    )
+
+    assert draft is not None
+    assert draft.claims[0]["verification_verdict"] == "not_checked"
+    # Invariant I3: unverified claims can never be reported as grounded.
+    assert draft.grounding_status == "UNVERIFIED"

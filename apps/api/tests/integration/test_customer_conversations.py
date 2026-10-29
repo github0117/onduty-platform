@@ -889,7 +889,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
         "ASSISTANT",
     ]
     assert stored.json()["messages"][1]["ticket_id"] == ticket_id
-    assert stored.json()["current_turn"]["status"] == "FAILED"
+    assert stored.json()["current_turn"]["status"] == "FAILED_TERMINAL"
     assert stored.json()["current_workflow_state"] == "NEEDS_HUMAN"
 
     takeover = client.post(
@@ -1191,7 +1191,12 @@ def test_assigned_agent_can_send_manual_reply_and_resolve(
     )
     assert next_turn.status_code == 202
     assert next_turn.json()["current_ticket_id"] == ticket_id
-    assert next_turn.json()["current_turn"]["status"] == "RUNNING"
+    # The response is rendered before the queued worker runs, so the new turn
+    # is either still queued or already claimed.
+    assert next_turn.json()["current_turn"]["status"] in {
+        "PENDING",
+        "RUNNING",
+    }
 
 
 def test_completed_conversation_reroutes_new_question_and_keeps_history(

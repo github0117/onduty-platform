@@ -149,6 +149,9 @@ export interface ConversationTurn {
   stage_label: string;
   employee_id: string | null;
   employee_config_revision: number | null;
+  correlation_id: string | null;
+  version: number;
+  attempt_count: number;
   intent: string | null;
   analysis: Record<string, unknown>;
   response_provider: string | null;
@@ -1760,3 +1763,86 @@ export interface EcommerceListingDetail extends EcommerceListingItem {
   published_at: string | null;
 }
 
+
+export interface ExternalConnector {
+  id: string;
+  business_unit_id: string;
+  connector_key: string;
+  name: string;
+  connector_type: string;
+  direction: string;
+  status: string;
+  config: Record<string, unknown>;
+  field_mapping: Record<string, unknown>;
+  secret_ref: string | null;
+  secret_configured: boolean;
+  auto_reply_enabled: boolean;
+  version: number;
+  last_health_status: string | null;
+  last_health_at: string | null;
+  last_health_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalConnectorHealth {
+  connector_id: string;
+  healthy: boolean;
+  detail: string;
+  metadata: Record<string, unknown>;
+  checked_at: string;
+}
+
+export interface ExternalConnectorBinding {
+  id: string;
+  connector_id: string;
+  service_entry_id: string | null;
+  service_entry_name: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+  allowed_operations: string[];
+  write_approved: boolean;
+}
+
+export interface ExternalConnectorInboundMessage {
+  id: string;
+  connector_id: string;
+  external_message_id: string;
+  external_conversation_id: string;
+  external_user_id: string;
+  subject: string;
+  status: string;
+  attempt_count: number;
+  conversation_id: string | null;
+  ticket_id: string | null;
+  turn_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  processed_at: string | null;
+}
+
+export interface ExternalConnectorOutboundMessage {
+  id: string;
+  connector_id: string;
+  conversation_id: string | null;
+  recipient: string;
+  subject: string;
+  status: string;
+  attempt_count: number;
+  external_message_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface ExternalConnectorMessages {
+  inbound: ExternalConnectorInboundMessage[];
+  outbound: ExternalConnectorOutboundMessage[];
+}
+
+export interface ExternalConnectorQueryResult {
+  connector_id: string;
+  status_code: number;
+  data: unknown;
+}

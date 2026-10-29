@@ -26,6 +26,11 @@ class CustomerConversation(Base):
     __tablename__ = "customer_conversations"
     __table_args__ = (
         Index("ix_customer_conversations_unit_status", "business_unit_id", "status"),
+        UniqueConstraint(
+            "external_connector_id",
+            "external_thread_id",
+            name="uq_customer_conversations_external_thread",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -41,6 +46,13 @@ class CustomerConversation(Base):
     category_name: Mapped[str | None] = mapped_column(String(120))
     category_profile_id: Mapped[UUID | None] = mapped_column(Uuid)
     channel: Mapped[str] = mapped_column(String(64), default="web_form", nullable=False)
+    external_connector_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("external_connectors.id", ondelete="SET NULL"),
+        index=True,
+    )
+    external_thread_id: Mapped[str | None] = mapped_column(String(256))
+    external_subject: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(24), default="ACTIVE", nullable=False)
     current_ticket_id: Mapped[UUID | None] = mapped_column(Uuid)
     assigned_agent_id: Mapped[str | None] = mapped_column(String(128))
@@ -103,8 +115,16 @@ class ConversationTurn(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(
         String(32),
-        default="RECEIVED",
+        default="PENDING",
         nullable=False,
+    )
+    correlation_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    # Optimistic concurrency guard for state transitions, mirroring the
+    # customer_conversations/tickets pattern.
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
     )
     stage_label: Mapped[str] = mapped_column(
         String(200),
@@ -163,6 +183,62 @@ class ConversationTurn(Base):
         default=utc_now,
         onupdate=utc_now,
         nullable=False,
+    )
+
+
+class ConversationTurnEvent(Base):
+    """Append-only log of what happened inside one conversation turn.
+
+    The turn row keeps the latest state; this table keeps the order of
+    transitions so an operator can answer "what did this turn actually do?"
+    without re-deriving it from audit_events.
+    """
+
+    __tablename__ = "conversation_turn_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "turn_id",
+            "sequence",
+            name="uq_conversation_turn_event_sequence",
+        ),
+        Index(
+            "ix_conversation_turn_events_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+        Index(
+            "ix_conversation_turn_events_turn_type",
+            "turn_id",
+            "event_type",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    turn_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("conversation_turns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("customer_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    stage_label: Mapped[str | None] = mapped_column(String(200))
+    actor_type: Mapped[str] = mapped_column(
+        String(24), default="SERVICE", nullable=False
+    )
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+    payload_json: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
     )
 
 

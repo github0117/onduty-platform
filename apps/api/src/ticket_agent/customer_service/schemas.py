@@ -24,6 +24,9 @@ class ConversationTurnView(BaseModel):
     stage_label: str
     employee_id: UUID | None
     employee_config_revision: int | None
+    correlation_id: str | None = None
+    version: int = 1
+    attempt_count: int = 0
     intent: str | None
     analysis: dict[str, Any]
     response_provider: str | None
@@ -37,6 +40,32 @@ class ConversationTurnView(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+
+
+class ConversationTurnEventView(BaseModel):
+    id: UUID
+    turn_id: UUID
+    conversation_id: UUID
+    sequence: int
+    event_type: str
+    status: str
+    stage_label: str | None
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class ConversationTurnEventList(BaseModel):
+    conversation_id: UUID
+    turn_id: UUID
+    events: list[ConversationTurnEventView]
+
+
+class TurnReclaimResult(BaseModel):
+    reclaimed: int
+    redispatched: int
 
 
 class CustomerMessageCreate(BaseModel):

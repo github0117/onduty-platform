@@ -135,6 +135,31 @@ cd apps/api
 uv run pytest tests/integration/test_request_body_limit.py -v
 ```
 
+## 会话轮次租约与卡死回收
+
+每轮买家消息是一个运行时事务单元（`conversation_turns`），状态只能沿
+`PENDING → RUNNING → COMPLETED / NEEDS_HUMAN / FAILED_RETRYABLE /
+FAILED_TERMINAL / CANCELLED` 的合法边迁移，每次迁移写入
+`conversation_turn_events`。
+
+- `CONVERSATION_TURN_LEASE_SECONDS`（默认 120）：worker 认领轮次时持有的租约；
+  租约过期视为 worker 已崩溃。
+- `CONVERSATION_TURN_MAX_ATTEMPTS`（默认 3）：超过后轮次进入 `FAILED_TERMINAL`，
+  避免定时任务在毒轮次上反复重试。
+- `CONVERSATION_TURN_RECLAIM_BATCH_SIZE`（默认 20）：每次回收批大小。
+
+Celery Beat 每 30 秒执行 `ticket_agent.customer_service.reclaim_turns`：过期
+`RUNNING` 轮次回到 `PENDING` 并重新派发，超过上限的轮次标记终态。运维也可手动
+触发 `POST /api/v1/customer-service/turns/reclaim`（需要 `operations.manage`）。
+
+业务层面的拒绝（无知识、未配置技能、缺少工单上下文）直接进入
+`FAILED_TERMINAL`；只有显式标记 `retryable` 的问题和未预期异常才重试。
+
+```bash
+cd apps/api
+uv run pytest tests/integration/test_conversation_turn_events.py -v
+```
+
 ## 知识库嵌入与重建索引
 
 ```text
@@ -313,3 +338,62 @@ QUERY_REWRITE_MODEL_NAME=
   `ticket_worker_rag_query_rewrite_fallbacks_total`；成功扩展计入
   `ticket_worker_rag_query_rewrites_total`。检索不会因改写失败而失败。
 - 关闭两个开关后，检索行为与升级前完全一致：单查询、单次嵌入，不读取历史。
+
+## 外部连接（邮件 / 只读 HTTP JSON）
+
+连接器密钥不写入数据库、镜像或日志。连接器记录只保存 `secret_ref`（环境变量名），
+运行时按以下顺序解析：
+
+1. 进程环境变量（compose 从根 `.env` 注入）。
+2. `CONNECTOR_SECRETS_JSON`，格式为 `{"SUPPORT_MAIL_PASSWORD": "..."}`。
+
+```text
+CONNECTOR_SECRETS_JSON=
+CONNECTOR_POLL_BATCH_SIZE=20
+CONNECTOR_AUTO_REPLY_ENABLED=true
+CONNECTOR_MAX_INBOUND_ATTEMPTS=3
+SUPPORT_MAIL_PASSWORD=
+```
+
+- `CONNECTOR_AUTO_REPLY_ENABLED` 是全局总开关；单连接器还需
+  `auto_reply_enabled=true`，并且数字员工回答完成、关联工单完成才会自动回信。
+- `CONNECTOR_MAX_INBOUND_ATTEMPTS` 控制入站消息失败后的最大尝试次数，超过后保留
+  `FAILED` 记录，等待人工重试。
+- 邮件连接器配置示例（数据库 `config_json`，页面等价字段）：
+
+```json
+{
+  "imap_host": "imap.example.com",
+  "imap_port": 993,
+  "imap_ssl": true,
+  "imap_folder": "INBOX",
+  "smtp_host": "smtp.example.com",
+  "smtp_port": 465,
+  "smtp_ssl": true,
+  "from_address": "support@example.com",
+  "username": "support@example.com"
+}
+```
+
+- 本地验收可使用 `mock-mail`（GreenMail，仅 `test` profile）：
+
+```text
+docker compose -f infra/compose/docker-compose.yml --profile test up -d mock-mail
+```
+
+  GreenMail 暴露 SMTP `3025` 与 IMAP `3143`，关闭认证；连接器配置需设置
+  `imap_ssl=false`、`smtp_ssl=false`，且 `from_address` 使用 GreenMail 已创建的
+  测试邮箱。
+- 只读 HTTP JSON 连接器配置示例：
+
+```json
+{
+  "base_url": "https://orders.example.com",
+  "path": "/api/orders/O-1001",
+  "health_path": "/health",
+  "timeout_seconds": 20
+}
+```
+
+  配置 `secret_ref` 时，请求会附加 `Authorization: Bearer <secret>`；可通过
+  `auth_header` / `auth_scheme` 覆盖。该连接器仅允许 GET，写操作继续使用 MCP 审批。

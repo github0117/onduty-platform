@@ -31,6 +31,8 @@ from ticket_agent.customer_service.schemas import (
     AssignmentQueue,
     AssignmentRunResult,
     ConversationReassignRequest,
+    ConversationTurnEventList,
+    ConversationTurnEventView,
     CustomerBusinessActionView,
     CustomerBusinessContextView,
     CustomerConversationCreate,
@@ -50,11 +52,13 @@ from ticket_agent.customer_service.schemas import (
     CustomerValueMetrics,
     PresenceReclaimResult,
     SlaEscalationResult,
+    TurnReclaimResult,
 )
 from ticket_agent.customer_service.service import CustomerConversationService
 from ticket_agent.customer_service.suggestions import (
     CustomerReplySuggestionService,
 )
+from ticket_agent.customer_service.turn_events import reclaim_stuck_turns
 from ticket_agent.customer_service.turns import (
     process_conversation_turn,
     process_conversation_turn_stream,
@@ -323,6 +327,37 @@ def sync_customer_service_notifications(
     }
 
 
+@router.post(
+    "/customer-service/turns/reclaim",
+    response_model=TurnReclaimResult,
+)
+def reclaim_customer_conversation_turns(
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    principal: Actor,
+) -> TurnReclaimResult:
+    """Recover turns whose worker lease expired.
+
+    Runs every 30 seconds from Celery beat; this entry point lets an operator
+    trigger the same job on demand.
+    """
+    ensure_sync_batch_operator(principal)
+    turn_ids = reclaim_stuck_turns(
+        db,
+        limit=get_settings().conversation_turn_reclaim_batch_size,
+    )
+    for turn_id in turn_ids:
+        background_tasks.add_task(
+            process_conversation_turn,
+            turn_id,
+            f"turn-reclaim:{turn_id}",
+        )
+    return TurnReclaimResult(
+        reclaimed=len(turn_ids),
+        redispatched=len(turn_ids),
+    )
+
+
 @router.get(
     "/customer-service/notifications",
     response_model=CustomerServiceNotificationList,
@@ -543,6 +578,48 @@ def get_customer_conversation(
         service, conversation_id, principal
     )
     return service.view(conversation)
+
+
+@router.get(
+    "/customer-service/conversations/{conversation_id}/turns/{turn_id}/events",
+    response_model=ConversationTurnEventList,
+)
+def list_customer_conversation_turn_events(
+    conversation_id: UUID,
+    turn_id: UUID,
+    db: DbSession,
+    principal: Actor,
+) -> ConversationTurnEventList:
+    """Show what one turn actually did, step by step.
+
+    The conversation row only stores the latest turn state; this endpoint is
+    the operator-facing view of the append-only turn event log.
+    """
+    ensure_service_chat(principal)
+    service = CustomerConversationService(db)
+    _conversation_for_access(service, conversation_id, principal)
+    service.get_turn(conversation_id, turn_id)
+    return ConversationTurnEventList(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        events=[
+            ConversationTurnEventView(
+                id=event.id,
+                turn_id=event.turn_id,
+                conversation_id=event.conversation_id,
+                sequence=event.sequence,
+                event_type=event.event_type,
+                status=event.status,
+                stage_label=event.stage_label,
+                actor_type=event.actor_type,
+                actor_id=event.actor_id,
+                correlation_id=event.correlation_id,
+                payload=event.payload_json,
+                created_at=event.created_at,
+            )
+            for event in service.turn_events(turn_id)
+        ],
+    )
 
 
 @router.get(

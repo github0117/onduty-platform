@@ -5,11 +5,17 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ticket_agent.classification.classifier import AnalysisResult
+from ticket_agent.customer_service.domain import (
+    TERMINAL_TURN_STATUSES,
+    TurnStatus,
+    parse_turn_status,
+)
 from ticket_agent.customer_service.models import (
+    ConversationMemory,
     ConversationTurn,
     CustomerConversation,
     CustomerMessage,
@@ -19,12 +25,18 @@ from ticket_agent.customer_service.streaming import stream_text
 from ticket_agent.customer_service.suggestions import (
     CustomerReplySuggestionService,
 )
+from ticket_agent.customer_service.turn_events import (
+    new_lease,
+    record_turn_event,
+    transition_turn,
+)
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.ecommerce.models import EcommerceCategoryProfile
 from ticket_agent.model_gateway.profile import build_classifier_for_employee
 from ticket_agent.routing.policy import get_routing_policy
 from ticket_agent.shared.db import SessionLocal
 from ticket_agent.shared.errors import ApiProblem
+from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.tickets.transitions import transition_ticket
@@ -48,7 +60,22 @@ class ConversationTurnOrchestrator:
             .where(ConversationTurn.id == turn_id)
             .with_for_update()
         )
-        if turn is None or turn.status != "RUNNING":
+        if turn is None:
+            return
+        status = parse_turn_status(turn.status)
+        if status in TERMINAL_TURN_STATUSES:
+            # Duplicate dispatch after the turn already finished: idempotent.
+            return
+        if status == TurnStatus.FAILED_RETRYABLE:
+            # Only the reclaim job moves a retryable turn back to PENDING.
+            return
+        now = datetime.now(UTC)
+        if (
+            status == TurnStatus.RUNNING
+            and turn.lease_expires_at is not None
+            and turn.lease_expires_at > now
+        ):
+            # Another worker still owns this turn; let it finish.
             return
         conversation = self.session.get(
             CustomerConversation,
@@ -60,6 +87,35 @@ class ConversationTurnOrchestrator:
         )
         if conversation is None or user_message is None:
             return
+        lease_seconds = get_settings().conversation_turn_lease_seconds
+        turn.lease_expires_at = new_lease(lease_seconds, now=now)
+        if turn.correlation_id is None:
+            turn.correlation_id = correlation_id
+        if status == TurnStatus.PENDING:
+            turn.attempt_count += 1
+            transition_turn(
+                self.session,
+                turn,
+                TurnStatus.RUNNING,
+                reason_code="TURN_DISPATCHED",
+                actor_id="digital_employee.runtime",
+                correlation_id=correlation_id,
+                stage_label="正在识别问题",
+                payload={"attempt_count": turn.attempt_count},
+            )
+        else:
+            record_turn_event(
+                self.session,
+                turn,
+                event_type="TURN_RESUMED",
+                actor_id="digital_employee.runtime",
+                correlation_id=correlation_id,
+                payload={
+                    "attempt_count": turn.attempt_count,
+                    "reason_code": "TURN_LEASE_EXPIRED",
+                },
+            )
+        self.session.commit()
         ticket = (
             self.session.get(Ticket, turn.ticket_id)
             if turn.ticket_id is not None
@@ -76,6 +132,7 @@ class ConversationTurnOrchestrator:
                 conversation,
                 "TURN_CONTEXT_MISSING",
                 "本轮缺少工单或数字员工上下文。",
+                retryable=False,
             )
             return
 
@@ -111,6 +168,32 @@ class ConversationTurnOrchestrator:
         turn.analysis_json = self._analysis_payload(analysis)
         turn.intent = analysis.category_primary
         emit_stage("正在检索知识并处理")
+        memory = self.session.get(ConversationMemory, conversation.id)
+        history_count = (
+            self.session.scalar(
+                select(func.count())
+                .select_from(CustomerMessage)
+                .where(CustomerMessage.conversation_id == conversation.id)
+            )
+            or 0
+        )
+        record_turn_event(
+            self.session,
+            turn,
+            event_type="CONTEXT_ASSEMBLED",
+            actor_id="digital_employee.runtime",
+            correlation_id=correlation_id,
+            payload={
+                "history_message_count": history_count,
+                "memory_last_turn_sequence": (
+                    memory.last_turn_sequence if memory is not None else 0
+                ),
+                "employee_id": str(ticket.employee_id)
+                if ticket.employee_id
+                else None,
+                "employee_config_revision": turn.employee_config_revision,
+            },
+        )
         self.session.commit()
 
         try:
@@ -126,7 +209,16 @@ class ConversationTurnOrchestrator:
                 correlation_id=correlation_id,
             )
         except ApiProblem as exc:
-            self._fail(turn, conversation, exc.code, exc.detail)
+            # Business-level rejections (no knowledge, no skill, missing
+            # context) are terminal: re-running the same turn cannot fix them.
+            # Only explicitly transient problems are retried.
+            self._fail(
+                turn,
+                conversation,
+                exc.code,
+                exc.detail,
+                retryable=exc.retryable,
+            )
             return
         except Exception as exc:
             self._fail(
@@ -166,6 +258,7 @@ class ConversationTurnOrchestrator:
             tool_calls=suggestion.tool_calls,
             intent=analysis.category_primary,
             analysis=self._analysis_payload(analysis),
+            correlation_id=correlation_id,
         )
         if _can_complete_grounded_turn(
             ticket,
@@ -313,9 +406,25 @@ class ConversationTurnOrchestrator:
         conversation: CustomerConversation,
         code: str,
         detail: str,
+        *,
+        retryable: bool = True,
     ) -> None:
-        turn.status = "FAILED"
-        turn.stage_label = "处理失败"
+        target = (
+            TurnStatus.FAILED_RETRYABLE
+            if retryable
+            else TurnStatus.FAILED_TERMINAL
+        )
+        transition_turn(
+            self.session,
+            turn,
+            target,
+            reason_code=code,
+            actor_id="digital_employee.runtime",
+            correlation_id=turn.correlation_id,
+            stage_label="处理失败",
+            payload={"error_code": code, "retryable": retryable},
+        )
+        turn.lease_expires_at = None
         turn.error_code = code
         turn.error_message = detail[:2000]
         turn.completed_at = datetime.now(UTC)
