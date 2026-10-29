@@ -44,12 +44,23 @@ class Settings(BaseSettings):
     customer_service_auto_reply_enabled: bool = True
     customer_service_auto_reply_min_confidence: float = 0.85
     customer_service_auto_reply_max_characters: int = 1200
+    # A turn holds a lease while a worker owns it; an expired lease means the
+    # worker died and the beat task may reclaim the turn.
+    conversation_turn_lease_seconds: int = 120
+    conversation_turn_max_attempts: int = 3
+    conversation_turn_reclaim_batch_size: int = 20
     mcp_refund_supervisor_limit: float = 500.0
     mcp_refund_absolute_limit: float = 5000.0
     mcp_reconciliation_max_attempts: int = 3
     mcp_reconciliation_batch_size: int = 20
     outbox_batch_size: int = 50
     outbox_retry_base_seconds: int = 5
+    connector_poll_batch_size: int = 20
+    connector_auto_reply_enabled: bool = True
+    connector_max_inbound_attempts: int = 3
+    # JSON object mapping connector secret_ref -> credential. Injected from
+    # the environment (.env / compose); never stored in the database.
+    connector_secrets_json: str = ""
     model_provider: Literal["local", "openai_compatible"] = "local"
     model_base_url: str = ""
     model_api_key: str = ""

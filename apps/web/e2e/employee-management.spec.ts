@@ -794,7 +794,11 @@ test("编辑 MCP 连接器保存 URL、环境变量和状态", async ({ page }) 
     });
   });
   await openPage(page, "/employees/integrations");
-  await page.getByRole("button", { name: /^编\s*辑$/ }).click();
+  // 该页面同时展示外部连接卡片和 MCP 卡片，按行定位到目标 MCP 连接。
+  await page
+    .getByRole("row", { name: /e2e-orders/ })
+    .getByRole("button", { name: /^编\s*辑$/ })
+    .click();
   const dialog = page.getByRole("dialog", {
     name: "编辑 MCP · e2e-orders",
   });

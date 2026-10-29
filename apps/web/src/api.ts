@@ -54,6 +54,12 @@ import type {
   EcommerceOperationalMetrics,
   EcommerceVideoRenderJob,
   EcommerceVideoRenderJobList,
+  ExternalConnector,
+  ExternalConnectorBinding,
+  ExternalConnectorHealth,
+  ExternalConnectorMessages,
+  ExternalConnectorOutboundMessage,
+  ExternalConnectorQueryResult,
   KnowledgeDocument,
   KnowledgeEvaluationCase,
   KnowledgeEvaluationDataset,
@@ -195,6 +201,16 @@ const friendlyApiErrors: Record<string, string> = {
     "演示数据库正在处理其他任务，请等待片刻后重新生成。",
   DATABASE_ERROR:
     "数据库操作失败，请稍后重试。",
+  CONNECTOR_KEY_EXISTS:
+    "连接器编码已存在，请换一个编码后重试。",
+  CONNECTOR_VERSION_CONFLICT:
+    "连接已被其他人修改，请刷新页面后重试。",
+  CONNECTOR_CONFIG_INVALID:
+    "连接配置不完整或包含不允许的密钥字段，请检查后重试。",
+  CONNECTOR_NOT_BOUND:
+    "该连接器还没有绑定业务入口，请先完成绑定。",
+  CONNECTOR_DISABLED:
+    "连接已停用，请先启用后再操作。",
 };
 
 function friendlyProblem(
@@ -2148,6 +2164,145 @@ export function discoverMcpConnector(connectorId: string): Promise<McpHealth> {
   return request(`/api/v1/mcp/connectors/${connectorId}/discover`, {
     method: "POST",
   });
+}
+
+export interface ExternalConnectorInput {
+  connectorKey: string;
+  name: string;
+  connectorType: "email" | "http_json";
+  direction: string;
+  config: Record<string, unknown>;
+  fieldMapping?: Record<string, unknown>;
+  secretRef?: string | null;
+  autoReplyEnabled?: boolean;
+  status?: string;
+  expectedVersion?: number;
+}
+
+export function listExternalConnectors(): Promise<ExternalConnector[]> {
+  return request("/api/v1/connectors?business_unit_id=bu_demo");
+}
+
+export function createExternalConnector(
+  input: ExternalConnectorInput,
+): Promise<ExternalConnector> {
+  return request("/api/v1/connectors", {
+    method: "POST",
+    body: JSON.stringify({
+      business_unit_id: "bu_demo",
+      connector_key: input.connectorKey,
+      name: input.name,
+      connector_type: input.connectorType,
+      direction: input.direction,
+      config: input.config,
+      field_mapping: input.fieldMapping ?? {},
+      secret_ref: input.secretRef || null,
+      auto_reply_enabled: input.autoReplyEnabled ?? true,
+      status: input.status ?? "ACTIVE",
+    }),
+  });
+}
+
+export function updateExternalConnector(
+  connectorId: string,
+  input: Partial<ExternalConnectorInput>,
+): Promise<ExternalConnector> {
+  return request(`/api/v1/connectors/${connectorId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.direction !== undefined
+        ? { direction: input.direction }
+        : {}),
+      ...(input.config !== undefined ? { config: input.config } : {}),
+      ...(input.fieldMapping !== undefined
+        ? { field_mapping: input.fieldMapping }
+        : {}),
+      ...(input.secretRef !== undefined
+        ? { secret_ref: input.secretRef || null }
+        : {}),
+      ...(input.autoReplyEnabled !== undefined
+        ? { auto_reply_enabled: input.autoReplyEnabled }
+        : {}),
+      ...(input.status !== undefined ? { status: input.status } : {}),
+      ...(input.expectedVersion !== undefined
+        ? { expected_version: input.expectedVersion }
+        : {}),
+    }),
+  });
+}
+
+export function checkExternalConnectorHealth(
+  connectorId: string,
+): Promise<ExternalConnectorHealth> {
+  return request(`/api/v1/connectors/${connectorId}/health`, {
+    method: "POST",
+  });
+}
+
+export function queryExternalConnector(
+  connectorId: string,
+  params: Record<string, string>,
+): Promise<ExternalConnectorQueryResult> {
+  return request(`/api/v1/connectors/${connectorId}/query`, {
+    method: "POST",
+    body: JSON.stringify({ params }),
+  });
+}
+
+export function listExternalConnectorBindings(
+  connectorId: string,
+): Promise<ExternalConnectorBinding[]> {
+  return request(`/api/v1/connectors/${connectorId}/bindings`);
+}
+
+export function replaceExternalConnectorBindings(
+  connectorId: string,
+  bindings: Array<{
+    serviceEntryId: string;
+    employeeId?: string | null;
+    allowedOperations?: string[];
+    writeApproved?: boolean;
+  }>,
+): Promise<ExternalConnectorBinding[]> {
+  return request(`/api/v1/connectors/${connectorId}/bindings`, {
+    method: "PUT",
+    body: JSON.stringify({
+      bindings: bindings.map((binding) => ({
+        service_entry_id: binding.serviceEntryId,
+        employee_id: binding.employeeId || null,
+        allowed_operations: binding.allowedOperations ?? [],
+        write_approved: binding.writeApproved ?? false,
+      })),
+    }),
+  });
+}
+
+export function listExternalConnectorMessages(
+  connectorId: string,
+  limit = 20,
+): Promise<ExternalConnectorMessages> {
+  return request(`/api/v1/connectors/${connectorId}/messages?limit=${limit}`);
+}
+
+export function retryExternalInboundMessage(
+  connectorId: string,
+  messageId: string,
+): Promise<ExternalConnectorMessages["inbound"][number]> {
+  return request(
+    `/api/v1/connectors/${connectorId}/inbound/${messageId}/retry`,
+    { method: "POST" },
+  );
+}
+
+export function retryExternalOutboundMessage(
+  connectorId: string,
+  messageId: string,
+): Promise<ExternalConnectorOutboundMessage> {
+  return request(
+    `/api/v1/connectors/${connectorId}/outbound/${messageId}/retry`,
+    { method: "POST" },
+  );
 }
 
 export function listEmployeeMcpConnectors(

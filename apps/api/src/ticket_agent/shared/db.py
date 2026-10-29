@@ -62,6 +62,7 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     from ticket_agent.business_entries import models as business_entry_models  # noqa: F401
+    from ticket_agent.connectors import models as connector_models  # noqa: F401
     from ticket_agent.customer_service import models as customer_service_models  # noqa: F401
     from ticket_agent.digital_employees import models as employee_models  # noqa: F401
     from ticket_agent.knowledge import models as knowledge_models  # noqa: F401

@@ -80,6 +80,8 @@ import {
   updateMcpConnector,
 } from "./api";
 import EmployeeProfileDrawer from "./EmployeeProfileDrawer";
+import ExternalConnectorsCard from "./ExternalConnectorsCard";
+import { useAuth } from "./auth";
 import {
   domainLabels,
   employeeReadiness,
@@ -394,9 +396,9 @@ const employeeSectionMeta: Record<
       "维护员工在什么情况下做什么、调用哪些能力，以及哪些行为必须转人工。",
   },
   integrations: {
-    title: "MCP · 业务系统连接",
+    title: "外部连接 · 邮件与业务系统",
     description:
-      "管理客户、订单、工单等外部系统的连接、工具发现和员工授权。",
+      "接入邮件渠道和只读业务系统，管理连接健康、业务入口绑定、消息收发和员工授权。",
   },
   routing: {
     title: "业务入口与员工路由",
@@ -875,7 +877,12 @@ export default function EmployeesPage({
       )}
 
       {section === "skills" && <AgentSkillsCard />}
-      {section === "integrations" && <McpConnectorsCard />}
+      {section === "integrations" && (
+        <>
+          <ExternalConnectorsCard />
+          <McpConnectorsCard />
+        </>
+      )}
       {section === "routing" && (
         <DigitalEmployeeRoutingCard
           employees={employees.data ?? []}
@@ -1165,6 +1172,8 @@ function AgentSkillsCard() {
 
 function McpConnectorsCard() {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
+  const canWrite = hasCapability("mcp.connectors.write");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<McpConnector | null>(null);
   const [code, setCode] = useState("");
@@ -1259,11 +1268,13 @@ function McpConnectorsCard() {
   return (
     <Card
       className="section-card"
-      title="MCP · 业务系统连接"
+      title="MCP · 工具型业务系统连接"
       extra={
-        <Button type="primary" onClick={() => openEditor()}>
-          新建 MCP 连接器
-        </Button>
+        canWrite ? (
+          <Button type="primary" onClick={() => openEditor()}>
+            新建 MCP 连接器
+          </Button>
+        ) : undefined
       }
     >
       <Paragraph type="secondary">
@@ -1337,23 +1348,26 @@ function McpConnectorsCard() {
           {
             title: "操作",
             width: 160,
-            render: (_, connector) => (
-              <Space>
-                <Button
-                  type="link"
-                  loading={
-                    discover.isPending &&
-                    discover.variables === connector.id
-                  }
-                  onClick={() => discover.mutate(connector.id)}
-                >
-                  测试/发现
-                </Button>
-                <Button type="link" onClick={() => openEditor(connector)}>
-                  编辑
-                </Button>
-              </Space>
-            ),
+            render: (_, connector) =>
+              canWrite ? (
+                <Space>
+                  <Button
+                    type="link"
+                    loading={
+                      discover.isPending &&
+                      discover.variables === connector.id
+                    }
+                    onClick={() => discover.mutate(connector.id)}
+                  >
+                    测试/发现
+                  </Button>
+                  <Button type="link" onClick={() => openEditor(connector)}>
+                    编辑
+                  </Button>
+                </Space>
+              ) : (
+                <Text type="secondary">只读</Text>
+              ),
           },
         ]}
       />

@@ -85,6 +85,12 @@ const pathCapabilities: Array<{
   { prefix: "/ecommerce", anyOf: ["ecommerce.view"] },
   { prefix: "/tickets", anyOf: ["tickets.view", "tickets.view_self"] },
   { prefix: "/knowledge", anyOf: ["knowledge.view"] },
+  // External connector stewards (auditor, business manager) may inspect
+  // integrations without the employee directory capability.
+  {
+    prefix: "/employees/integrations",
+    anyOf: ["mcp.connectors.view", "employees.view"],
+  },
   { prefix: "/employees", anyOf: ["employees.view"] },
   { prefix: "/models", anyOf: ["models.view"] },
   { prefix: "/operations", anyOf: ["operations.view"] },

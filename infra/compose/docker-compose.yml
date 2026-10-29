@@ -113,6 +113,11 @@ services:
       BUSINESS_SANDBOX_PROVIDER: http_json
       BUSINESS_SANDBOX_BASE_URL: http://mock-business:8090
       METRICS_SCRAPE_TOKEN: local-metrics-token
+      # 外部连接密钥只从 .env 注入，镜像与仓库中保持为空。
+      CONNECTOR_SECRETS_JSON: ${CONNECTOR_SECRETS_JSON:-}
+      CONNECTOR_POLL_BATCH_SIZE: ${CONNECTOR_POLL_BATCH_SIZE:-20}
+      CONNECTOR_AUTO_REPLY_ENABLED: ${CONNECTOR_AUTO_REPLY_ENABLED:-true}
+      CONNECTOR_MAX_INBOUND_ATTEMPTS: ${CONNECTOR_MAX_INBOUND_ATTEMPTS:-3}
     # 升级前确认数据库版本可达（回滚后旧镜像碰到新库会立刻失败），升级后再确认
     # 恰好落在 head；api 依赖 service_completed_successfully，检查不过就不会启动。
     command:
@@ -208,6 +213,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  mock-mail:
+    # 本地验收用真实 IMAP + SMTP 服务器；仅 test profile 启动，不影响生产部署。
+    image: greenmail/standalone:2.1.0
+    profiles: ["test"]
+    environment:
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.all
+        -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.auth.disabled
+        -Dgreenmail.users=support:greenmail@localhost,buyer:greenmail@localhost
+    ports:
+      - "3025:3025"
+      - "3143:3143"
+      # GreenMail 管理 API，仅本地验收使用。
+      - "8080:8080"
 
   mock-business-mcp:
     image: ticket-agent-api:local

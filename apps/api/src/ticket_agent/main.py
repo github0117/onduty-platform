@@ -19,6 +19,8 @@ from ticket_agent.agent_runs.router import router as agent_run_router
 from ticket_agent.agent_skills.router import router as agent_skill_router
 from ticket_agent.api.router import router
 from ticket_agent.business_entries.router import router as business_entries_router
+from ticket_agent.connectors.router import router as connector_router
+from ticket_agent.connectors.router import webhook_router as connector_webhook_router
 from ticket_agent.customer_service.router import router as customer_service_router
 from ticket_agent.digital_employees.draft_router import (
     router as employee_draft_router,
@@ -513,6 +515,17 @@ app.include_router(
     workforce_router,
     prefix=settings.api_prefix,
     dependencies=tenant_dependencies,
+)
+app.include_router(
+    connector_router,
+    prefix=settings.api_prefix,
+    dependencies=tenant_dependencies,
+)
+# Inbound webhooks authenticate with an HMAC signature over the raw body,
+# not with a user principal, so they stay outside tenant dependencies.
+app.include_router(
+    connector_webhook_router,
+    prefix=settings.api_prefix,
 )
 
 
