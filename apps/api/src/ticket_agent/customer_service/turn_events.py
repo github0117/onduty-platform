@@ -26,6 +26,7 @@ from ticket_agent.customer_service.models import (
     ConversationTurnEvent,
     CustomerConversation,
 )
+from ticket_agent.shared.db import run_with_deadlock_retry
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 
@@ -51,9 +52,21 @@ def record_turn_event(
     stage_label: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> ConversationTurnEvent:
-    """Append one event for ``turn``; safe to call while holding the turn lock."""
+    """Append one event for ``turn``, serialising the sequence on the turn row.
+
+    Callers usually hold the turn lock already (state transitions); a writer
+    that does not — a supervisor handing the conversation over while a worker
+    is mid-turn, for example — would otherwise compute the same next sequence
+    as the worker and fail on the unique constraint. Taking the row lock here
+    makes the sequence single-writer per turn regardless of the caller.
+    """
     if turn.id is None:
         session.flush()
+    session.scalar(
+        select(ConversationTurn.id)
+        .where(ConversationTurn.id == turn.id)
+        .with_for_update()
+    )
     conversation = session.get(CustomerConversation, turn.conversation_id)
     if conversation is None:
         raise ApiProblem(
@@ -202,6 +215,25 @@ def reclaim_stuck_turns(
 
     Returns the ids that were put back in PENDING for re-dispatch.
     """
+    return run_with_deadlock_retry(
+        session,
+        "turn reclaim batch",
+        lambda: _reclaim_turns_once(
+            session,
+            limit=limit,
+            now=now,
+            actor_id=actor_id,
+        ),
+    )
+
+
+def _reclaim_turns_once(
+    session: Session,
+    *,
+    limit: int,
+    now: datetime | None,
+    actor_id: str,
+) -> list[UUID]:
     settings = get_settings()
     cutoff = now or datetime.now(UTC)
     lease_seconds = settings.conversation_turn_lease_seconds

@@ -151,7 +151,14 @@
 - 接管与在途轮次的锁竞争：两者会互相等待对方的行锁，PostgreSQL 以死锁
   （SQLSTATE 40P01）中止其中一方。被中止的接管在全新事务里重试（最多 3 次，
   重新校验版本）；被中止的 worker 轮次回滚后释放租约，从 `RUNNING` 恢复，
-  买家既不会看到 500，也不会遇到长时间卡住的轮次。
+  买家既不会看到 500，也不会遇到长时间卡住的轮次。同一条有界重试也覆盖
+  买家发言、人工切换员工、人工回复和租约回收：这几条写入路径都会在同一轮次
+  上追加事件，被中止的事务什么都还没写，重试是安全的。
+- 轮次事件序号单一写入：`conversation_turn_events` 的 `sequence` 在轮次行锁
+  内计算（先锁轮次行，再取 `max(sequence)+1`）。worker 与主管交接、人工回复
+  同时写同一轮次时，后到者等行锁而不是算出同一个序号。缺少这把锁时会撞
+  `uq_conversation_turn_event_sequence`：worker 后台任务崩溃、轮次卡在
+  `RUNNING` 直到租约回收才变成 `FAILED_TERMINAL`。
 - 员工交接落库到 `conversation_handoffs`（自动改路由 `AUTO_REROUTE` /
   人工切换 `OPERATOR_SWITCH` / 人工接管 `HUMAN_TAKEOVER` / 人工交还
   `HUMAN_RETURN`），含确定性摘要（确认事实、待办、承诺、上一轮回答

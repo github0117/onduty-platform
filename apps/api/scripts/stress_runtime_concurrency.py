@@ -12,6 +12,10 @@ two places where requests race each other on the live stack:
    ``client_message_id`` submitted twice must produce one turn and one buyer
    message; two different messages must both be accepted with distinct turn
    sequences and a single initial ticket.
+3. **Handoff vs. in-flight turn.** A supervisor switches the conversation to
+   another digital employee while the worker writes to the same turn. The turn
+   must finish promptly, the event log of every turn must keep unique and
+   contiguous sequences, and the conversation must end on the new employee.
 
 Every assertion reads the real PostgreSQL database through psycopg; the
 requests go over HTTP to the running API and worker, exactly as an operator or
@@ -57,6 +61,8 @@ class Stats:
     cancelled_turns: int = 0
     completed_before_takeover: int = 0
     takeover_version_retries: int = 0
+    handoffs: int = 0
+    deadlock_probes: int = 0
     throttled_requests: int = 0
     iterations: int = 0
     checks: list[str] = field(default_factory=list)
@@ -260,6 +266,34 @@ def _wait_quiet(conversation_id: str, *, timeout: float = 90.0) -> list[dict[str
                 f"conversation {conversation_id} still has active turns: {statuses}"
             )
         time.sleep(0.2)
+
+
+def _turn_event_sequences(conversation_id: str) -> dict[str, list[int]]:
+    """Every turn's event sequences, in order."""
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        rows = connection.execute(
+            """
+            SELECT e.turn_id, e.sequence
+              FROM conversation_turn_events e
+              JOIN conversation_turns t ON t.id = e.turn_id
+             WHERE t.conversation_id = %s
+             ORDER BY e.turn_id, e.sequence
+            """,
+            (str(UUID(conversation_id)),),
+        ).fetchall()
+    grouped: dict[str, list[int]] = {}
+    for turn_id, sequence in rows:
+        grouped.setdefault(str(turn_id), []).append(sequence)
+    return grouped
+
+
+def _conversation_employee(conversation_id: str) -> str | None:
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        row = connection.execute(
+            "SELECT employee_id FROM customer_conversations WHERE id = %s",
+            (str(UUID(conversation_id)),),
+        ).fetchone()
+    return str(row[0]) if row and row[0] else None
 
 
 def _ticket_workflow(conversation_id: str) -> str | None:
@@ -521,10 +555,211 @@ def _concurrent_messages_race(
         _archive(client, headers, conversation_id, stats=stats)
 
 
+def _handoff_race(
+    client: httpx.Client,
+    headers: dict[str, str],
+    employee_id: str,
+    other_employee_id: str,
+    *,
+    stats: Stats,
+) -> None:
+    """Hand the conversation over while the buyer's turn is being dispatched.
+
+    The switch appends a ``HANDOFF_CREATED`` event to the very turn the worker
+    is writing to. Both writers must agree on the event sequence, and the pair
+    may deadlock; either way the turn must finish promptly instead of waiting
+    for the lease to expire.
+    """
+    suffix = uuid4().hex[:8]
+    conversation_id = _create_conversation(
+        client,
+        headers,
+        employee_id,
+        f"stress-handoff-{suffix}",
+        stats=stats,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            send_future = pool.submit(
+                _send,
+                client,
+                headers,
+                conversation_id,
+                QUESTION,
+                stats=stats,
+            )
+            switch_future = pool.submit(
+                _request,
+                client,
+                "POST",
+                f"/api/v1/customer-service/conversations/{conversation_id}/employee",
+                stats=stats,
+                headers=headers,
+                json={
+                    "employee_id": other_employee_id,
+                    "reason": "stress handoff race",
+                },
+            )
+            sent = send_future.result()
+            switched = switch_future.result()
+        _check(sent.status_code == 202, "buyer message accepted during handoff", stats)
+        _check(switched.status_code == 200, "handoff accepted during dispatch", stats)
+        stats.handoffs += 1
+        _check(
+            _conversation_employee(conversation_id) == other_employee_id,
+            "handoff moves the conversation to the new employee",
+            stats,
+        )
+
+        turns = _wait_quiet(conversation_id, timeout=45.0)
+        _check(
+            all(turn["status"] not in ACTIVE_STATUSES for turn in turns),
+            "no turn waits for the lease after a handoff",
+            stats,
+        )
+        _check(
+            all(
+                turn["status"]
+                in {"COMPLETED", "NEEDS_HUMAN", "FAILED_TERMINAL", "CANCELLED"}
+                for turn in turns
+            ),
+            "a handed-over turn reaches a final state",
+            stats,
+        )
+        sequences = _turn_event_sequences(conversation_id)
+        _check(
+            all(
+                values == list(range(1, len(values) + 1))
+                for values in sequences.values()
+            ),
+            "turn event sequences stay unique and contiguous across a handoff",
+            stats,
+        )
+        _check(
+            all(
+                turn["id"] in sequences for turn in turns
+            ),
+            "every turn keeps its event log",
+            stats,
+        )
+    finally:
+        _wait_quiet(conversation_id, timeout=45.0)
+        _archive(client, headers, conversation_id, stats=stats)
+
+
+def _handoff_deadlock_probe(
+    client: httpx.Client,
+    headers: dict[str, str],
+    employee_id: str,
+    other_employee_id: str,
+    *,
+    stats: Stats,
+) -> None:
+    """Force the handoff/worker lock cycle and require the API to absorb it.
+
+    Locks a running turn from a probe transaction, then asks the API to hand
+    the conversation over: the switch takes the conversation lock and waits for
+    the turn, the probe then takes the conversation lock and waits for the turn
+    — a cycle PostgreSQL breaks by aborting one side. Before the retry existed
+    an aborted switch surfaced as ``500 DATABASE_ERROR``; now the request must
+    still end in 200 once the probe releases its lock.
+    """
+    suffix = uuid4().hex[:8]
+    conversation_id = _create_conversation(
+        client,
+        headers,
+        employee_id,
+        f"stress-deadlock-{suffix}",
+        stats=stats,
+    )
+    try:
+        sent = _send(client, headers, conversation_id, QUESTION, stats=stats)
+        _check(sent.status_code == 202, "buyer message accepted before the probe", stats)
+        deadline = time.monotonic() + 30
+        while True:
+            turns = _turns(conversation_id)
+            if any(turn["status"] == "RUNNING" for turn in turns):
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("the probe needs a RUNNING turn")
+            time.sleep(0.2)
+        turn_id = next(turn["id"] for turn in turns if turn["status"] == "RUNNING")
+
+        probe = psycopg.connect(DATABASE_URL)
+        try:
+            probe.execute(
+                "SELECT id FROM conversation_turns WHERE id = %s FOR UPDATE",
+                (turn_id,),
+            )
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                switch_future = pool.submit(
+                    _request,
+                    client,
+                    "POST",
+                    f"/api/v1/customer-service/conversations/{conversation_id}/employee",
+                    stats=stats,
+                    headers=headers,
+                    json={
+                        "employee_id": other_employee_id,
+                        "reason": "forced deadlock probe",
+                    },
+                )
+                # Let the switch take the conversation lock and block on our
+                # turn lock, then close the cycle from this side.
+                time.sleep(0.5)
+                try:
+                    probe.execute(
+                        "SELECT id FROM customer_conversations WHERE id = %s"
+                        " FOR UPDATE",
+                        (conversation_id,),
+                    )
+                    probe.rollback()
+                except psycopg.errors.DeadlockDetected:
+                    probe.rollback()
+                stats.deadlock_probes += 1
+                switched = switch_future.result()
+        finally:
+            probe.close()
+
+        _check(
+            switched.status_code == 200,
+            "a handoff that lost a deadlock is retried to success",
+            stats,
+        )
+        _check(
+            _conversation_employee(conversation_id) == other_employee_id,
+            "the retried handoff still moved the conversation",
+            stats,
+        )
+        turns = _wait_quiet(conversation_id, timeout=45.0)
+        _check(
+            all(turn["status"] not in ACTIVE_STATUSES for turn in turns),
+            "the forced deadlock leaves no turn waiting for the lease",
+            stats,
+        )
+        sequences = _turn_event_sequences(conversation_id)
+        _check(
+            all(
+                values == list(range(1, len(values) + 1))
+                for values in sequences.values()
+            ),
+            "turn event sequences stay unique and contiguous after a forced deadlock",
+            stats,
+        )
+    finally:
+        _wait_quiet(conversation_id, timeout=45.0)
+        _archive(client, headers, conversation_id, stats=stats)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8000")
     parser.add_argument("-n", "--iterations", type=int, default=20)
+    parser.add_argument(
+        "--force-deadlocks",
+        action="store_true",
+        help="also inject the handoff/worker lock cycle deterministically",
+    )
     args = parser.parse_args()
 
     suffix = uuid4().hex[:8]
@@ -537,6 +772,11 @@ def main() -> None:
         )
         _seed_aftersales_knowledge(client, headers, employee_id, suffix)
         _activate(client, headers, employee_id)
+        other_employee_id = _create_employee(
+            client, headers, f"stress_agent_b_{suffix}", "并发压测客服 B"
+        )
+        _seed_aftersales_knowledge(client, headers, other_employee_id, f"{suffix}b")
+        _activate(client, headers, other_employee_id)
 
         for iteration in range(args.iterations):
             try:
@@ -553,6 +793,34 @@ def main() -> None:
                 f"completed-before-takeover: {stats.completed_before_takeover})"
             )
 
+        for iteration in range(max(3, args.iterations // 2)):
+            try:
+                _handoff_race(
+                    client,
+                    headers,
+                    employee_id,
+                    other_employee_id,
+                    stats=stats,
+                )
+            except Exception as error:
+                print(
+                    f"handoff iteration {iteration + 1} failed: {error}",
+                    file=sys.stderr,
+                )
+                raise
+            print(f"handoff iteration {iteration + 1} ok")
+
+        if args.force_deadlocks:
+            for iteration in range(3):
+                _handoff_deadlock_probe(
+                    client,
+                    headers,
+                    employee_id,
+                    other_employee_id,
+                    stats=stats,
+                )
+                print(f"deadlock probe {iteration + 1} ok")
+
         _duplicate_message_race(client, headers, employee_id, stats=stats)
         _concurrent_messages_race(client, headers, employee_id, stats=stats)
 
@@ -562,8 +830,10 @@ def main() -> None:
     for message in unique_checks:
         print(f"  - {message}")
     print(
-        f"\n{stats.iterations} takeover races, {stats.cancelled_turns} cancelled "
-        f"turns, {stats.completed_before_takeover} completed before takeover, "
+        f"\n{stats.iterations} takeover races, {stats.handoffs} handoff races, "
+        f"{stats.deadlock_probes} forced deadlock probes, "
+        f"{stats.cancelled_turns} cancelled turns, "
+        f"{stats.completed_before_takeover} completed before takeover, "
         f"{stats.takeover_version_retries} version-conflict retries, "
         f"{stats.throttled_requests} rate-limit waits, {elapsed:.1f}s"
     )

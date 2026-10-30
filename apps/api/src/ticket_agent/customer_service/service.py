@@ -3,13 +3,11 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
-from time import sleep
 from typing import Any
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import String, cast, func, select
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ticket_agent.audit.service import record_audit
@@ -93,7 +91,7 @@ from ticket_agent.digital_employees.router_service import (
 )
 from ticket_agent.identity.models import Principal
 from ticket_agent.knowledge.models import KnowledgeGapOccurrence
-from ticket_agent.shared.db import is_deadlock_error
+from ticket_agent.shared.db import run_with_deadlock_retry
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
@@ -121,11 +119,6 @@ _HUMAN_TAKEOVER_TICKET_STATES = frozenset(
     }
 )
 
-# A takeover cancels the running turn while the worker may be finishing it, so
-# PostgreSQL can abort either side with a deadlock. The victim is retried from a
-# fresh transaction; the delay only spaces out the attempts.
-TAKEOVER_DEADLOCK_ATTEMPTS = 3
-TAKEOVER_DEADLOCK_BACKOFF_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -1364,6 +1357,30 @@ class CustomerConversationService:
         principal: Principal,
         correlation_id: str,
     ) -> BuyerMessageResult:
+        """Accept one buyer message; a lost deadlock retries in a fresh transaction.
+
+        A retry is safe because nothing was committed: the idempotency key is
+        re-checked inside the new transaction and still suppresses a replay.
+        """
+        return run_with_deadlock_retry(
+            self.session,
+            f"buyer message on {conversation_id}",
+            lambda: self._append_buyer_message_once(
+                conversation_id,
+                payload,
+                principal=principal,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _append_buyer_message_once(
+        self,
+        conversation_id: UUID,
+        payload: CustomerMessageCreate,
+        *,
+        principal: Principal,
+        correlation_id: str,
+    ) -> BuyerMessageResult:
         conversation = self.session.scalar(
             select(CustomerConversation)
             .where(CustomerConversation.id == conversation_id)
@@ -1992,33 +2009,19 @@ class CustomerConversationService:
 
         The turn cancellation locks rows a worker may be finishing at the same
         moment, and PostgreSQL resolves that lock cycle by aborting one side
-        (SQLSTATE 40P01). When this transaction is the victim nothing has been
-        committed, so a fresh attempt is safe; the version check is re-read
-        inside it and still rejects a stale operator request.
+        (SQLSTATE 40P01). ``run_with_deadlock_retry`` re-runs the victim in a
+        fresh transaction, where the version check is re-read and still rejects
+        a stale operator request.
         """
-        for attempt in range(TAKEOVER_DEADLOCK_ATTEMPTS):
-            try:
-                return self._takeover_once(
-                    conversation_id,
-                    expected_version=expected_version,
-                    agent_id=agent_id,
-                )
-            except OperationalError as exc:
-                self.session.rollback()
-                if (
-                    not is_deadlock_error(exc)
-                    or attempt + 1 >= TAKEOVER_DEADLOCK_ATTEMPTS
-                ):
-                    raise
-                logger.warning(
-                    "takeover of %s lost a deadlock with a live turn; "
-                    "retrying (attempt %s/%s)",
-                    conversation_id,
-                    attempt + 2,
-                    TAKEOVER_DEADLOCK_ATTEMPTS,
-                )
-                sleep(TAKEOVER_DEADLOCK_BACKOFF_SECONDS * (attempt + 1))
-        raise AssertionError("unreachable")
+        return run_with_deadlock_retry(
+            self.session,
+            f"takeover of {conversation_id}",
+            lambda: self._takeover_once(
+                conversation_id,
+                expected_version=expected_version,
+                agent_id=agent_id,
+            ),
+        )
 
     def _takeover_once(
         self,
@@ -2238,6 +2241,26 @@ class CustomerConversationService:
         )
 
     def send_manual_reply(
+        self,
+        conversation_id: UUID,
+        payload: CustomerManualReplyCreate,
+        *,
+        agent_id: str,
+        correlation_id: str,
+    ) -> CustomerConversation:
+        """Send a human reply; a lost deadlock retries in a fresh transaction."""
+        return run_with_deadlock_retry(
+            self.session,
+            f"manual reply on {conversation_id}",
+            lambda: self._send_manual_reply_once(
+                conversation_id,
+                payload,
+                agent_id=agent_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _send_manual_reply_once(
         self,
         conversation_id: UUID,
         payload: CustomerManualReplyCreate,
@@ -2493,7 +2516,33 @@ class CustomerConversationService:
         principal: Principal,
         correlation_id: str,
     ) -> tuple[CustomerConversation, ConversationHandoff]:
-        """Hand a conversation to another digital employee and record it."""
+        """Hand a conversation to another digital employee and record it.
+
+        The handoff appends a turn event, which serialises against a worker
+        finishing the same turn; the pair can deadlock and the loser is
+        retried in a fresh transaction.
+        """
+        return run_with_deadlock_retry(
+            self.session,
+            f"employee switch of {conversation_id}",
+            lambda: self._switch_employee_once(
+                conversation_id,
+                employee_id=employee_id,
+                reason=reason,
+                principal=principal,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _switch_employee_once(
+        self,
+        conversation_id: UUID,
+        *,
+        employee_id: UUID,
+        reason: str | None,
+        principal: Principal,
+        correlation_id: str,
+    ) -> tuple[CustomerConversation, ConversationHandoff]:
         conversation = self.session.scalar(
             select(CustomerConversation)
             .where(CustomerConversation.id == conversation_id)

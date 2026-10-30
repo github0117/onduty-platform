@@ -1,11 +1,23 @@
-from collections.abc import Generator
-from typing import Any
+import logging
+from collections.abc import Callable, Generator
+from time import sleep
+from typing import Any, TypeVar
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from ticket_agent.shared.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
+Result = TypeVar("Result")
+
+# Both sides of a conversation/turn lock cycle are retried a few times: the
+# deadlock only lasts as long as the other side's transaction, and the delay
+# spaces out the attempts.
+DEADLOCK_RETRY_ATTEMPTS = 3
+DEADLOCK_RETRY_BACKOFF_SECONDS = 0.05
 
 
 class Base(DeclarativeBase):
@@ -76,6 +88,38 @@ def is_deadlock_error(exc: BaseException) -> bool:
     if sqlstate == "40P01":
         return True
     return "deadlock detected" in str(origin).lower()
+
+
+def run_with_deadlock_retry(
+    session: Session,
+    label: str,
+    operation: Callable[[], Result],
+) -> Result:
+    """Run ``operation``, retrying when PostgreSQL aborts it as the deadlock victim.
+
+    A rolled-back transaction has written nothing, so re-running it in a fresh
+    transaction is safe; every operation passed here re-reads the state it
+    validates against (version checks, idempotency keys, the current employee),
+    so a retry cannot apply a decision made against a stale snapshot.
+    """
+    for attempt in range(DEADLOCK_RETRY_ATTEMPTS):
+        try:
+            return operation()
+        except OperationalError as exc:
+            session.rollback()
+            if (
+                not is_deadlock_error(exc)
+                or attempt + 1 >= DEADLOCK_RETRY_ATTEMPTS
+            ):
+                raise
+            logger.warning(
+                "%s lost a deadlock with a live turn; retrying (attempt %s/%s)",
+                label,
+                attempt + 2,
+                DEADLOCK_RETRY_ATTEMPTS,
+            )
+            sleep(DEADLOCK_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def init_db() -> None:
