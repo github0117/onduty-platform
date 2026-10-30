@@ -25,6 +25,38 @@ class DraftResult:
     grounding_status: str
 
 
+def grounding_status_from_claims(
+    *,
+    citations: list[dict[str, Any]],
+    claims: list[dict[str, object]],
+) -> str:
+    """Derive the grounding verdict from per-claim verification results.
+
+    ``GROUNDED`` is only reachable when every cited claim was actually
+    verified as ``supported``. A claim that was never checked can never make
+    the answer grounded — that was the bug in the deterministic fast paths,
+    which labelled ``not_checked`` evidence as ``GROUNDED``.
+    """
+    if not citations:
+        return "NO_KNOWLEDGE"
+    all_verdicts = [
+        str(claim.get("verification_verdict", "not_checked")).lower()
+        for claim in claims
+    ]
+    cited_claim_verdicts = [
+        str(claim.get("verification_verdict", "not_checked")).lower()
+        for claim in claims
+        if claim.get("cited_chunk_ids")
+    ]
+    if any(verdict in {"unsupported", "uncertain"} for verdict in all_verdicts):
+        return "UNSUPPORTED"
+    if not cited_claim_verdicts or any(
+        verdict != "supported" for verdict in cited_claim_verdicts
+    ):
+        return "UNVERIFIED"
+    return "GROUNDED"
+
+
 @dataclass(frozen=True)
 class DraftEvidence:
     chunk_id: str
@@ -165,26 +197,10 @@ class DraftService:
                     ),
                 }
             )
-        all_verdicts = [
-            str(claim["verification_verdict"]).lower() for claim in claims
-        ]
-        cited_claim_verdicts = [
-            str(claim["verification_verdict"]).lower()
-            for claim in claims
-            if claim["cited_chunk_ids"]
-        ]
-        if not citations:
-            grounding_status = "NO_KNOWLEDGE"
-        elif any(
-            verdict in {"unsupported", "uncertain"} for verdict in all_verdicts
-        ):
-            grounding_status = "UNSUPPORTED"
-        elif not cited_claim_verdicts or any(
-            verdict != "supported" for verdict in cited_claim_verdicts
-        ):
-            grounding_status = "UNVERIFIED"
-        else:
-            grounding_status = "GROUNDED"
+        grounding_status = grounding_status_from_claims(
+            citations=list(citations),
+            claims=claims,
+        )
         return DraftResult(
             text=response.draft.text,
             citations=citations,

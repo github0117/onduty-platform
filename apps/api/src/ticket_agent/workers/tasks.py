@@ -1,10 +1,14 @@
 # mypy: disallow_untyped_decorators=False
 
+import logging
 from uuid import UUID
 
 from celery import Task
 
+from ticket_agent.connectors.inbound import poll_email_connectors_job
 from ticket_agent.customer_service.service import CustomerConversationService
+from ticket_agent.customer_service.turn_events import reclaim_stuck_turns
+from ticket_agent.customer_service.turns import process_conversation_turn
 from ticket_agent.customer_service.worker import (
     auto_assign_customer_conversations_job,
 )
@@ -28,6 +32,8 @@ from ticket_agent.tickets.models import Ticket
 from ticket_agent.workers.celery_app import celery_app
 from ticket_agent.workers.process_ticket import process_ticket_job
 from ticket_agent.workforce.worker import execute_workforce_task_job
+
+logger = logging.getLogger(__name__)
 
 
 @celery_app.task(
@@ -61,10 +67,35 @@ def dispatch_outbox_task() -> int:
     return sum(result.dispatched for result in dispatch_pending_events())
 
 
+@celery_app.task(name="ticket_agent.connectors.poll_email")
+def poll_email_connectors_task() -> int:
+    return poll_email_connectors_job()
+
+
 @celery_app.task(name="ticket_agent.customer_service.reclaim_offline")
 def reclaim_offline_customer_agents_task() -> int:
     with SessionLocal() as session:
         return CustomerConversationService(session).reclaim_offline_conversations()
+
+
+@celery_app.task(name="ticket_agent.customer_service.reclaim_turns")
+def reclaim_conversation_turns_task() -> int:
+    """Re-dispatch turns whose worker died before finishing."""
+    settings = get_settings()
+    with SessionLocal() as session:
+        turn_ids = reclaim_stuck_turns(
+            session,
+            limit=settings.conversation_turn_reclaim_batch_size,
+        )
+    for turn_id in turn_ids:
+        try:
+            process_conversation_turn(
+                turn_id,
+                correlation_id=f"turn-reclaim:{turn_id}",
+            )
+        except Exception:
+            logger.exception("Failed to re-dispatch conversation turn %s", turn_id)
+    return len(turn_ids)
 
 
 @celery_app.task(name="ticket_agent.customer_service.escalate_sla")

@@ -28,11 +28,14 @@ test("侧边栏只保留 Agent 演示和平台管理，员工二级页面使用�
       exact: true,
     }),
   ).toBeVisible();
-  await page.getByText("MCP（业务连接）", { exact: true }).click();
+  await page
+    .getByRole("main")
+    .getByText("外部连接（邮件 / MCP）", { exact: true })
+    .click();
   await expect(page).toHaveURL(/\/employees\/integrations$/);
   await expect(
     page.getByRole("heading", {
-      name: "MCP · 业务系统连接",
+      name: "外部连接 · 邮件与业务系统",
       exact: true,
     }),
   ).toBeVisible();
@@ -422,7 +425,7 @@ test("通用平台页面不再把电商作为默认业务场景", async ({ page 
   await page.goto("/employees/integrations");
   await expect(
     page.getByText(
-      "管理客户、订单、工单等外部系统的连接、工具发现和员工授权。",
+      "接入邮件渠道和只读业务系统，管理连接健康、业务入口绑定、消息收发和员工授权。",
       { exact: true },
     ),
   ).toBeVisible();

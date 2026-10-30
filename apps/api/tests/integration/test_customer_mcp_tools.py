@@ -187,7 +187,7 @@ def test_reply_suggestion_executes_bound_mcp_tool(
     assert payload["tool_calls"][0]["tool_id"] == "customer-orders.get_order"
     assert payload["tool_calls"][0]["status"] == "SUCCEEDED"
     assert payload["trace"] == [
-        "route_skill → logistics-inquiry",
+        "route_skill → logistics-inquiry · LOGISTICS",
         "retrieve_knowledge → 0 条知识",
         "plan_mcp_tools → customer-orders.get_order",
         "execute_mcp_tool → customer-orders.get_order · SUCCEEDED",

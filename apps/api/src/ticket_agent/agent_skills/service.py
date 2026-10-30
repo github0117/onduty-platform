@@ -7,6 +7,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ticket_agent.agent_skills.contract import DEFAULT_SKILL_DEFINITIONS
 from ticket_agent.agent_skills.models import AgentSkill, DigitalEmployeeSkillBinding
 from ticket_agent.agent_skills.schemas import (
     AgentSkillCreate,
@@ -119,7 +120,23 @@ class AgentSkillService:
         created = False
         for default in DEFAULT_SKILLS:
             if default.code in by_code:
+                # Older installs created the default skills before structured
+                # contracts existed. Fill the definition once, and never
+                # overwrite a definition someone has since edited.
+                existing_skill = by_code[default.code]
+                definition = DEFAULT_SKILL_DEFINITIONS.get(default.code)
+                if (
+                    existing_skill.definition_json is None
+                    and definition is not None
+                ):
+                    existing_skill.definition_json = definition
+                    existing_skill.definition_version = max(
+                        existing_skill.definition_version,
+                        1,
+                    )
+                    created = True
                 continue
+            definition = DEFAULT_SKILL_DEFINITIONS.get(default.code)
             skill = AgentSkill(
                 business_unit_id=business_unit_id,
                 code=default.code,
@@ -128,6 +145,8 @@ class AgentSkillService:
                 instructions=default.instructions,
                 triggers_json=default.triggers,
                 tools_json=default.tools,
+                definition_json=definition,
+                definition_version=1 if definition is not None else 0,
                 status="ACTIVE",
                 created_by="system",
             )
@@ -189,6 +208,11 @@ class AgentSkillService:
                 title="Skill already exists",
                 detail="Skill code must be unique within the business unit.",
             )
+        definition = (
+            payload.definition.to_json()
+            if payload.definition is not None
+            else None
+        )
         skill = AgentSkill(
             business_unit_id=payload.business_unit_id,
             code=payload.code,
@@ -197,6 +221,8 @@ class AgentSkillService:
             instructions=payload.instructions,
             triggers_json=payload.triggers,
             tools_json=payload.tools,
+            definition_json=definition,
+            definition_version=1 if definition is not None else 0,
             status=payload.status,
             created_by=actor_id,
         )
@@ -222,6 +248,19 @@ class AgentSkillService:
         actor_id: str,
     ) -> AgentSkill:
         skill = self.get(skill_id)
+        if (
+            payload.expected_version is not None
+            and payload.expected_version != skill.version
+        ):
+            raise ApiProblem(
+                status_code=409,
+                code="SKILL_VERSION_CONFLICT",
+                title="Skill was modified",
+                detail=(
+                    f"Expected version {payload.expected_version}, "
+                    f"found {skill.version}. Reload and retry."
+                ),
+            )
         for field, column in (
             ("name", "name"),
             ("description", "description"),
@@ -235,6 +274,9 @@ class AgentSkillService:
             skill.triggers_json = payload.triggers
         if payload.tools is not None:
             skill.tools_json = payload.tools
+        if payload.definition is not None:
+            skill.definition_json = payload.definition.to_json()
+            skill.definition_version += 1
         skill.version += 1
         self.session.flush()
         employee_ids = set(
@@ -402,6 +444,8 @@ class AgentSkillService:
             instructions=skill.instructions,
             triggers=skill.triggers,
             tools=skill.tools,
+            definition=skill.definition_json,
+            definition_version=skill.definition_version,
             status=skill.status,
             version=skill.version,
             created_by=skill.created_by,

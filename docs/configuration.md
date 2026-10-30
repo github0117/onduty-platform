@@ -135,6 +135,123 @@ cd apps/api
 uv run pytest tests/integration/test_request_body_limit.py -v
 ```
 
+## 会话轮次租约与卡死回收
+
+每轮买家消息是一个运行时事务单元（`conversation_turns`），状态只能沿
+`PENDING → RUNNING → COMPLETED / NEEDS_HUMAN / FAILED_RETRYABLE /
+FAILED_TERMINAL / CANCELLED` 的合法边迁移，每次迁移写入
+`conversation_turn_events`。
+
+- `CONVERSATION_TURN_LEASE_SECONDS`（默认 120）：worker 认领轮次时持有的租约；
+  租约过期视为 worker 已崩溃。
+- `CONVERSATION_TURN_MAX_ATTEMPTS`（默认 3）：超过后轮次进入 `FAILED_TERMINAL`，
+  避免定时任务在毒轮次上反复重试。
+- `CONVERSATION_TURN_RECLAIM_BATCH_SIZE`（默认 20）：每次回收批大小。
+
+Celery Beat 每 30 秒执行 `ticket_agent.customer_service.reclaim_turns`：过期
+`RUNNING` 轮次回到 `PENDING` 并重新派发，超过上限的轮次标记终态。运维也可手动
+触发 `POST /api/v1/customer-service/turns/reclaim`（需要 `operations.manage`）。
+
+业务层面的拒绝（无知识、未配置技能、缺少工单上下文）直接进入
+`FAILED_TERMINAL`；只有显式标记 `retryable` 的问题和未预期异常才重试。
+
+```bash
+cd apps/api
+uv run pytest tests/integration/test_conversation_turn_events.py -v
+```
+
+## 上下文装配、会话记忆与员工交接
+
+每轮实际使用的上下文由 `customer_service/context.py` 统一装配，顺序固定：
+会话记忆 → 最近一次交接摘要 → 消息窗口 → 当前消息，结果写入
+`conversation_turns.context_json` 并附在 `CONTEXT_ASSEMBLED` 事件里。
+
+- 消息窗口默认 `4000` 字符、最多 `20` 条（`DEFAULT_HISTORY_BUDGET_CHARS` /
+  `DEFAULT_HISTORY_MAX_MESSAGES`，当前是代码常量，不通过环境变量调整），且只取
+  `sequence` 小于当前消息的条目，排队期间后发的消息不会混进上一轮。
+- 会话记忆读取时自动把 v1 行升级为 v2 并回写；v2 的 `facts` 带 `source_turn_id`。
+- 同一会话的轮次串行执行，后到的轮次保持 `PENDING` 并持有有效租约，避免被回收器
+  误判为卡死；完成方结束时会接力派发下一轮（单次最多 10 轮）。首条消息建单使用
+  `TicketService.create(commit=False)`，会话行锁不会被内部提交打断；若仍与并发
+  建单相遇，按 `CONV-<会话>-initial` 复用同一张工单。
+- 客户端可传 `client_message_id` 做幂等重放；邮件连接器用收件行 id 派生该值。
+- 会话详情里的每条消息带 `turn_id`（迁移前的旧消息为 `null`）。
+- 员工交接写入 `conversation_handoffs`；主管切换员工调用
+  `POST /api/v1/customer-service/conversations/{conversation_id}/employee`
+  （需要 `operations.manage`），重复切换到同一位员工返回 409
+  `EMPLOYEE_UNCHANGED`，跨业务单元的员工返回 400
+  `HANDOFF_EMPLOYEE_UNIT_MISMATCH`，跨领域（如同一单元的 HR 员工）返回 409
+  `EMPLOYEE_DOMAIN_MISMATCH`。
+
+```bash
+cd apps/api
+uv run pytest tests/integration/test_conversation_context_handoff.py -v
+uv run python scripts/acceptance_conversation_runtime.py http://127.0.0.1:8000
+```
+
+## 会话员工粘性路由
+
+会话的员工归属是会话属性，不是每条消息的重新选择。入口路由只在证据足够时改派：
+
+- `CONVERSATION_REROUTE_MARGIN`（默认 `0.15`）：候选员工必须比当前员工高出多少分，
+  才算“有证据”。
+- `CONVERSATION_REROUTE_STRONG_MARGIN`（默认 `0.30`）：达到这个差距视为能力缺口，
+  第一条消息就可以改派。
+- `CONVERSATION_REROUTE_MIN_STREAK`（默认 `2`）：连续多少轮推荐同一候选才按
+  `SUSTAINED_TOPIC` 改派。
+- `CONVERSATION_REROUTE_COOLDOWN_TURNS`（默认 `3`）：两次自动改派之间至少间隔多少
+  **轮次**（按 `conversation_turns.sequence` 计算，不是消息条数）。
+- `CONVERSATION_REROUTE_MAX_PER_CONVERSATION`（默认 `2`）：单个会话自动改派上限。
+
+改派原因写入 `conversation_handoffs.reason_code`：
+`EXPLICIT_REQUEST`（买家明确要求转接）、`CAPABILITY_GAP`（当前员工能力缺口）、
+`TOPIC_CHANGED`（上一张工单已完成）、`SUSTAINED_TOPIC`（连续多轮同主题）、
+`ENTRY_SCOPE_CHANGED`（入口员工池不再包含当前员工）。主管手动切换写入
+`employee_source=MANUAL` 和 `employee_locked_at`，此后路由不再覆盖该会话。
+
+```bash
+cd apps/api
+uv run pytest tests/integration/test_conversation_employee_stickiness.py -v
+```
+
+## 领域包（DOMAIN_PACKS_DIR）
+
+领域包声明“一个业务方向提供哪些工作流”。内置两个包：
+`customer_service`（`customer_service_ticket_v1`）和
+`human_resources`（`hr_onboarding_document_collection_v1`）。新方向不必改代码，
+把领域包放到 `DOMAIN_PACKS_DIR` 指向的目录即可（一域一文件，`*.toml`）：
+
+```toml
+# /etc/ticket-agent/domain-packs/manufacturing.toml
+key = "manufacturing"
+name = "工业制造"
+default_workflow = "manufacturing_equipment_ticket_v1"
+
+[[workflows]]
+key = "manufacturing_equipment_ticket_v1"
+handler = "ticket_agent.workflow.customer_service:CustomerServiceTicketWorkflow"
+label = "设备报修流程"
+```
+
+- `KEY`：写入 `digital_employees.domain` 的领域标识。
+- `DEFAULT_WORKFLOW`：该领域的默认流程，必须属于本包。
+- `HANDLER`：`module:Class`，懒加载。类需实现
+  `key` + `process(ticket_id, correlation_id)`（`workflow/base.py`）。
+  复用现有流程形态时直接指向现有类即可。
+- 工作流 key 与领域 key 全局唯一；重复、未知字段、缺省流程不属于本包、
+  handler 无法导入都会让**进程启动失败**（API、Celery worker 和 beat 都会在启动时
+  校验），不会等到第一张工单才暴露。
+- `DOMAIN_PACKS_DIR` 为空表示只用内置包；配置了目录但目录不存在同样启动失败。
+
+入口员工池是硬边界：来自业务入口的会话，主管手动切换只能转给该入口内已启用的
+员工，否则返回 `409 HANDOFF_EMPLOYEE_OUTSIDE_ENTRY`；无入口的会话仍按领域
+（`409 EMPLOYEE_DOMAIN_MISMATCH`）校验。
+
+```bash
+cd apps/api
+uv run pytest tests/unit/test_domain_packs.py tests/integration/test_conversation_context_handoff.py -v
+```
+
 ## 知识库嵌入与重建索引
 
 ```text
@@ -313,3 +430,62 @@ QUERY_REWRITE_MODEL_NAME=
   `ticket_worker_rag_query_rewrite_fallbacks_total`；成功扩展计入
   `ticket_worker_rag_query_rewrites_total`。检索不会因改写失败而失败。
 - 关闭两个开关后，检索行为与升级前完全一致：单查询、单次嵌入，不读取历史。
+
+## 外部连接（邮件 / 只读 HTTP JSON）
+
+连接器密钥不写入数据库、镜像或日志。连接器记录只保存 `secret_ref`（环境变量名），
+运行时按以下顺序解析：
+
+1. 进程环境变量（compose 从根 `.env` 注入）。
+2. `CONNECTOR_SECRETS_JSON`，格式为 `{"SUPPORT_MAIL_PASSWORD": "..."}`。
+
+```text
+CONNECTOR_SECRETS_JSON=
+CONNECTOR_POLL_BATCH_SIZE=20
+CONNECTOR_AUTO_REPLY_ENABLED=true
+CONNECTOR_MAX_INBOUND_ATTEMPTS=3
+SUPPORT_MAIL_PASSWORD=
+```
+
+- `CONNECTOR_AUTO_REPLY_ENABLED` 是全局总开关；单连接器还需
+  `auto_reply_enabled=true`，并且数字员工回答完成、关联工单完成才会自动回信。
+- `CONNECTOR_MAX_INBOUND_ATTEMPTS` 控制入站消息失败后的最大尝试次数，超过后保留
+  `FAILED` 记录，等待人工重试。
+- 邮件连接器配置示例（数据库 `config_json`，页面等价字段）：
+
+```json
+{
+  "imap_host": "imap.example.com",
+  "imap_port": 993,
+  "imap_ssl": true,
+  "imap_folder": "INBOX",
+  "smtp_host": "smtp.example.com",
+  "smtp_port": 465,
+  "smtp_ssl": true,
+  "from_address": "support@example.com",
+  "username": "support@example.com"
+}
+```
+
+- 本地验收可使用 `mock-mail`（GreenMail，仅 `test` profile）：
+
+```text
+docker compose -f infra/compose/docker-compose.yml --profile test up -d mock-mail
+```
+
+  GreenMail 暴露 SMTP `3025` 与 IMAP `3143`，关闭认证；连接器配置需设置
+  `imap_ssl=false`、`smtp_ssl=false`，且 `from_address` 使用 GreenMail 已创建的
+  测试邮箱。
+- 只读 HTTP JSON 连接器配置示例：
+
+```json
+{
+  "base_url": "https://orders.example.com",
+  "path": "/api/orders/O-1001",
+  "health_path": "/health",
+  "timeout_seconds": 20
+}
+```
+
+  配置 `secret_ref` 时，请求会附加 `Authorization: Bearer <secret>`；可通过
+  `auth_header` / `auth_scheme` 覆盖。该连接器仅允许 GET，写操作继续使用 MCP 审批。

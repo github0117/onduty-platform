@@ -1,8 +1,10 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+
+from ticket_agent.agent_skills.contract import SkillDefinition
 
 
 class AgentSkillCreate(BaseModel):
@@ -17,6 +19,9 @@ class AgentSkillCreate(BaseModel):
     instructions: str = Field(min_length=1, max_length=20_000)
     triggers: list[str] = Field(default_factory=list, max_length=50)
     tools: list[str] = Field(default_factory=list, max_length=50)
+    # Optional structured contract. Without it the skill still guides the
+    # model, but no step can be asserted as complete.
+    definition: SkillDefinition | None = None
     status: Literal["ACTIVE", "DISABLED"] = "ACTIVE"
 
 
@@ -26,11 +31,24 @@ class AgentSkillUpdate(BaseModel):
     instructions: str | None = Field(default=None, min_length=1, max_length=20_000)
     triggers: list[str] | None = Field(default=None, max_length=50)
     tools: list[str] | None = Field(default=None, max_length=50)
+    definition: SkillDefinition | None = None
     status: Literal["ACTIVE", "DISABLED"] | None = None
+    # Optimistic lock: a stale editor gets 409 SKILL_VERSION_CONFLICT instead
+    # of silently overwriting another person's change.
+    expected_version: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def require_change(self) -> "AgentSkillUpdate":
-        if all(value is None for value in self.model_dump().values()):
+        changes = (
+            self.name,
+            self.description,
+            self.instructions,
+            self.triggers,
+            self.tools,
+            self.definition,
+            self.status,
+        )
+        if all(value is None for value in changes):
             raise ValueError("at least one field must be provided")
         return self
 
@@ -44,6 +62,8 @@ class AgentSkillView(BaseModel):
     instructions: str
     triggers: list[str]
     tools: list[str]
+    definition: dict[str, Any] | None = None
+    definition_version: int = 0
     status: str
     version: int
     created_by: str

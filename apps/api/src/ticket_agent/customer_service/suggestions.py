@@ -8,6 +8,10 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ticket_agent.agent_skills.contract import (
+    CompletionContext,
+    evaluate_definition,
+)
 from ticket_agent.agent_skills.service import AgentSkillService
 from ticket_agent.audit.service import record_audit
 from ticket_agent.classification.classifier import AnalysisResult
@@ -17,6 +21,11 @@ from ticket_agent.classification.conversation_signals import (
 from ticket_agent.classification.conversation_signals import (
     repository_name as _repository_name,
 )
+from ticket_agent.customer_service.context import AssembledContext, load_memory
+from ticket_agent.customer_service.gate import (
+    GateContext,
+    evaluate_gate,
+)
 from ticket_agent.customer_service.models import (
     ConversationMemory,
     CustomerConversation,
@@ -25,7 +34,15 @@ from ticket_agent.customer_service.models import (
 from ticket_agent.customer_service.schemas import CustomerReplySuggestionView
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.digital_employees.service import DigitalEmployeeService
+from ticket_agent.knowledge.claim_verifier import (
+    ClaimToVerify,
+    get_claim_verifier,
+)
 from ticket_agent.knowledge.embedding_factory import get_embedding_provider
+from ticket_agent.knowledge.grounding import (
+    GroundingViolation,
+    validate_numeric_claims,
+)
 from ticket_agent.knowledge.service import KnowledgeHit, KnowledgeService
 from ticket_agent.mcp_connectors.runtime import (
     McpExecutionResult,
@@ -42,21 +59,35 @@ from ticket_agent.model_gateway.usage import ModelUsageGuard
 from ticket_agent.routing.policy import RoutingDecision
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.tickets.domain import Priority, RiskLevel
-from ticket_agent.tickets.drafts import DraftEvidence, DraftResult
+from ticket_agent.tickets.drafts import (
+    DraftEvidence,
+    DraftResult,
+    grounding_status_from_claims,
+)
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.tools.execution import ToolExecutionService
 from ticket_agent.tools.registry import ToolPermissionError
 from ticket_agent.workflow.profile import resolve_knowledge_options
+
+# The explicit general skill, if a business unit creates one. Without it, a
+# no-match turn runs with no contract instead of borrowing the first bound
+# skill (the old ``skills[0]`` fallback).
+GENERAL_SKILL_CODE = "customer-service-general"
 
 
 class CustomerSuggestionState(TypedDict, total=False):
     conversation_id: UUID
     requested_by: str
     query: str
+    # Memory and handoff lines the assembler produced for this turn.
+    context_lines: list[str]
     repository: str | None
     skill: str
     skill_instructions: str
     skill_name: str
+    skill_definition: dict[str, Any] | None
+    skill_definition_version: int | None
+    skill_match_reason: str
     employee: DigitalEmployee
     ticket: Ticket
     usage_guard: ModelUsageGuard
@@ -123,6 +154,7 @@ class CustomerReplySuggestionService:
         *,
         agent_id: str,
         correlation_id: str,
+        context: AssembledContext | None = None,
     ) -> CustomerReplySuggestionView:
         conversation = self.session.get(CustomerConversation, conversation_id)
         if conversation is None:
@@ -157,7 +189,13 @@ class CustomerReplySuggestionService:
                 title="Conversation has no current ticket",
                 detail="A reply suggestion requires an active conversation ticket.",
             )
-        query = self._query(conversation.id)
+        # The turn runtime assembles the window once; the manual suggestion
+        # endpoint has no assembler result and keeps its own read.
+        query = (
+            context.window_text()
+            if context is not None
+            else self._query(conversation.id)
+        )
         security_refusal = _security_boundary_refusal(
             _latest_buyer_question(query)
         )
@@ -186,6 +224,17 @@ class CustomerReplySuggestionService:
                 grounding_status="POLICY_BLOCKED",
                 citations=[],
                 skill="developer-repository-support",
+                gate=evaluate_gate(
+                    GateContext(
+                        grounding_status="POLICY_BLOCKED",
+                        claims=[],
+                        citations=[],
+                        risk_level=ticket.risk_level,
+                        ticket_needs_human=ticket.needs_human,
+                        skill_completion=None,
+                        path="policy_refusal",
+                    )
+                ),
                 trace=[
                     "security_guard → 拒绝私有仓库和敏感凭据访问",
                     "tool_execution → 未调用 DeepWiki 或其他业务工具",
@@ -224,6 +273,11 @@ class CustomerReplySuggestionService:
                     "employee": employee,
                     "ticket": ticket,
                     "usage_guard": usage_guard,
+                    "context_lines": (
+                        context.prompt_lines()
+                        if context is not None
+                        else []
+                    ),
                     "mcp_evidence": [],
                     "mcp_tool_calls": [],
                     "trace": [],
@@ -301,6 +355,17 @@ class CustomerReplySuggestionService:
                     grounding_status="APPROVAL_REQUIRED",
                     citations=[],
                     skill=skill,
+                    gate=evaluate_gate(
+                        GateContext(
+                            grounding_status="APPROVAL_REQUIRED",
+                            claims=[],
+                            citations=[],
+                            risk_level=ticket.risk_level,
+                            ticket_needs_human=ticket.needs_human,
+                            skill_completion=None,
+                            path="mcp_approval",
+                        )
+                    ),
                     trace=trace,
                     tool_calls=tool_call_views,
                 )
@@ -311,6 +376,68 @@ class CustomerReplySuggestionService:
                 title="No grounded knowledge found",
                 detail="No knowledge supports a reply suggestion for this conversation.",
             )
+        skill_definition = state.get("skill_definition")
+        skill_code = str(state.get("skill") or GENERAL_SKILL_CODE)
+        skill_definition_version = state.get("skill_definition_version")
+        memory_snapshot = load_memory(self.session, conversation.id)
+        slots = (
+            {
+                name: (fact.get("value") if isinstance(fact, dict) else fact)
+                for name, fact in memory_snapshot.facts.items()
+            }
+            if memory_snapshot is not None
+            else {}
+        )
+        # Mirror grounding_status_from_claims: a claim that was never cited
+        # does not make an otherwise grounded answer incomplete, but an
+        # unsupported/uncertain verdict or an uncertified cited claim does.
+        unsupported_claims = sum(
+            1
+            for claim in draft.claims
+            if str(
+                claim.get("verification_verdict", "not_checked")
+            ).lower()
+            in {"unsupported", "uncertain"}
+            or (
+                claim.get("cited_chunk_ids")
+                and str(
+                    claim.get("verification_verdict", "not_checked")
+                ).lower()
+                != "supported"
+            )
+        )
+        completion = evaluate_definition(
+            skill_definition,
+            context=CompletionContext(
+                slots=slots,
+                citation_count=len(draft.citations),
+                tool_call_count=len(tool_calls),
+                tool_ids=frozenset(item.tool_id for item in tool_calls),
+                claim_count=len(draft.claims),
+                unsupported_claim_count=unsupported_claims,
+                grounding_status=draft.grounding_status,
+                risk_level=ticket.risk_level,
+            ),
+        )
+        # Freeze the contract this turn ran against. A later Skill edit must
+        # not change what this answer is judged by.
+        skill_snapshot = {
+            "code": skill_code,
+            "definition_version": skill_definition_version,
+            "definition": skill_definition,
+            "match_reason": state.get("skill_match_reason"),
+        }
+        gate = evaluate_gate(
+            GateContext(
+                grounding_status=draft.grounding_status,
+                claims=draft.claims,
+                citations=draft.citations,
+                risk_level=ticket.risk_level,
+                ticket_needs_human=ticket.needs_human,
+                skill_completion=completion,
+                path=_gate_path(draft.provider),
+            )
+        )
         record_audit(
             self.session,
             correlation_id=correlation_id,
@@ -328,6 +455,15 @@ class CustomerReplySuggestionService:
                 "fallback_used": draft.fallback_used,
                 "citation_count": len(draft.citations),
                 "skill": skill,
+                "skill_complete": (
+                    completion.get("complete")
+                    if completion is not None
+                    else None
+                ),
+                "gate": {
+                    "decision": gate["decision"],
+                    "reasons": gate["reasons"],
+                },
                 "graph_trace": trace,
                 "mcp_tool_calls": [
                     {
@@ -353,6 +489,10 @@ class CustomerReplySuggestionService:
             grounding_status=draft.grounding_status,
             citations=draft.citations,
             skill=skill,
+            skill_version=skill_definition_version,
+            skill_snapshot=skill_snapshot,
+            completion=completion,
+            gate=gate,
             trace=trace,
             tool_calls=tool_call_views,
         )
@@ -415,23 +555,55 @@ class CustomerReplySuggestionService:
                     key=lambda item: item[1],
                 )[0]
                 if matched_candidates
-                else skills[0] if skills else None
+                else None
             )
         )
         if matched is None:
-            raise ApiProblem(
-                status_code=409,
-                code="SKILL_NOT_CONFIGURED",
-                title="No employee skill is configured",
-                detail="Bind at least one ACTIVE skill to the digital employee.",
+            # No trigger matched. Never silently take the first bound skill:
+            # that made "退款" run the presales script whenever binding order
+            # happened to put it first. Use an explicit general skill if the
+            # unit configured one, otherwise run without a contract and let
+            # the gate treat the answer as unreviewed.
+            matched = next(
+                (
+                    skill
+                    for skill in skills
+                    if skill.code == GENERAL_SKILL_CODE
+                ),
+                None,
             )
+            match_reason = (
+                "GENERAL_FALLBACK" if matched is not None else "NO_SKILL_MATCH"
+            )
+        else:
+            match_reason = (
+                "CATEGORY" if matched is category_skill
+                else "LOGISTICS" if matched is logistics_skill
+                else "TRIGGER"
+            )
+        if matched is None:
+            return {
+                "skill": GENERAL_SKILL_CODE,
+                "skill_name": "通用客服",
+                "skill_instructions": "",
+                "skill_definition": None,
+                "skill_definition_version": None,
+                "skill_match_reason": match_reason,
+                "trace": [
+                    *state.get("trace", []),
+                    f"route_skill → {GENERAL_SKILL_CODE} · {match_reason}",
+                ],
+            }
         return {
             "skill": matched.code,
             "skill_name": matched.name,
             "skill_instructions": matched.instructions,
+            "skill_definition": matched.definition_json,
+            "skill_definition_version": matched.definition_version,
+            "skill_match_reason": match_reason,
             "trace": [
                 *state.get("trace", []),
-                f"route_skill → {matched.code}",
+                f"route_skill → {matched.code} · {match_reason}",
             ],
         }
 
@@ -718,12 +890,21 @@ class CustomerReplySuggestionService:
             matched_rule_id="LANGGRAPH_REPLY_SUGGESTION",
             reason_codes=[],
         )
+        # Memory and handoff lines go in front of the ticket body so the model
+        # starts from established facts. Fast paths above never read the body,
+        # so the deterministic answers are unchanged.
+        context_lines = state.get("context_lines") or []
+        body = (
+            "\n".join([*context_lines, "", ticket.body])
+            if context_lines
+            else ticket.body
+        )
         draft = build_draft_service_for_employee(
             employee,
             usage_guard=state["usage_guard"],
         ).generate(
             subject=ticket.subject,
-            body=ticket.body,
+            body=body,
             analysis=self._analysis(ticket),
             routing=routing,
             knowledge_hits=hits,
@@ -886,6 +1067,17 @@ def _resolved_repository(
     )
 
 
+def _gate_path(provider: str) -> str:
+    """Name the answer path so a gate verdict can be read without the draft."""
+    return {
+        "mcp_fast_path": "mcp_tool",
+        "rag_fast_path": "knowledge_fast_path",
+        "system_policy": "policy",
+        "security_policy": "policy_refusal",
+        "local-rules": "fallback_rules",
+    }.get(provider, "llm_draft")
+
+
 def _security_boundary_refusal(query: str) -> str | None:
     lowered = query.lower()
     sensitive_terms = (
@@ -928,6 +1120,97 @@ def _security_boundary_refusal(query: str) -> str | None:
     )
 
 
+def _tool_evidence_claims(
+    text: str,
+    chunk_id: str,
+    content: str,
+) -> list[dict[str, object]]:
+    """A tool result IS the evidence, so the claim is supported by it.
+
+    This is deliberately different from ``not_checked``: a not-checked claim
+    may never be reported as ``GROUNDED``. Numeric commitments still have to
+    appear verbatim in the tool result; formatting must not invent numbers.
+    """
+    verdict = "supported"
+    reason = "direct_tool_result"
+    try:
+        validate_numeric_claims(text, [content])
+    except GroundingViolation as exc:
+        verdict = "unsupported"
+        reason = exc.code
+    return [
+        {
+            "text": text,
+            "claim_type": "instruction",
+            "cited_chunk_ids": [chunk_id],
+            "verification_verdict": verdict,
+            "verification_confidence": 0.95,
+            "verification_reason": reason,
+            "verification_provider": "deepwiki_mcp",
+        }
+    ]
+
+
+def _knowledge_extract_claims(
+    *,
+    text: str,
+    verified_text: str,
+    chunk_id: str,
+    content: str,
+    claim_type: str,
+) -> list[dict[str, object]]:
+    """Send an extractive answer through the configured claim verifier.
+
+    The sentence selection is deterministic, but "we copied text out of a
+    chunk" is exactly the claim that has to be checked before the answer can
+    be called grounded. With the verifier disabled the claim stays
+    ``not_checked`` and the turn is reported as ``UNVERIFIED``.
+    """
+    verdict = "not_checked"
+    confidence: float | None = None
+    reason: str | None = "direct_knowledge_extract"
+    provider: str | None = "rag"
+    verifier = get_claim_verifier()
+    if verifier is not None:
+        verified = verifier.verify(
+            [
+                ClaimToVerify(
+                    claim_index=0,
+                    # Verify the extracted sentences, not the template
+                    # wrapper: "根据已发布知识《…》" is framing, not a claim.
+                    text=verified_text,
+                    claim_type=claim_type,
+                    sources=[content],
+                )
+            ]
+        )[0]
+        verdict = verified.verdict
+        confidence = verified.confidence
+        reason = verified.reason
+        provider = verified.provider
+    return [
+        {
+            "text": text,
+            "claim_type": claim_type,
+            "cited_chunk_ids": [chunk_id],
+            "verification_verdict": verdict,
+            "verification_confidence": confidence,
+            "verification_reason": reason,
+            "verification_provider": provider,
+        }
+    ]
+
+
+def _citation_payload(hit: KnowledgeHit) -> dict[str, Any]:
+    return {
+        "chunk_id": str(hit.chunk_id),
+        "document_id": str(hit.document_id),
+        "space_id": str(hit.space_id) if hit.space_id else None,
+        "title": hit.title,
+        "version": hit.version,
+    }
+
+
 def _technical_documentation_draft(
     state: CustomerSuggestionState,
 ) -> DraftResult | None:
@@ -946,24 +1229,19 @@ def _technical_documentation_draft(
         )
         if text is None:
             return None
+        citations = [dict(item.citation)]
+        claims = _tool_evidence_claims(text, item.chunk_id, item.content)
         return DraftResult(
             text=text,
-            citations=[dict(item.citation)],
-            claims=[
-                {
-                    "text": text,
-                    "claim_type": "instruction",
-                    "cited_chunk_ids": [item.chunk_id],
-                    "verification_verdict": "not_checked",
-                    "verification_confidence": None,
-                    "verification_reason": "direct_tool_result",
-                    "verification_provider": "deepwiki_mcp",
-                }
-            ],
+            citations=citations,
+            claims=claims,
             provider="mcp_fast_path",
             model="deepwiki_contents",
             fallback_used=False,
-            grounding_status="GROUNDED",
+            grounding_status=grounding_status_from_claims(
+                citations=citations,
+                claims=claims,
+            ),
         )
     if plan.tool_id.endswith(".ask_wiki_question"):
         content = item.content.strip()
@@ -973,24 +1251,19 @@ def _technical_documentation_draft(
             f"根据 {repository} 的公开仓库文档，"
             f"DeepWiki 对问题的回答如下：{content}"
         )
+        citations = [dict(item.citation)]
+        claims = _tool_evidence_claims(text, item.chunk_id, item.content)
         return DraftResult(
             text=text,
-            citations=[dict(item.citation)],
-            claims=[
-                {
-                    "text": text,
-                    "claim_type": "instruction",
-                    "cited_chunk_ids": [item.chunk_id],
-                    "verification_verdict": "not_checked",
-                    "verification_confidence": None,
-                    "verification_reason": "direct_tool_result",
-                    "verification_provider": "deepwiki_mcp",
-                }
-            ],
+            citations=citations,
+            claims=claims,
             provider="mcp_fast_path",
             model="deepwiki_question",
             fallback_used=False,
-            grounding_status="GROUNDED",
+            grounding_status=grounding_status_from_claims(
+                citations=citations,
+                claims=claims,
+            ),
         )
     if not plan.tool_id.endswith(".read_wiki_structure"):
         return None
@@ -1028,24 +1301,19 @@ def _technical_documentation_draft(
             + "；".join(details[1:])
             + "。以上内容来自 DeepWiki 实时只读工具结果。"
         )
+    citations = [dict(item.citation)]
+    claims = _tool_evidence_claims(text, item.chunk_id, item.content)
     return DraftResult(
         text=text,
-        citations=[dict(item.citation)],
-        claims=[
-            {
-                "text": text,
-                "claim_type": "instruction",
-                "cited_chunk_ids": [item.chunk_id],
-                "verification_verdict": "not_checked",
-                "verification_confidence": None,
-                "verification_reason": "direct_tool_result",
-                "verification_provider": "deepwiki_mcp",
-            }
-        ],
+        citations=citations,
+        claims=claims,
         provider="mcp_fast_path",
         model="deepwiki_tool_result",
         fallback_used=False,
-        grounding_status="GROUNDED",
+        grounding_status=grounding_status_from_claims(
+            citations=citations,
+            claims=claims,
+        ),
     )
 
 
@@ -1070,32 +1338,25 @@ def _technical_knowledge_draft(
     question = _latest_buyer_question(str(state.get("query") or ""))
     extracted = _extract_relevant_knowledge_sentences(content, question)
     text = f"根据已发布知识《{hit.title}》：{extracted}"
+    citations = [_citation_payload(hit)]
+    claims = _knowledge_extract_claims(
+        text=text,
+        verified_text=extracted,
+        chunk_id=str(hit.chunk_id),
+        content=content,
+        claim_type="policy",
+    )
     return DraftResult(
         text=text,
-        citations=[
-            {
-                "chunk_id": str(hit.chunk_id),
-                "document_id": str(hit.document_id),
-                "space_id": str(hit.space_id) if hit.space_id else None,
-                "title": hit.title,
-                "version": hit.version,
-            }
-        ],
-        claims=[
-            {
-                "text": text,
-                "claim_type": "policy",
-                "cited_chunk_ids": [str(hit.chunk_id)],
-                "verification_verdict": "not_checked",
-                "verification_confidence": None,
-                "verification_reason": "direct_knowledge_extract",
-                "verification_provider": "rag",
-            }
-        ],
+        citations=citations,
+        claims=claims,
         provider="rag_fast_path",
         model="knowledge_extract",
         fallback_used=False,
-        grounding_status="GROUNDED",
+        grounding_status=grounding_status_from_claims(
+            citations=citations,
+            claims=claims,
+        ),
     )
 
 
@@ -1124,32 +1385,25 @@ def _operational_knowledge_draft(
     question = _latest_buyer_question(str(state.get("query") or ""))
     extracted = _extract_relevant_knowledge_sentences(content, question)
     text = f"根据已发布知识《{hit.title}》：{extracted}"
+    citations = [_citation_payload(hit)]
+    claims = _knowledge_extract_claims(
+        text=text,
+        verified_text=extracted,
+        chunk_id=str(hit.chunk_id),
+        content=content,
+        claim_type="instruction",
+    )
     return DraftResult(
         text=text,
-        citations=[
-            {
-                "chunk_id": str(hit.chunk_id),
-                "document_id": str(hit.document_id),
-                "space_id": str(hit.space_id) if hit.space_id else None,
-                "title": hit.title,
-                "version": hit.version,
-            }
-        ],
-        claims=[
-            {
-                "text": text,
-                "claim_type": "instruction",
-                "cited_chunk_ids": [str(hit.chunk_id)],
-                "verification_verdict": "not_checked",
-                "verification_confidence": None,
-                "verification_reason": "direct_knowledge_extract",
-                "verification_provider": "rag",
-            }
-        ],
+        citations=citations,
+        claims=claims,
         provider="rag_fast_path",
         model="knowledge_extract",
         fallback_used=False,
-        grounding_status="GROUNDED",
+        grounding_status=grounding_status_from_claims(
+            citations=citations,
+            claims=claims,
+        ),
     )
 
 

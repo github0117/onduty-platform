@@ -116,3 +116,34 @@ uv run --project apps/api python scripts/load_test.py \
 生产级压测应使用独立负载机、固定数据集、多 worker 部署，并分别覆盖读路径、
 知识检索、模型生成、MCP 调用、审批写入和 SSE，给出各接口 P95 / P99、错误率、
 数据库连接池和 CPU/内存水位，而不是只报一个总 RPS。
+
+## 写路径并发验收（会话运行时）
+
+只读基线不覆盖写操作。会话运行时的写路径另有一个可重复的并发验收脚本：
+
+```text
+cd apps/api
+# 在容器内跑要把数据库地址指向 postgres 服务：
+#   docker compose ... exec -e ACCEPTANCE_DATABASE_URL=postgresql://ticket_agent:ticket_agent@postgres:5432/ticket_agent \
+#     api python scripts/stress_runtime_concurrency.py -n 20
+uv run python scripts/stress_runtime_concurrency.py http://127.0.0.1:8000 -n 20
+```
+
+它直接对运行中的真实栈发起“买家消息 vs 人工接管”“买家消息 vs 主管交接”
+“同一 `client_message_id` 重复提交”“两条消息并发”四组竞态，并用 psycopg
+读取 PostgreSQL 断言结果（轮次终态、`CANCELLED` 无回复、接管后无新回复、
+交接后会话归属新员工、单工单、轮次序号互异、event 序号唯一且连续、取消轮次
+不可重试）。脚本自建 `stress_agent_*` / `stress_agent_b_*` 员工与知识，结束时
+通过 `archive-test-data` 归档。
+
+加 `--force-deadlocks` 会再跑 3 次确定性死锁注入：脚本用一条独立事务先锁住
+运行中的轮次行，再让主管交接请求进来（交接先拿会话锁、等轮次锁），随后脚本
+反向申请会话锁，制造 `40P01` 环路。要求 API 仍然返回 200（交接被中止后重试
+成功），并且 event 序号保持唯一连续。这个检查在修复前会稳定复现
+`500 DATABASE_ERROR` 或 event 序号唯一约束冲突。
+
+接管、交接与在途轮次会互相等待行锁，PostgreSQL 以 SQLSTATE `40P01` 中止
+一方；应用侧对受害者都做了有界重试（接管/交接/买家发言/人工回复/租约回收
+3 次，worker 轮次 2 次），重试耗尽才交给租约回收。因此 `postgres` 日志里仍会
+出现 `deadlock detected`，只要 API 没有未处理的 `ERROR`、且所有轮次收敛到
+终态，就属于已处理路径。

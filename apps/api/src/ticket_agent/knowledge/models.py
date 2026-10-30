@@ -403,6 +403,40 @@ class KnowledgeRepairTask(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class KnowledgeGapOccurrence(Base):
+    """One buyer question the published knowledge could not answer.
+
+    Repair tasks only open after the same question recurs (``NO_KNOWLEDGE``
+    threshold), so the raw occurrences need to be durable: they are the
+    evidence that the gap is real and not a one-off phrasing miss.
+    """
+
+    __tablename__ = "knowledge_gap_occurrences"
+    __table_args__ = (
+        Index(
+            "ix_knowledge_gap_occurrences_unit_query",
+            "business_unit_id",
+            "normalized_query",
+            "created_at",
+        ),
+        Index("ix_knowledge_gap_occurrences_created", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    business_unit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_query: Mapped[str] = mapped_column(Text, nullable=False)
+    ticket_id: Mapped[UUID | None] = mapped_column(Uuid)
+    turn_id: Mapped[UUID | None] = mapped_column(Uuid)
+    repair_task_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("knowledge_repair_tasks.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
 class KnowledgeFeedback(Base):
     __tablename__ = "knowledge_feedback"
     __table_args__ = (

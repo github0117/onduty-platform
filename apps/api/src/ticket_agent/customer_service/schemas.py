@@ -24,11 +24,18 @@ class ConversationTurnView(BaseModel):
     stage_label: str
     employee_id: UUID | None
     employee_config_revision: int | None
+    correlation_id: str | None = None
+    version: int = 1
+    attempt_count: int = 0
+    handoff_id: UUID | None = None
     intent: str | None
     analysis: dict[str, Any]
     response_provider: str | None
     response_model: str | None
     grounding_status: str | None
+    # Accuracy gate verdict for this turn. NULL on turns completed before the
+    # gate existed; readers must treat NULL as "not cleared for auto-send".
+    gate: dict[str, Any] | None = None
     citations: list[dict[str, Any]]
     trace: list[str]
     tool_calls: list[dict[str, Any]]
@@ -39,10 +46,137 @@ class ConversationTurnView(BaseModel):
     created_at: datetime
 
 
+class ConversationTurnEventView(BaseModel):
+    id: UUID
+    turn_id: UUID
+    conversation_id: UUID
+    sequence: int
+    event_type: str
+    status: str
+    stage_label: str | None
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class ConversationTurnEventList(BaseModel):
+    conversation_id: UUID
+    turn_id: UUID
+    events: list[ConversationTurnEventView]
+    total: int = 0
+    has_more: bool = False
+
+
+class ConversationTurnList(BaseModel):
+    items: list[ConversationTurnView]
+    total: int
+
+
+class ConversationTurnDetailView(ConversationTurnView):
+    """Everything a reader needs to replay one turn.
+
+    The list view stays small; this one adds the frozen inputs and verdicts:
+    what context was assembled, which Skill contract ran, and the completion
+    and gate decisions. NULL means the turn predates that record.
+    """
+
+    context: dict[str, Any] | None = None
+    skill_code: str | None = None
+    skill_version: int | None = None
+    skill_snapshot: dict[str, Any] | None = None
+    completion: dict[str, Any] | None = None
+
+
+class OperationalTurnView(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    ticket_id: UUID | None
+    business_unit_id: str
+    requester_ref: str
+    sequence: int
+    status: str
+    stage_label: str
+    correlation_id: str | None
+    attempt_count: int
+    gate_decision: str | None
+    error_code: str | None
+    error_message: str | None
+    lease_expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OperationalTurnList(BaseModel):
+    items: list[OperationalTurnView]
+    total: int
+
+
+class RuntimeGapItem(BaseModel):
+    query: str
+    occurrence_count: int
+    repair_task_id: UUID | None
+
+
+class RuntimeHealthView(BaseModel):
+    business_unit_id: str
+    window_hours: int
+    turn_count: int
+    completed_count: int
+    needs_human_count: int
+    failed_count: int
+    cancelled_count: int
+    auto_send_count: int
+    human_review_count: int
+    blocked_count: int
+    unverified_count: int
+    handoff_count: int
+    stuck_turn_count: int
+    auto_send_rate: float | None
+    unverified_rate: float | None
+    handoff_rate: float | None
+    top_gaps: list[RuntimeGapItem]
+
+
+class TurnReclaimResult(BaseModel):
+    reclaimed: int
+    redispatched: int
+
+
+class ConversationHandoffView(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    from_turn_id: UUID | None
+    to_turn_id: UUID | None
+    from_employee_id: UUID | None
+    to_employee_id: UUID | None
+    from_employee_name: str | None = None
+    to_employee_name: str | None = None
+    kind: str
+    reason_code: str
+    summary: dict[str, Any]
+    created_by: str
+    created_at: datetime
+
+
+class ConversationHandoffCreate(BaseModel):
+    employee_id: UUID
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ConversationHandoffList(BaseModel):
+    items: list[ConversationHandoffView]
+    total: int
+
+
 class CustomerMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
     product_id: str | None = Field(default=None, max_length=64)
     sku: str | None = Field(default=None, max_length=100)
+    # Caller-generated id: resubmitting the same id returns the existing turn
+    # instead of writing a second message.
+    client_message_id: str | None = Field(default=None, max_length=128)
 
 
 class BusinessAddressView(BaseModel):
@@ -133,6 +267,14 @@ class CustomerReplySuggestionView(BaseModel):
     grounding_status: str
     citations: list[dict[str, Any]]
     skill: str
+    # Version of the structured contract (if any) and what the runtime
+    # checked this turn against. ``completion`` is None for loose skills.
+    skill_version: int | None = None
+    skill_snapshot: dict[str, Any] | None = None
+    completion: dict[str, Any] | None = None
+    # Whether this draft may leave without a human (AUTO_SEND) or must be
+    # reviewed (HUMAN_REVIEW), plus the machine-readable reasons.
+    gate: dict[str, Any] | None = None
     trace: list[str]
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -272,6 +414,9 @@ class CustomerMessageView(BaseModel):
     role: Literal["BUYER", "ASSISTANT"]
     content: str
     ticket_id: UUID | None
+    # The turn this message belongs to, so a reader can go from a message to
+    # the run that produced or consumed it. NULL for pre-M1 messages.
+    turn_id: UUID | None = None
     created_by: str
     created_at: datetime
 
@@ -281,6 +426,10 @@ class CustomerConversationView(BaseModel):
     business_unit_id: str
     service_entry_id: UUID | None
     employee_id: UUID | None
+    # ROUTER (entry router), AUTO_HANDOFF (automatic re-route) or MANUAL
+    # (supervisor switch, which also locks the conversation to that employee).
+    employee_source: str = "ROUTER"
+    employee_locked_at: datetime | None = None
     requester_ref: str
     category_name: str | None
     category_profile_id: UUID | None
@@ -297,6 +446,9 @@ class CustomerConversationView(BaseModel):
     version: int
     messages: list[CustomerMessageView]
     current_turn: ConversationTurnView | None = None
+    latest_handoff: ConversationHandoffView | None = None
+    # True when this response is the replay of an earlier submission.
+    replayed: bool = False
     created_at: datetime
     updated_at: datetime
 

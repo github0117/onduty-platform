@@ -19,11 +19,14 @@ from ticket_agent.agent_runs.router import router as agent_run_router
 from ticket_agent.agent_skills.router import router as agent_skill_router
 from ticket_agent.api.router import router
 from ticket_agent.business_entries.router import router as business_entries_router
+from ticket_agent.connectors.router import router as connector_router
+from ticket_agent.connectors.router import webhook_router as connector_webhook_router
 from ticket_agent.customer_service.router import router as customer_service_router
 from ticket_agent.digital_employees.draft_router import (
     router as employee_draft_router,
 )
 from ticket_agent.digital_employees.router import router as employee_router
+from ticket_agent.domains.registry import validate_domain_packs
 from ticket_agent.ecommerce.router import router as ecommerce_router
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
@@ -62,6 +65,8 @@ from ticket_agent.workforce.router import router as workforce_router
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     del app
+    # A malformed domain pack must fail startup, not the first ticket.
+    validate_domain_packs()
     if settings.is_development:
         init_db()
     yield
@@ -513,6 +518,17 @@ app.include_router(
     workforce_router,
     prefix=settings.api_prefix,
     dependencies=tenant_dependencies,
+)
+app.include_router(
+    connector_router,
+    prefix=settings.api_prefix,
+    dependencies=tenant_dependencies,
+)
+# Inbound webhooks authenticate with an HMAC signature over the raw body,
+# not with a user principal, so they stay outside tenant dependencies.
+app.include_router(
+    connector_webhook_router,
+    prefix=settings.api_prefix,
 )
 
 

@@ -42,7 +42,43 @@ export const groundingStatusLabels: Record<string, string> = {
   PARTIALLY_GROUNDED: "部分有知识依据",
   NO_KNOWLEDGE: "无知识依据",
   APPROVAL_REQUIRED: "需要写操作审批",
+  UNVERIFIED: "回答未完成声明核验",
+  UNSUPPORTED: "存在无依据声明",
+  POLICY_BLOCKED: "安全策略拒绝",
+  NOT_REQUIRED: "无需知识依据",
 };
+
+export const gateDecisionLabels: Record<string, string> = {
+  AUTO_SEND: "可直接发送",
+  HUMAN_REVIEW: "需人工复核",
+  BLOCK: "已阻断",
+};
+
+export const gateReasonLabels: Record<string, string> = {
+  UNSUPPORTED_CLAIM: "存在无依据的声明",
+  UNCERTAIN_CLAIM: "存在不确定的声明",
+  UNCHECKED_CITED_CLAIM: "引用的声明尚未核验",
+  POLICY_CLAIM_WITHOUT_CITATION: "政策/操作声明缺少引用",
+  UNSUPPORTED_NUMERIC_CLAIM: "金额、时效等数字无依据",
+  SKILL_INCOMPLETE: "Skill 必需步骤未完成",
+  HIGH_RISK: "高风险工单",
+  TICKET_NEEDS_HUMAN: "工单已要求人工处理",
+  APPROVAL_REQUIRED: "写操作需要审批",
+};
+
+export function gateReasonLabel(reason: string): string {
+  const known = gateReasonLabels[reason];
+  if (known) {
+    return known;
+  }
+  if (reason.startsWith("GROUNDING_")) {
+    const status = reason.slice("GROUNDING_".length);
+    return `证据状态未通过：${
+      groundingStatusLabels[status] ?? status
+    }`;
+  }
+  return reason;
+}
 
 export const knowledgeDocumentStatusLabels: Record<string, string> = {
   DRAFT: "草稿",
@@ -132,6 +168,51 @@ export const eventTypeLabels: Record<string, string> = {
   tool: "工具调用",
   workflow: "流程节点",
   human: "人工处理",
+};
+
+export const turnStatusLabels: Record<string, string> = {
+  PENDING: "排队中",
+  RUNNING: "处理中",
+  COMPLETED: "已完成",
+  NEEDS_HUMAN: "等待人工",
+  FAILED_RETRYABLE: "失败可重试",
+  FAILED_TERMINAL: "失败终态",
+  CANCELLED: "已取消",
+};
+
+export const turnEventTypeLabels: Record<string, string> = {
+  TURN_CREATED: "入队",
+  TURN_STARTED: "开始处理",
+  TURN_RESUMED: "恢复处理",
+  TURN_RETRY_SCHEDULED: "重新排队",
+  TURN_RECLAIMED: "超时回收",
+  CONTEXT_ASSEMBLED: "组装上下文",
+  GATE_EVALUATED: "发送门禁评估",
+  COMPLETION_EVALUATED: "Skill 完成度校验",
+  SKILL_SELECTED: "选择 Skill",
+  HANDOFF_CREATED: "创建交接",
+  TURN_COMPLETED: "完成",
+  TURN_NEEDS_HUMAN: "转人工",
+  TURN_FAILED: "失败（可重试）",
+  TURN_FAILED_TERMINAL: "失败（终态）",
+  TURN_CANCELLED: "取消",
+};
+
+export const handoffKindLabels: Record<string, string> = {
+  AUTO_REROUTE: "系统自动转接",
+  OPERATOR_SWITCH: "人工切换员工",
+  HUMAN_TAKEOVER: "人工接管",
+  HUMAN_RETURN: "人工交还",
+};
+
+export const handoffReasonLabels: Record<string, string> = {
+  EXPLICIT_REQUEST: "客户明确要求转接",
+  CAPABILITY_GAP: "当前员工不具备该问题能力",
+  TOPIC_CHANGED: "工单已结束，话题已切换",
+  SUSTAINED_TOPIC: "连续多轮指向同一员工",
+  ENTRY_SCOPE_CHANGED: "入口员工范围调整",
+  MANUAL: "人工操作",
+  ESCALATION: "升级处理",
 };
 
 export const employeeStatusLabels: Record<string, string> = {

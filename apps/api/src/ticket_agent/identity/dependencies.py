@@ -132,6 +132,24 @@ def ensure_workspace_viewer(principal: Principal) -> None:
     )
 
 
+def ensure_connector_viewer(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "mcp.connectors.view",
+        title="Connector access denied",
+        detail="This operation requires read access to external connectors.",
+    )
+
+
+def ensure_connector_writer(principal: Principal) -> None:
+    require_capability(
+        principal,
+        "mcp.connectors.write",
+        title="Connector operation denied",
+        detail="Managing external connectors requires a knowledge operator or administrator.",
+    )
+
+
 def ensure_ticket_creator(principal: Principal, requester_ref: str) -> None:
     if has_capability(principal, "tickets.write"):
         return

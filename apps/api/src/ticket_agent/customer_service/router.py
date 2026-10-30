@@ -30,7 +30,14 @@ from ticket_agent.customer_service.schemas import (
     AgentPresenceView,
     AssignmentQueue,
     AssignmentRunResult,
+    ConversationHandoffCreate,
+    ConversationHandoffList,
     ConversationReassignRequest,
+    ConversationTurnDetailView,
+    ConversationTurnEventList,
+    ConversationTurnEventView,
+    ConversationTurnList,
+    ConversationTurnView,
     CustomerBusinessActionView,
     CustomerBusinessContextView,
     CustomerConversationCreate,
@@ -48,13 +55,17 @@ from ticket_agent.customer_service.schemas import (
     CustomerServiceNotificationView,
     CustomerTakeoverRequest,
     CustomerValueMetrics,
+    OperationalTurnList,
     PresenceReclaimResult,
+    RuntimeHealthView,
     SlaEscalationResult,
+    TurnReclaimResult,
 )
 from ticket_agent.customer_service.service import CustomerConversationService
 from ticket_agent.customer_service.suggestions import (
     CustomerReplySuggestionService,
 )
+from ticket_agent.customer_service.turn_events import reclaim_stuck_turns
 from ticket_agent.customer_service.turns import (
     process_conversation_turn,
     process_conversation_turn_stream,
@@ -146,6 +157,42 @@ def get_customer_service_metrics(
     business_unit_id = resolve_business_unit(principal, business_unit_id)
     return CustomerConversationService(db).metrics(
         business_unit_id=business_unit_id
+    )
+
+
+@router.get(
+    "/operations/turns",
+    response_model=OperationalTurnList,
+)
+def list_operational_turns(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> OperationalTurnList:
+    ensure_service_admin(principal)
+    return CustomerConversationService(db).operational_turns(
+        business_unit_id=resolve_business_unit(principal, business_unit_id),
+        status=status_filter,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/operations/runtime-health",
+    response_model=RuntimeHealthView,
+)
+def get_runtime_health(
+    db: DbSession,
+    principal: Actor,
+    business_unit_id: Annotated[str | None, Query()] = None,
+    window_hours: Annotated[int, Query(ge=1, le=720)] = 24,
+) -> RuntimeHealthView:
+    ensure_service_admin(principal)
+    return CustomerConversationService(db).runtime_health(
+        business_unit_id=resolve_business_unit(principal, business_unit_id),
+        window_hours=window_hours,
     )
 
 
@@ -321,6 +368,66 @@ def sync_customer_service_notifications(
             db
         ).sync_supervisor_notifications(business_unit_id)
     }
+
+
+@router.post(
+    "/customer-service/turns/reclaim",
+    response_model=TurnReclaimResult,
+)
+def reclaim_customer_conversation_turns(
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    principal: Actor,
+) -> TurnReclaimResult:
+    """Recover turns whose worker lease expired.
+
+    Runs every 30 seconds from Celery beat; this entry point lets an operator
+    trigger the same job on demand.
+    """
+    ensure_sync_batch_operator(principal)
+    turn_ids = reclaim_stuck_turns(
+        db,
+        limit=get_settings().conversation_turn_reclaim_batch_size,
+    )
+    for turn_id in turn_ids:
+        background_tasks.add_task(
+            process_conversation_turn,
+            turn_id,
+            f"turn-reclaim:{turn_id}",
+        )
+    return TurnReclaimResult(
+        reclaimed=len(turn_ids),
+        redispatched=len(turn_ids),
+    )
+
+
+@router.post(
+    "/customer-service/conversations/{conversation_id}/employee",
+    response_model=CustomerConversationView,
+)
+def switch_customer_conversation_employee(
+    conversation_id: UUID,
+    payload: ConversationHandoffCreate,
+    request: Request,
+    db: DbSession,
+    principal: Actor,
+) -> CustomerConversationView:
+    """Hand the conversation to another digital employee.
+
+    The transfer is recorded as a handoff carrying a deterministic summary, and
+    the next turn assembles that summary as its context.
+    """
+    ensure_sync_batch_operator(principal)
+    service = CustomerConversationService(db)
+    conversation = _conversation_for_access(service, conversation_id, principal)
+    updated, _handoff = service.switch_employee(
+        conversation.id,
+        employee_id=payload.employee_id,
+        reason=payload.reason,
+        principal=principal,
+        correlation_id=correlation_id(request),
+    )
+    return service.view(updated)
 
 
 @router.get(
@@ -546,6 +653,139 @@ def get_customer_conversation(
 
 
 @router.get(
+    "/customer-service/conversations/{conversation_id}/turns",
+    response_model=ConversationTurnList,
+)
+def list_customer_conversation_turns(
+    conversation_id: UUID,
+    db: DbSession,
+    principal: Actor,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ConversationTurnList:
+    ensure_service_chat(principal)
+    service = CustomerConversationService(db)
+    _conversation_for_access(service, conversation_id, principal)
+    return service.turns(conversation_id, limit=limit, offset=offset)
+
+
+@router.get(
+    "/customer-service/conversations/{conversation_id}/turns/{turn_id}",
+    response_model=ConversationTurnDetailView,
+)
+def get_customer_conversation_turn(
+    conversation_id: UUID,
+    turn_id: UUID,
+    db: DbSession,
+    principal: Actor,
+) -> ConversationTurnDetailView:
+    ensure_service_chat(principal)
+    service = CustomerConversationService(db)
+    _conversation_for_access(service, conversation_id, principal)
+    return service.turn_detail(service.get_turn(conversation_id, turn_id))
+
+
+@router.get(
+    "/customer-service/conversations/{conversation_id}/handoffs",
+    response_model=ConversationHandoffList,
+)
+def list_customer_conversation_handoffs(
+    conversation_id: UUID,
+    db: DbSession,
+    principal: Actor,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> ConversationHandoffList:
+    ensure_service_workbench(principal)
+    service = CustomerConversationService(db)
+    _conversation_for_access(service, conversation_id, principal)
+    return service.handoffs(conversation_id, limit=limit)
+
+
+@router.post(
+    "/customer-service/turns/{turn_id}/retry",
+    response_model=ConversationTurnView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_customer_conversation_turn(
+    turn_id: UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    principal: Actor,
+) -> ConversationTurnView:
+    ensure_service_admin(principal)
+    service = CustomerConversationService(db)
+    turn = service.turn_by_id(turn_id)
+    conversation = service.get(turn.conversation_id)
+    ensure_business_unit_access(principal, conversation.business_unit_id)
+    retried = service.retry_turn(
+        turn_id,
+        actor_id=principal.actor_id,
+        correlation_id=correlation_id(request),
+    )
+    background_tasks.add_task(
+        process_conversation_turn,
+        turn_id,
+        correlation_id(request),
+    )
+    return service.turn_view(retried)
+
+
+@router.get(
+    "/customer-service/conversations/{conversation_id}/turns/{turn_id}/events",
+    response_model=ConversationTurnEventList,
+)
+def list_customer_conversation_turn_events(
+    conversation_id: UUID,
+    turn_id: UUID,
+    db: DbSession,
+    principal: Actor,
+    after_sequence: Annotated[int | None, Query(ge=0)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> ConversationTurnEventList:
+    """Show what one turn actually did, step by step.
+
+    The conversation row only stores the latest turn state; this endpoint is
+    the operator-facing view of the append-only turn event log. Events are
+    ordered by ``sequence``; pass ``after_sequence`` to page forward.
+    """
+    ensure_service_chat(principal)
+    service = CustomerConversationService(db)
+    _conversation_for_access(service, conversation_id, principal)
+    service.get_turn(conversation_id, turn_id)
+    events = service.turn_events(
+        turn_id,
+        after_sequence=after_sequence,
+        limit=limit + 1,
+    )
+    has_more = len(events) > limit
+    events = events[:limit]
+    return ConversationTurnEventList(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        total=service.turn_event_count(turn_id),
+        has_more=has_more,
+        events=[
+            ConversationTurnEventView(
+                id=event.id,
+                turn_id=event.turn_id,
+                conversation_id=event.conversation_id,
+                sequence=event.sequence,
+                event_type=event.event_type,
+                status=event.status,
+                stage_label=event.stage_label,
+                actor_type=event.actor_type,
+                actor_id=event.actor_id,
+                correlation_id=event.correlation_id,
+                payload=event.payload_json,
+                created_at=event.created_at,
+            )
+            for event in events
+        ],
+    )
+
+
+@router.get(
     "/customer-service/conversations/{conversation_id}/business-context",
     response_model=CustomerBusinessContextView,
 )
@@ -613,19 +853,19 @@ def add_customer_message(
     ensure_service_chat(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
-    conversation, turn_id = service.append_buyer_message(
+    result = service.append_buyer_message(
         conversation_id,
         payload,
         principal=principal,
         correlation_id=correlation_id(request),
     )
-    if turn_id is not None:
+    if result.turn_id is not None:
         background_tasks.add_task(
             process_conversation_turn,
-            turn_id,
+            result.turn_id,
             correlation_id(request),
         )
-    return service.view(conversation)
+    return service.view(result.conversation, replayed=result.replayed)
 
 
 @router.post(
@@ -642,13 +882,17 @@ def stream_customer_message(
     ensure_service_chat(principal)
     service = CustomerConversationService(db)
     _conversation_for_access(service, conversation_id, principal)
-    conversation, turn_id = service.append_buyer_message(
+    result = service.append_buyer_message(
         conversation_id,
         payload,
         principal=principal,
         correlation_id=correlation_id(request),
     )
-    initial_view = service.view(conversation).model_dump(mode="json")
+    conversation, turn_id = result.conversation, result.turn_id
+    initial_view = service.view(
+        conversation,
+        replayed=result.replayed,
+    ).model_dump(mode="json")
     # Release the request's read transaction before the worker writes in its
     # own session (SQLite tests would otherwise block on a shared lock).
     db.close()

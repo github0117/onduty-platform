@@ -19,6 +19,59 @@ from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.shared.errors import ApiProblem
 
 
+def service_entry_employee_ids(
+    session: Session,
+    raw_entry_id: object,
+    *,
+    business_unit_id: str,
+) -> set[UUID] | None:
+    """Enabled employee IDs of a service entry, or ``None`` without an entry.
+
+    Shared by ticket creation (restricting routing to the entry's pool) and by
+    conversation handoff (a supervisor may not pick an employee the entry does
+    not offer).
+    """
+    if raw_entry_id is None:
+        return None
+    try:
+        entry_id = UUID(str(raw_entry_id))
+    except ValueError as exc:
+        raise ApiProblem(
+            status_code=422,
+            code="BUSINESS_SERVICE_ENTRY_INVALID",
+            title="业务入口无效",
+            detail="请求中的业务入口 ID 格式不正确。",
+        ) from exc
+    entry = session.get(BusinessServiceEntry, entry_id)
+    if (
+        entry is None
+        or entry.business_unit_id != business_unit_id
+        or entry.status != "ACTIVE"
+    ):
+        raise ApiProblem(
+            status_code=404,
+            code="BUSINESS_SERVICE_ENTRY_NOT_FOUND",
+            title="业务入口不可用",
+            detail="业务入口不存在、已停用或不属于当前业务单元。",
+        )
+    employee_ids = set(
+        session.scalars(
+            select(BusinessServiceEntryEmployee.employee_id).where(
+                BusinessServiceEntryEmployee.service_entry_id == entry.id,
+                BusinessServiceEntryEmployee.enabled.is_(True),
+            )
+        ).all()
+    )
+    if not employee_ids:
+        raise ApiProblem(
+            status_code=409,
+            code="BUSINESS_SERVICE_ENTRY_NO_EMPLOYEE",
+            title="业务入口没有可用员工",
+            detail="请先为业务入口绑定至少一个数字员工。",
+        )
+    return employee_ids
+
+
 class BusinessServiceEntryService:
     def __init__(self, session: Session) -> None:
         self.session = session

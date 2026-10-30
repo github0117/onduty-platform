@@ -889,7 +889,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
         "ASSISTANT",
     ]
     assert stored.json()["messages"][1]["ticket_id"] == ticket_id
-    assert stored.json()["current_turn"]["status"] == "FAILED"
+    assert stored.json()["current_turn"]["status"] == "FAILED_TERMINAL"
     assert stored.json()["current_workflow_state"] == "NEEDS_HUMAN"
 
     takeover = client.post(
@@ -1191,7 +1191,12 @@ def test_assigned_agent_can_send_manual_reply_and_resolve(
     )
     assert next_turn.status_code == 202
     assert next_turn.json()["current_ticket_id"] == ticket_id
-    assert next_turn.json()["current_turn"]["status"] == "RUNNING"
+    # The response is rendered before the queued worker runs, so the new turn
+    # is either still queued or already claimed.
+    assert next_turn.json()["current_turn"]["status"] in {
+        "PENDING",
+        "RUNNING",
+    }
 
 
 def test_completed_conversation_reroutes_new_question_and_keeps_history(
@@ -1797,3 +1802,55 @@ def test_streaming_small_talk_returns_start_and_done_without_deltas(
         "BUYER",
         "ASSISTANT",
     ]
+
+
+def test_first_message_after_takeover_creates_a_human_owned_ticket(
+    client: TestClient,
+) -> None:
+    conversation = client.post(
+        "/api/v1/customer-service/conversations",
+        headers=AGENT,
+        json={
+            "business_unit_id": "bu_demo",
+            "requester_ref": "taken-over-before-first-message",
+        },
+    )
+    assert conversation.status_code == 201, conversation.text
+    conversation_id = conversation.json()["id"]
+
+    # The operator takes the conversation before the buyer has said anything,
+    # so there is no ticket to move yet.
+    takeover = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/takeover",
+        headers=AGENT,
+        json={"expected_version": conversation.json()["version"]},
+    )
+    assert takeover.status_code == 200, takeover.text
+    assert takeover.json()["current_ticket_id"] is None
+
+    accepted = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/messages",
+        headers=AGENT,
+        json={"content": "保温杯内胆是什么材质？"},
+    )
+    assert accepted.status_code == 202, accepted.text
+    view = accepted.json()
+    assert view["current_turn"]["status"] == "NEEDS_HUMAN"
+    ticket_id = view["current_ticket_id"]
+    assert ticket_id is not None
+
+    ticket = client.get(f"/api/v1/tickets/{ticket_id}", headers=AGENT)
+    assert ticket.status_code == 200, ticket.text
+    assert ticket.json()["workflow_state"] == "NEEDS_HUMAN"
+    assert ticket.json()["status"] == "WAITING_HUMAN"
+    assert ticket.json()["needs_human"] is True
+
+    # The workbench reply is accepted, which is the point of the ticket state.
+    reply = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}"
+        "/manual-replies",
+        headers=AGENT,
+        json={"content": "内胆为 316 不锈钢。", "resolve": True},
+    )
+    assert reply.status_code == 201, reply.text
+    assert reply.json()["assigned_agent_id"] is None

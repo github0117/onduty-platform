@@ -33,9 +33,9 @@ from ticket_agent.digital_employees.schemas import (
     DigitalEmployeeFromTemplateCreate,
 )
 from ticket_agent.digital_employees.service import (
-    SUPPORTED_WORKFLOW_KEYS,
     DigitalEmployeeService,
 )
+from ticket_agent.domains.registry import is_workflow_registered
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.workforce.service import WorkforceTaskService
@@ -599,7 +599,7 @@ class DigitalEmployeeDraftService:
         *,
         actor_id: str,
     ) -> DigitalEmployee:
-        if draft.workflow_key not in SUPPORTED_WORKFLOW_KEYS:
+        if not is_workflow_registered(draft.workflow_key):
             raise ApiProblem(
                 status_code=422,
                 code="UNSUPPORTED_WORKFLOW",

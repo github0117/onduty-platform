@@ -11,6 +11,7 @@ from ticket_agent.knowledge.models import (
     KnowledgeEvaluationCase,
     KnowledgeEvaluationRun,
     KnowledgeFeedback,
+    KnowledgeGapOccurrence,
     KnowledgeRepairTask,
 )
 from ticket_agent.knowledge.schemas import (
@@ -148,6 +149,56 @@ class KnowledgeRepairService:
         self.session.refresh(task)
         return task
 
+    def ensure_from_runtime_gap(
+        self,
+        *,
+        business_unit_id: str,
+        normalized_query: str,
+        created_by: str = "digital_employee.runtime",
+    ) -> KnowledgeRepairTask:
+        """Open (or reuse) the repair task for a repeated runtime gap.
+
+        Does not commit: the caller owns the turn transaction. The advisory
+        lock serializes concurrent turns that reach the threshold together, so
+        the second one reuses the row the first one created.
+        """
+        self._lock_dedup_key(
+            repair_dedup_key(
+                business_unit_id=business_unit_id,
+                knowledge_space_id=None,
+                query=normalized_query,
+            )
+        )
+        existing = self._find_reusable(
+            business_unit_id=business_unit_id,
+            knowledge_space_id=None,
+            normalized_query=normalized_query,
+        )
+        if existing is not None:
+            if existing.status == "CLOSED":
+                existing.status = "OPEN"
+                existing.resolved_at = None
+                existing.resolution_note = (
+                    "同一问题在会话中再次出现，已自动重新打开。"
+                )
+            existing.query = normalized_query
+            self.session.flush()
+            return existing
+        task = KnowledgeRepairTask(
+            business_unit_id=business_unit_id,
+            knowledge_space_id=None,
+            status="OPEN",
+            priority="P2",
+            title=f"运行时知识缺口：{normalized_query[:120]}",
+            query=normalized_query,
+            expected_titles_json=[],
+            returned_titles_json=[],
+            created_by=created_by,
+        )
+        self.session.add(task)
+        self.session.flush()
+        return task
+
     def _lock_dedup_key(self, key: str) -> None:
         """Serialize repair task creation for the same dedup key.
 
@@ -234,6 +285,7 @@ class KnowledgeRepairService:
         status_rank = {"IN_REPAIR": 0, "OPEN": 1, "VERIFIED": 2, "CLOSED": 3}
         task_ids = [task.id for task in tasks]
         feedback_counts: dict[UUID, int] = {}
+        gap_counts: dict[UUID, int] = {}
         if task_ids:
             rows = self.session.execute(
                 select(
@@ -246,6 +298,19 @@ class KnowledgeRepairService:
             for task_id, count in rows:
                 if task_id is not None:
                     feedback_counts[task_id] = int(count)
+            # A runtime gap task is supported by the occurrences that crossed
+            # the threshold, not by user feedback: show that evidence.
+            gap_rows = self.session.execute(
+                select(
+                    KnowledgeGapOccurrence.repair_task_id,
+                    func.count(KnowledgeGapOccurrence.id),
+                )
+                .where(KnowledgeGapOccurrence.repair_task_id.in_(task_ids))
+                .group_by(KnowledgeGapOccurrence.repair_task_id)
+            ).all()
+            for task_id, count in gap_rows:
+                if task_id is not None:
+                    gap_counts[task_id] = int(count)
         selected: list[tuple[KnowledgeRepairTask, int]] = []
         for group in grouped.values():
             canonical = sorted(
@@ -256,7 +321,9 @@ class KnowledgeRepairService:
                 ),
             )[0]
             occurrence_count = sum(
-                int(feedback_counts.get(task.id, 0)) for task in group
+                int(feedback_counts.get(task.id, 0))
+                + int(gap_counts.get(task.id, 0))
+                for task in group
             )
             selected.append(
                 (canonical, occurrence_count or len(group))

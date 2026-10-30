@@ -8,6 +8,7 @@ from ticket_agent.agent_skills import models as agent_skill_models  # noqa: F401
 from ticket_agent.business_entries import (  # noqa: F401
     models as business_entry_models,
 )
+from ticket_agent.connectors import models as connector_models  # noqa: F401
 from ticket_agent.customer_service import (  # noqa: F401
     models as customer_service_models,
 )

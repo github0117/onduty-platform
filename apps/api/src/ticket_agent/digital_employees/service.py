@@ -29,6 +29,10 @@ from ticket_agent.digital_employees.schemas import (
     DigitalEmployeeUpdate,
     DigitalEmployeeView,
 )
+from ticket_agent.domains.registry import (
+    domain_for_workflow,
+    is_workflow_registered,
+)
 from ticket_agent.knowledge.models import (
     DigitalEmployeeKnowledgeBinding,
     KnowledgeSpace,
@@ -41,10 +45,6 @@ from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 
 DEFAULT_EMPLOYEE_KEY = "customer_service_ticket_v1"
-SUPPORTED_WORKFLOW_KEYS = {
-    "customer_service_ticket_v1",
-    "hr_onboarding_document_collection_v1",
-}
 
 
 @dataclass(frozen=True)
@@ -1651,7 +1651,7 @@ class DigitalEmployeeService:
 
     @staticmethod
     def _validate_workflow(workflow_key: str) -> None:
-        if workflow_key not in SUPPORTED_WORKFLOW_KEYS:
+        if not is_workflow_registered(workflow_key):
             raise ApiProblem(
                 status_code=422,
                 code="UNSUPPORTED_WORKFLOW",
@@ -1818,11 +1818,17 @@ def _activation_check(
 
 
 def _domain_for_workflow(workflow_key: str) -> str:
-    return (
-        "human_resources"
-        if workflow_key.startswith("hr_")
-        else "customer_service"
-    )
+    domain = domain_for_workflow(workflow_key)
+    if domain is None:
+        # Callers validate the workflow first; this only happens if that
+        # guard is bypassed, and it must not silently pick a domain.
+        raise ApiProblem(
+            status_code=422,
+            code="UNSUPPORTED_WORKFLOW",
+            title="Unsupported workflow",
+            detail=f"Workflow '{workflow_key}' is not registered.",
+        )
+    return domain
 
 
 def _revision_status(employee: DigitalEmployee) -> str:

@@ -17,6 +17,7 @@ from ticket_agent.digital_employees.service import (
     DigitalEmployeeService,
 )
 from ticket_agent.knowledge.local_embedding import tokenize_text
+from ticket_agent.shared.settings import get_settings
 
 ROUTE_AMBIGUITY_MARGIN = 0.06
 ROUTE_MIN_SCORE = 0.32
@@ -49,9 +50,53 @@ _CONCEPT_GROUPS = (
 
 
 @dataclass(frozen=True)
+class RerouteAssessment:
+    """Evidence for keeping a conversation with its current employee.
+
+    The router reports scores; it does not switch the conversation. Whether a
+    conversation actually moves is decided by the runtime, which also knows
+    the sustained-topic and cooldown history.
+    """
+
+    current_employee_id: UUID
+    current_score: float
+    candidate_employee_id: UUID | None
+    candidate_score: float
+    margin: float
+    margin_met: bool
+    capability_gap: bool
+    strong_gap: bool
+
+
+@dataclass(frozen=True)
 class EmployeeRouteResult:
     employee: DigitalEmployee
     decision: DigitalEmployeeRouteDecision | None
+    # Present only when the caller said who currently owns the conversation.
+    assessment: RerouteAssessment | None = None
+
+
+# A buyer asking for another department explicitly. Kept deliberately narrow:
+# broad words such as "换" or "人工" appear in ordinary complaints and would
+# make the router jump on every annoyed message.
+EXPLICIT_EMPLOYEE_REQUEST_TERMS: tuple[str, ...] = (
+    "转接",
+    "换个客服",
+    "换一个客服",
+    "换个人",
+    "找你们",
+    "叫你们",
+    "转售后",
+    "转财务",
+    "转研发",
+    "转hr",
+)
+
+
+def explicit_employee_request(text: str) -> bool:
+    """True when the buyer explicitly asked for another department."""
+    lowered = text.casefold()
+    return any(term in lowered for term in EXPLICIT_EMPLOYEE_REQUEST_TERMS)
 
 
 class DigitalEmployeeRouter:
@@ -66,8 +111,16 @@ class DigitalEmployeeRouter:
         body: str,
         channel: str,
         allowed_employee_ids: set[UUID] | None = None,
+        current_employee_id: UUID | None = None,
         persist_decision: bool = True,
     ) -> EmployeeRouteResult:
+        """Pick the employee for one message.
+
+        Without ``current_employee_id`` this is the open-time decision: the
+        best candidate wins. With it, the router additionally reports how the
+        current employee compares, because a conversation should not change
+        hands on a single ambiguous message.
+        """
         subject_text = subject.casefold()
         body_text = body.casefold()
         statement = (
@@ -291,11 +344,37 @@ class DigitalEmployeeRouter:
                 )
                 confidence = 0.2
                 second = None
+        assessment: RerouteAssessment | None = None
+        if current_employee_id is not None:
+            assessment = _assess_reroute(
+                candidates=candidates,
+                eligible=eligible,
+                current_employee_id=current_employee_id,
+            )
+            # Only a clear capability gap moves the proposal away from the
+            # current employee; everything else is decided by the runtime.
+            proposed_id = (
+                assessment.candidate_employee_id
+                if assessment.margin_met and assessment.capability_gap
+                else current_employee_id
+            )
+            proposed = next(
+                (
+                    item
+                    for item in candidates
+                    if item["employee_id"] == str(proposed_id)
+                ),
+                None,
+            )
+            if proposed is not None and bool(proposed["eligible"]):
+                winner = proposed
+                confidence, second = _route_confidence(eligible)
+
         winner_score = float(winner["score"])
         second_score = (
             float(second["score"]) if second is not None else None
         )
-        ambiguous = (
+        ambiguous = assessment is None and (
             not low_confidence
             and not bool(winner["fallback"])
             and second is not None
@@ -373,7 +452,73 @@ class DigitalEmployeeRouter:
         if persist_decision:
             self.session.add(decision)
             self.session.flush()
-        return EmployeeRouteResult(employee=selected, decision=decision)
+        return EmployeeRouteResult(
+            employee=selected,
+            decision=decision,
+            assessment=assessment,
+        )
+
+
+def _assess_reroute(
+    *,
+    candidates: list[dict[str, Any]],
+    eligible: list[dict[str, Any]],
+    current_employee_id: UUID,
+) -> RerouteAssessment:
+    """Compare the current employee with the best eligible alternative."""
+    current_id = str(current_employee_id)
+    current = next(
+        (item for item in candidates if item["employee_id"] == current_id),
+        None,
+    )
+    current_score = float(current["score"]) if current is not None else 0.0
+    alternatives = [
+        item
+        for item in eligible
+        if item["employee_id"] != current_id
+        and not bool(item["fallback"])
+        and float(item["score"]) > 0
+    ]
+    alternative = (
+        max(alternatives, key=lambda item: float(item["score"]))
+        if alternatives
+        else None
+    )
+    candidate_score = float(alternative["score"]) if alternative else 0.0
+    margin = round(candidate_score - current_score, 4)
+    capability_gap = (
+        alternative is not None
+        and _is_specific_match(alternative)
+        and not _is_specific_match(current)
+    )
+    settings = get_settings()
+    return RerouteAssessment(
+        current_employee_id=current_employee_id,
+        current_score=current_score,
+        candidate_employee_id=(
+            UUID(str(alternative["employee_id"])) if alternative else None
+        ),
+        candidate_score=candidate_score,
+        margin=margin,
+        margin_met=(
+            alternative is not None
+            and candidate_score >= ROUTE_MIN_SCORE
+            and margin >= settings.conversation_reroute_margin
+        ),
+        capability_gap=capability_gap,
+        strong_gap=(
+            capability_gap
+            and margin >= settings.conversation_reroute_strong_margin
+        ),
+    )
+
+
+def _is_specific_match(candidate: dict[str, Any] | None) -> bool:
+    if candidate is None:
+        return False
+    return bool(candidate["matched_intents"]) or float(
+        candidate["semantic_score"]
+    ) >= ROUTE_SEMANTIC_THRESHOLD
 
 
 def explicit_intent_owners(

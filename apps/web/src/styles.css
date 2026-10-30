@@ -416,6 +416,10 @@ body {
   padding-bottom: 8px;
 }
 
+.turn-row-active > td {
+  background: #eef6ff !important;
+}
+
 .trace-time {
   display: block;
   margin-top: 4px;
@@ -627,11 +631,20 @@ body {
   padding: 14px 18px;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 18px;
   border-bottom: 1px solid #e7ecef;
   background:
     radial-gradient(circle at 90% 0%, rgba(23, 162, 168, 0.16), transparent 38%),
     #f7fbfb;
+}
+
+/* The tag row and the handoff controls grow with the employee list; let them
+   shrink and wrap instead of being clipped by the card. */
+.chat-window-header > .ant-space:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: flex-end;
 }
 
 .chat-avatar,

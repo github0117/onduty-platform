@@ -27,22 +27,33 @@ import {
   getCustomerValueMetrics,
   getDemoResetStatus,
   getModelMetrics,
+  getOperationalTurns,
   getRagMetrics,
+  getRuntimeHealth,
   getSyncMetrics,
   getToolCalls,
   getToolMetrics,
   getWorkforceMetrics,
   listMcpConnectors,
   resetDemoData,
+  retryCustomerConversationTurn,
 } from "./api";
 import { useAuth } from "./auth";
 import { message } from "./feedback";
-import type { AgentRun, ToolCall, ToolMetricItem } from "./types";
+import type {
+  AgentRun,
+  OperationalTurn,
+  ToolCall,
+  ToolMetricItem,
+} from "./types";
 import {
   draftStateLabels,
   eventStatusLabels,
   eventTypeLabels,
+  gateDecisionLabels,
   groundingStatusLabels,
+  localizedLabel,
+  turnStatusLabels,
 } from "./statusLabels";
 
 const { Paragraph, Text, Title } = Typography;
@@ -85,10 +96,13 @@ export default function OperationsPage() {
   const [resetOpen, setResetOpen] = useState(false);
   const [resetJobId, setResetJobId] = useState<string | null>(null);
   const [valueDays, setValueDays] = useState(30);
+  const [healthHours, setHealthHours] = useState(24);
+  const [turnStatusFilter, setTurnStatusFilter] = useState("");
   const { me, hasCapability, activeBusinessUnitLabel } = useAuth();
   const canResetDemo =
     hasCapability("demo.reset") && me.features.demo_reset.enabled;
   const canViewMcpConnectors = hasCapability("mcp.connectors.view");
+  const canViewRuntime = hasCapability("service.admin");
   const tools = useQuery({ queryKey: ["metrics", "tools"], queryFn: getToolMetrics });
   const calls = useQuery({ queryKey: ["tool-calls"], queryFn: () => getToolCalls(80) });
   const runs = useQuery({
@@ -114,6 +128,33 @@ export default function OperationsPage() {
     queryKey: ["operations-mcp-connectors"],
     queryFn: listMcpConnectors,
     enabled: canViewMcpConnectors,
+  });
+  const runtimeHealth = useQuery({
+    queryKey: ["runtime-health", healthHours],
+    queryFn: () => getRuntimeHealth(healthHours),
+    enabled: canViewRuntime,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+  });
+  const operationalTurns = useQuery({
+    queryKey: ["operational-turns", turnStatusFilter],
+    queryFn: () => getOperationalTurns(turnStatusFilter || undefined),
+    enabled: canViewRuntime,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
+  });
+  const retryTurn = useMutation({
+    mutationFn: (turnId: string) => retryCustomerConversationTurn(turnId),
+    onSuccess: () => {
+      message.success("已重新排队，数字员工会再次处理这一轮");
+      queryClient
+        .invalidateQueries({ queryKey: ["operational-turns"] })
+        .catch(() => undefined);
+      queryClient
+        .invalidateQueries({ queryKey: ["runtime-health"] })
+        .catch(() => undefined);
+    },
+    onError: (error: Error) => message.error(error.message),
   });
   const trace = useQuery({
     queryKey: ["agent-trace", selectedRun?.id],
@@ -292,6 +333,112 @@ export default function OperationsPage() {
     },
   ];
 
+  const turnColumns: ColumnsType<OperationalTurn> = [
+    {
+      title: "轮次",
+      dataIndex: "sequence",
+      width: 64,
+      render: (value: number) => `#${value}`,
+    },
+    {
+      title: "会话",
+      dataIndex: "requester_ref",
+      render: (value: string, turn) => (
+        <Space direction="vertical" size={0}>
+          <Text>{value}</Text>
+          <Text type="secondary">
+            {turn.conversation_id.slice(0, 8)}
+          </Text>
+        </Space>
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 110,
+      render: (value: string) => (
+        <Tag
+          color={
+            value === "COMPLETED"
+              ? "green"
+              : value === "RUNNING"
+                ? "blue"
+                : value === "PENDING"
+                  ? "gold"
+                  : value === "NEEDS_HUMAN"
+                    ? "orange"
+                    : "red"
+          }
+        >
+          {localizedLabel(turnStatusLabels, value, value)}
+        </Tag>
+      ),
+    },
+    { title: "阶段", dataIndex: "stage_label" },
+    {
+      title: "门禁",
+      dataIndex: "gate_decision",
+      width: 105,
+      render: (value: string | null) =>
+        value ? (
+          <Tag color={value === "AUTO_SEND" ? "green" : "gold"}>
+            {localizedLabel(gateDecisionLabels, value, value)}
+          </Tag>
+        ) : (
+          <Text type="secondary">-</Text>
+        ),
+    },
+    {
+      title: "关联 ID",
+      dataIndex: "correlation_id",
+      width: 110,
+      render: (value: string | null) =>
+        value ? <Text code>{value.slice(0, 8)}</Text> : "-",
+    },
+    {
+      title: "尝试",
+      dataIndex: "attempt_count",
+      width: 70,
+    },
+    {
+      title: "错误",
+      dataIndex: "error_code",
+      width: 160,
+      render: (value: string | null, turn) =>
+        value ? (
+          <Text type="danger" title={turn.error_message ?? ""}>
+            {value}
+          </Text>
+        ) : (
+          "-"
+        ),
+    },
+    {
+      title: "更新时间",
+      dataIndex: "updated_at",
+      width: 170,
+      render: time,
+    },
+    {
+      title: "操作",
+      width: 90,
+      render: (_, turn) =>
+        turn.status === "FAILED_RETRYABLE" ? (
+          <Button
+            size="small"
+            loading={
+              retryTurn.isPending && retryTurn.variables === turn.id
+            }
+            onClick={() => retryTurn.mutate(turn.id)}
+          >
+            重试
+          </Button>
+        ) : (
+          <Text type="secondary">-</Text>
+        ),
+    },
+  ];
+
   const modelColumns: ColumnsType<
     NonNullable<typeof models.data>["by_purpose"][number]
   > = [
@@ -390,6 +537,139 @@ export default function OperationsPage() {
           </Col>
         ))}
       </Row>
+
+      {canViewRuntime && (
+        <>
+          <Card
+            className="section-card"
+            title="会话运行时健康"
+            loading={runtimeHealth.isLoading}
+            extra={
+              <Select
+                size="small"
+                value={healthHours}
+                onChange={setHealthHours}
+                options={[
+                  { value: 24, label: "近 24 小时" },
+                  { value: 72, label: "近 3 天" },
+                  { value: 168, label: "近 7 天" },
+                ]}
+                style={{ width: 120 }}
+                aria-label="运行时统计窗口"
+              />
+            }
+          >
+            {runtimeHealth.isError ? (
+              <Alert
+                type="error"
+                showIcon
+                message="运行时健康数据加载失败"
+                description={(runtimeHealth.error as Error).message}
+              />
+            ) : (
+              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <Row gutter={[16, 16]}>
+                  {[
+                    ["轮次总数", runtimeHealth.data?.turn_count ?? 0, ""],
+                    ["自动发送率", rateText(runtimeHealth.data?.auto_send_rate), ""],
+                    ["未核验率", rateText(runtimeHealth.data?.unverified_rate), ""],
+                    ["交接率", rateText(runtimeHealth.data?.handoff_rate), ""],
+                    ["卡住轮次", runtimeHealth.data?.stuck_turn_count ?? 0, "个"],
+                  ].map(([title, value, suffix]) => (
+                    <Col xs={12} md={8} xl={4} key={String(title)}>
+                      <Statistic title={title} value={value} suffix={suffix} />
+                    </Col>
+                  ))}
+                </Row>
+                <Space wrap>
+                  <Tag color="green">
+                    自动发送 {runtimeHealth.data?.auto_send_count ?? 0}
+                  </Tag>
+                  <Tag color="gold">
+                    人工复核 {runtimeHealth.data?.human_review_count ?? 0}
+                  </Tag>
+                  <Tag color="red">
+                    阻断 {runtimeHealth.data?.blocked_count ?? 0}
+                  </Tag>
+                  <Tag color="blue">
+                    已完成 {runtimeHealth.data?.completed_count ?? 0}
+                  </Tag>
+                  <Tag color="orange">
+                    等待人工 {runtimeHealth.data?.needs_human_count ?? 0}
+                  </Tag>
+                  <Tag color="red">
+                    失败 {runtimeHealth.data?.failed_count ?? 0}
+                  </Tag>
+                  <Tag>已取消 {runtimeHealth.data?.cancelled_count ?? 0}</Tag>
+                  {(runtimeHealth.data?.stuck_turn_count ?? 0) > 0 && (
+                    <Tag color="volcano">
+                      存在超过租约仍停留在排队或处理中的轮次
+                    </Tag>
+                  )}
+                </Space>
+                <div>
+                  <Text strong>知识缺口 Top 5</Text>
+                  {(runtimeHealth.data?.top_gaps.length ?? 0) === 0 ? (
+                    <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                      当前窗口没有登记知识缺口。
+                    </Paragraph>
+                  ) : (
+                    <Space direction="vertical" size={2}>
+                      {runtimeHealth.data?.top_gaps.map((gap) => (
+                        <Text key={gap.query}>
+                          「{gap.query}」出现 {gap.occurrence_count} 次
+                          {gap.repair_task_id ? " · 已开修复任务" : ""}
+                        </Text>
+                      ))}
+                    </Space>
+                  )}
+                </div>
+              </Space>
+            )}
+          </Card>
+
+          <Card
+            className="section-card"
+            title="运行队列"
+            extra={
+              <Select
+                size="small"
+                value={turnStatusFilter}
+                onChange={setTurnStatusFilter}
+                options={[
+                  { value: "", label: "全部状态" },
+                  ...Object.entries(turnStatusLabels).map(([key, label]) => ({
+                    value: key,
+                    label,
+                  })),
+                ]}
+                style={{ width: 150 }}
+                aria-label="轮次状态筛选"
+              />
+            }
+          >
+            {operationalTurns.isError && (
+              <Alert
+                type="error"
+                showIcon
+                message="运行队列加载失败"
+                description={(operationalTurns.error as Error).message}
+                style={{ marginBottom: 12 }}
+              />
+            )}
+            <Table
+              rowKey="id"
+              size="small"
+              columns={turnColumns}
+              dataSource={operationalTurns.data?.items}
+              loading={operationalTurns.isLoading}
+              pagination={{ pageSize: 10, showSizeChanger: false }}
+              scroll={{ x: 1100 }}
+              locale={{ emptyText: <Empty description="当前没有轮次" /> }}
+            />
+          </Card>
+        </>
+      )}
 
       <Card
         className="section-card"

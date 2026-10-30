@@ -109,6 +109,69 @@
 - 自动回复受置信度、敏感动作、工具权限和策略审批共同约束；模型 fallback、
   引用声明未校验或校验不通过时一律转人工。
 - 客服会话沙盒支持提问、引用、人工改写、点踩和自动修复任务。
+- 每轮对话是独立的运行时事务：`conversation_turns` 带 `correlation_id`、
+  乐观锁 `version`、`attempt_count` 和 worker 租约，状态只能沿合法边迁移，
+  非法跳转返回 `409 INVALID_TURN_TRANSITION`；每次迁移写入
+  `conversation_turn_events`，可通过
+  `GET /api/v1/customer-service/conversations/{conversation_id}/turns/{turn_id}/events`
+  查看这一轮从排队、认领、上下文组装到完成/失败的全过程。
+- 租约过期的轮次由 Celery Beat 每 30 秒回收并重新派发，超过
+  `CONVERSATION_TURN_MAX_ATTEMPTS` 标记 `FAILED_TERMINAL`；运维也可调用
+  `POST /api/v1/customer-service/turns/reclaim` 手动触发（需要
+  `operations.manage`）。
+- 多轮上下文按固定顺序装配：会话记忆 → 最近一次交接摘要 → 预算内的消息窗口 →
+  当前消息。装配结果写入 `conversation_turns.context_json` 并附在
+  `CONTEXT_ASSEMBLED` 事件里，可核对这一轮到底看到了哪几条、是否被截断；
+  消息窗口按“买家／客服（员工名）”标注，`customer_messages.turn_id` 指向产生
+  该条消息的轮次。
+- 会话记忆是结构化 v2（`facts` 带 `source_turn_id`、待办、承诺、悬而未决的问题、
+  滚动摘要与 `summarized_through_sequence`）；读到旧 v1 记忆时惰性升级并回写，
+  升级不改变历史内容。
+- 同一会话的轮次串行执行：后到的轮次保持 `PENDING` 且持有效租约，等上一轮结束
+  后自动接力；客户端可传 `client_message_id`，同键重复提交返回原轮次并标记
+  `replayed=true`，不会写出第二条买家消息。两条消息在同一瞬间到达时，只有一次
+  建单（`TicketService.create(commit=False)` 让会话行锁贯穿整个请求），两条消息
+  各自成为一个轮次。
+- 上下文窗口是因果的：只取“本消息之前”的消息。买家在上一轮还没答完时又发了下一条，
+  那条不会提前出现在上一轮的上下文里。
+- 回放与运营：工作台“运行回放”抽屉列出会话每一轮的状态、阶段、门禁与事件
+  时间线（`GET .../turns`、`.../turns/{turn_id}`，事件接口
+  `.../turns/{turn_id}/events` 支持 `after_sequence` 分页），并显示冻结的
+  上下文 / Skill / 完成度快照与交接记录。运营页展示运行时健康
+  （`GET /api/v1/operations/runtime-health`：自动发送率、未核验率、交接率、
+  卡死轮次、知识缺口 Top 5）与运行队列（`GET /api/v1/operations/turns`，
+  支持状态筛选）；`FAILED_RETRYABLE` 轮次可由管理员重试
+  （`POST /api/v1/customer-service/turns/{turn_id}/retry`，202，仅重试
+  可重试轮次）。
+- 人工接管期间数字员工不插话：接管取消排队/执行中的轮次，买家新消息只生成
+  `NEEDS_HUMAN` 轮次（工单 `WAITING_HUMAN`）；先接管、买家后发言时，第一条
+  消息新建的工单同样进入 `NEEDS_HUMAN`，人工可直接在工作台回复。人工回复并
+  交还后写入 `HUMAN_RETURN` 交接，数字员工恢复接待，人工消息在上下文里标注为
+  “客服（人工）”。
+- 接管与在途轮次的锁竞争：两者会互相等待对方的行锁，PostgreSQL 以死锁
+  （SQLSTATE 40P01）中止其中一方。被中止的接管在全新事务里重试（最多 3 次，
+  重新校验版本）；被中止的 worker 轮次回滚后释放租约，从 `RUNNING` 恢复，
+  买家既不会看到 500，也不会遇到长时间卡住的轮次。同一条有界重试也覆盖
+  买家发言、人工切换员工、人工回复和租约回收：这几条写入路径都会在同一轮次
+  上追加事件，被中止的事务什么都还没写，重试是安全的。
+- 轮次事件序号单一写入：`conversation_turn_events` 的 `sequence` 在轮次行锁
+  内计算（先锁轮次行，再取 `max(sequence)+1`）。worker 与主管交接、人工回复
+  同时写同一轮次时，后到者等行锁而不是算出同一个序号。缺少这把锁时会撞
+  `uq_conversation_turn_event_sequence`：worker 后台任务崩溃、轮次卡在
+  `RUNNING` 直到租约回收才变成 `FAILED_TERMINAL`。
+- 员工交接落库到 `conversation_handoffs`（自动改路由 `AUTO_REROUTE` /
+  人工切换 `OPERATOR_SWITCH` / 人工接管 `HUMAN_TAKEOVER` / 人工交还
+  `HUMAN_RETURN`），含确定性摘要（确认事实、待办、承诺、上一轮回答
+  与引用、未确认项），下一轮装配直接读取该摘要；主管可在客服会话页选择员工并
+  点“交接”（`POST /api/v1/customer-service/conversations/{conversation_id}/employee`，
+  需要 `operations.manage`），成功后消息上方出现“由 A 交接给 B”横幅。
+  交接目标必须是同一业务单元、同一领域的在岗员工：跨单元 400
+  `HANDOFF_EMPLOYEE_UNIT_MISMATCH`，跨领域 409 `EMPLOYEE_DOMAIN_MISMATCH`
+  （客服会话不能交给 HR 或运营员工）。
+- 答案依据判定统一走 `grounding_status_from_claims`：只有所有被引用声明都
+  校验为 `supported` 才标记 `GROUNDED`；MCP 只读工具结果以
+  `direct_tool_result` 计为已支持，抽取式知识回答必须通过声明校验器，未校验
+  一律 `UNVERIFIED`。
 - 工作台可从会话自动识别订单，展示客户、物流、售后和收货地址上下文。
 - 收货地址修改走 R2 人工审批，支持重复申请幂等、超时结果未知和只读对账；
   沙箱提供正常、超时和明确拒绝三种模式。
@@ -158,6 +221,21 @@
 ## MCP 工具与审批闭环
 
 - Skill 支持数据库配置、版本更新、启停和员工绑定，LangGraph 运行时动态读取。
+- Skill 可配置版本化执行契约（步骤、证据前缀、完成条件、必填工具、禁止动作、
+  升级条件、回答格式）；缺必填步骤的轮次转人工，工单不会自动 `COMPLETED`。
+- 每轮冻结 Skill 契约与完成度快照（`SKILL_SELECTED` /
+  `COMPLETION_EVALUATED` 事件）；之后编辑 Skill 不改写历史轮次。
+- 未命中任何触发词时使用 `customer-service-general` 宽松 Skill，不再默认
+  套用员工的第一条绑定 Skill；旧的无契约 Skill 继续按宽松模式运行。
+- 每轮评估准确性三态门禁（`AUTO_SEND` / `HUMAN_REVIEW` / `BLOCK`）：
+  未核验、未支撑 claim、政策无引用、数字无依据、Skill 未完成、高风险、
+  待人工或需审批都不会自动发送；门禁结果与原因随轮次持久化并记录
+  `GATE_EVALUATED`，工单自动解决也要求 `AUTO_SEND`。
+- 连接器自动回信只发送通过 `AUTO_SEND` 的轮次；寒暄会显式记录
+  `NOT_REQUIRED` 门禁后回复。
+- 同一无知识问题重复出现会累积为知识缺口，达到阈值自动开一张
+  `运行时知识缺口：…` 修复任务，后续出现挂到同一任务，修复任务列表显示
+  缺口次数。
 - MCP 连接器支持注册、Streamable HTTP 健康检查、真实工具发现和员工级授权。
 - 已真实验证公开 DeepWiki MCP：发现 3 个只读工具，并成功查询
   `modelcontextprotocol/python-sdk` 的仓库文档结构；该能力用于研发支持员工，
@@ -190,6 +268,30 @@
 - 补偿动作必须使用 `reverse` 或 `compensate` 工具，并创建新的管理员审批。
 - 补偿成功后才允许把“已执行但结果错误”的事故关闭。
 - 客服页面提供 MCP 写操作审批列表、审计参数、审批意见和执行结果。
+
+## 外部连接中心（邮件渠道与只读业务系统）
+
+- 统一的连接器注册表：`connector_type=email` 或 `http_json`，方向支持
+  `INBOUND` / `OUTBOUND` / `BIDIRECTIONAL`，按业务单元隔离并带版本号。
+- 邮件渠道使用真实 IMAP 拉取未读邮件、SMTP 回信；按 `References → In-Reply-To →
+  Message-ID` 归并会话，出站 `Message-ID`、`In-Reply-To`、`References` 保持线程。
+- Celery Beat 每 60 秒轮询启用的邮件连接器；同一 `Message-ID` 由唯一约束
+  `(connector_id, external_message_id)` 保证只入库一次。
+- 入站消息先落库再处理，未绑定业务入口、连接器停用或方向不允许时保留失败记录并
+  返回明确错误，不会静默丢信。
+- 处理成功的邮件会创建/复用客服会话、工单和对话轮次；只有数字员工回答完成且工单
+  完成时才自动回信，出站回复通过 Outbox 重试，失败保留错误并支持人工重试。
+- 人工客服在会话工作台发送的回复会自动桥接到邮件连接器（幂等键按会话与回复序号
+  生成），外部会话与站内会话共用同一套工单和审计。
+- 只读 HTTP JSON 连接器支持健康检查与 GET 查询，4xx 明确拒绝、429/5xx 标记可重试；
+  写操作仍只走既有 MCP 审批链路。
+- Webhook 入站按 `X-Connector-Signature`（`sha256=<hex>` HMAC）验签，未配置或错误
+  签名分别返回 503/401；webhook 路由不依赖 OIDC，避免身份网关阻断签名流量。
+- 密钥只保存环境变量名（`secret_ref`），值从进程环境或 `CONNECTOR_SECRETS_JSON`
+  读取；创建/更新接口递归拒绝包含 `password`、`token`、`api_key` 等字段的配置。
+- 管理页面位于“员工与能力 · 外部连接（邮件 / MCP）”，支持列表、创建、启停、健康
+  检查、业务入口绑定、最近消息和失败重试；只读角色只能查看，写入口按
+  `mcp.connectors.write` 隐藏。
 
 ## 客服视图、工作台与服务席位
 
@@ -226,6 +328,19 @@
 ## 员工路由、主管编排与生命周期
 
 - 会话可以不指定数字员工，系统按关键词、同义词和本地语义相似度自动选择专业员工。
+- 员工归属是会话属性：后续消息默认由同一员工继续，单条相似消息不会换人；
+  改派需要明确要求、能力缺口、上一张工单完成或连续多轮同主题。
+- 自动改派受分数差、连续轮次、冷却轮次和单会话上限约束，原因码写入交接记录
+  （`EXPLICIT_REQUEST / CAPABILITY_GAP / TOPIC_CHANGED / SUSTAINED_TOPIC /
+  ENTRY_SCOPE_CHANGED`）。
+- 主管手动切换会锁定会话（`employee_source=MANUAL`），此入口路由不再覆盖。
+- 来自业务入口的会话，手动切换只能转给该入口内已启用的员工，否则返回
+  409 `HANDOFF_EMPLOYEE_OUTSIDE_ENTRY`；没有入口的会话仍按领域校验。
+- 领域包（`DOMAIN_PACKS_DIR`）声明领域与工作流：内置 `customer_service`、
+  `human_resources` 两个包，新增方向只需增加 TOML 文件并指向现有流程类，
+  员工创建时 `domain` 由工作流所属的包决定，不再按 key 前缀猜测。
+- 领域包在 API、Celery worker 和 beat 启动时完成校验：重复 key、未知字段、
+  handler 无法导入都会让进程启动失败，而不是落到第一张工单上。
 - 每次路由记录候选员工、主体/背景/同义词命中、关键词分、语义分、综合分、置信度、
   排除原因和最终选择；分数接近时提示人工确认，没有可靠命中时进入低置信度兜底。
 - 客服主管数字员工可把复杂目标拆成分步任务，并自动分配售后、物流、主管等员工。

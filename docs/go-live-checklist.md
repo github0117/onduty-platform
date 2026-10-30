@@ -59,6 +59,12 @@ migrate 服务现在依次执行：
 - [ ] 若 `EMBEDDING_API_KEY` 已配置：执行 `POST /api/v1/knowledge/reindex` 并确认
       任务 SUCCEEDED，页面提示不再是“本地哈希演示模式”
 - [ ] 若 `APP_AUTH_MODE=dev`：确认该环境仅供演示，不对外暴露
+- [ ] 外部连接：列表页可直接访问 `http://<host>:5173/employees/integrations`
+- [ ] 邮件连接器健康检查返回 HEALTHY；未配置 `secret_ref` 对应环境变量时明确报错
+- [ ] 用真实邮箱发送一封测试邮件，确认生成会话/工单/回答，且出站回复进入
+      `SENT`；重复同一 `Message-ID` 只产生一条入站记录
+- [ ] 只读 HTTP 连接器健康检查与查询成功；4xx 被拒绝、429/5xx 标记可重试
+- [ ] 未绑定业务入口的来信保留 `FAILED` 记录且页面可重试
 
 ## 4. 回滚
 
@@ -85,3 +91,8 @@ make stack-up
   演示默认值，生产部署必须替换（`preflight_check.sh` 会给出 WARN）。
 - 备份为单次全量 `pg_dump`，保存于 `backups/`（已忽略提交），默认保留最近 7 份；
   没有异地副本与定时任务，长期运行需接入外部备份系统。
+- 邮件连接的 IMAP 轮询由 Celery Beat 每 60 秒触发；未启动 worker/beat 时不会自动
+  收信，页面健康检查仍可用。真实企业邮箱的 TLS、认证方式、限流和退信处理需在试点
+  环境单独验收；本地仅用 GreenMail 验证协议链路。
+- 只读 HTTP JSON 连接器只支持 GET；写操作仍走 MCP 审批。尚未接入企业 ERP/CRM 的
+  真实鉴权与字段映射，`field_mapping` 目前只做透传存储。

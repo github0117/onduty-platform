@@ -111,6 +111,35 @@ export interface CustomerMessage {
   role: "BUYER" | "ASSISTANT";
   content: string;
   ticket_id: string | null;
+  turn_id: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ConversationHandoff {
+  id: string;
+  conversation_id: string;
+  from_turn_id: string | null;
+  to_turn_id: string | null;
+  from_employee_id: string | null;
+  to_employee_id: string | null;
+  from_employee_name: string | null;
+  to_employee_name: string | null;
+  kind: string;
+  reason_code: string;
+  summary: {
+    confirmed_facts?: { key: string; value: unknown }[];
+    open_actions?: { summary: string | null }[];
+    commitments?: { text: string | null }[];
+    last_answer?: {
+      turn_id: string | null;
+      text: string;
+      by?: string;
+    } | null;
+    pending_questions?: string[];
+    unverified?: string[];
+    operator_reason?: string;
+  };
   created_by: string;
   created_at: string;
 }
@@ -120,6 +149,8 @@ export interface CustomerConversation {
   business_unit_id: string;
   service_entry_id: string | null;
   employee_id: string | null;
+  employee_source: string;
+  employee_locked_at: string | null;
   requester_ref: string;
   category_name: string | null;
   category_profile_id: string | null;
@@ -136,8 +167,19 @@ export interface CustomerConversation {
   version: number;
   messages: CustomerMessage[];
   current_turn: ConversationTurn | null;
+  latest_handoff: ConversationHandoff | null;
+  replayed: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface AccuracyGate {
+  version: number;
+  decision: "AUTO_SEND" | "HUMAN_REVIEW" | "BLOCK";
+  path: string;
+  grounding_status: string;
+  reasons: string[];
+  checks: Record<string, unknown>;
 }
 
 export interface ConversationTurn {
@@ -149,11 +191,16 @@ export interface ConversationTurn {
   stage_label: string;
   employee_id: string | null;
   employee_config_revision: number | null;
+  correlation_id: string | null;
+  version: number;
+  attempt_count: number;
+  handoff_id?: string | null;
   intent: string | null;
   analysis: Record<string, unknown>;
   response_provider: string | null;
   response_model: string | null;
   grounding_status: string | null;
+  gate?: AccuracyGate | null;
   citations: Array<Record<string, unknown>>;
   trace: string[];
   tool_calls: Array<Record<string, unknown>>;
@@ -162,6 +209,98 @@ export interface ConversationTurn {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+}
+
+export interface ConversationTurnEvent {
+  id: string;
+  turn_id: string;
+  conversation_id: string;
+  sequence: number;
+  event_type: string;
+  status: string;
+  stage_label: string | null;
+  actor_type: string;
+  actor_id: string;
+  correlation_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ConversationTurnEventList {
+  conversation_id: string;
+  turn_id: string;
+  events: ConversationTurnEvent[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface ConversationTurnList {
+  items: ConversationTurn[];
+  total: number;
+}
+
+/** Turn plus the frozen inputs recorded for it; NULL means pre-runtime-v2. */
+export interface ConversationTurnDetail extends ConversationTurn {
+  context: Record<string, unknown> | null;
+  skill_code: string | null;
+  skill_version: number | null;
+  skill_snapshot: Record<string, unknown> | null;
+  completion: Record<string, unknown> | null;
+}
+
+export interface ConversationHandoffList {
+  items: ConversationHandoff[];
+  total: number;
+}
+
+export interface OperationalTurn {
+  id: string;
+  conversation_id: string;
+  ticket_id: string | null;
+  business_unit_id: string;
+  requester_ref: string;
+  sequence: number;
+  status: string;
+  stage_label: string;
+  correlation_id: string | null;
+  attempt_count: number;
+  gate_decision: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  lease_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationalTurnList {
+  items: OperationalTurn[];
+  total: number;
+}
+
+export interface RuntimeGapItem {
+  query: string;
+  occurrence_count: number;
+  repair_task_id: string | null;
+}
+
+export interface RuntimeHealth {
+  business_unit_id: string;
+  window_hours: number;
+  turn_count: number;
+  completed_count: number;
+  needs_human_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  auto_send_count: number;
+  human_review_count: number;
+  blocked_count: number;
+  unverified_count: number;
+  handoff_count: number;
+  stuck_turn_count: number;
+  auto_send_rate: number | null;
+  unverified_rate: number | null;
+  handoff_rate: number | null;
+  top_gaps: RuntimeGapItem[];
 }
 
 export interface BusinessServiceEntry {
@@ -255,6 +394,7 @@ export interface CustomerReplySuggestion {
   model: string;
   fallback_used: boolean;
   grounding_status: string;
+  gate?: AccuracyGate | null;
   citations: Array<{
     chunk_id: string;
     document_id: string;
@@ -854,6 +994,8 @@ export interface AgentSkill {
   instructions: string;
   triggers: string[];
   tools: string[];
+  definition: Record<string, unknown> | null;
+  definition_version: number;
   status: string;
   version: number;
   created_by: string;
@@ -1760,3 +1902,86 @@ export interface EcommerceListingDetail extends EcommerceListingItem {
   published_at: string | null;
 }
 
+
+export interface ExternalConnector {
+  id: string;
+  business_unit_id: string;
+  connector_key: string;
+  name: string;
+  connector_type: string;
+  direction: string;
+  status: string;
+  config: Record<string, unknown>;
+  field_mapping: Record<string, unknown>;
+  secret_ref: string | null;
+  secret_configured: boolean;
+  auto_reply_enabled: boolean;
+  version: number;
+  last_health_status: string | null;
+  last_health_at: string | null;
+  last_health_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalConnectorHealth {
+  connector_id: string;
+  healthy: boolean;
+  detail: string;
+  metadata: Record<string, unknown>;
+  checked_at: string;
+}
+
+export interface ExternalConnectorBinding {
+  id: string;
+  connector_id: string;
+  service_entry_id: string | null;
+  service_entry_name: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+  allowed_operations: string[];
+  write_approved: boolean;
+}
+
+export interface ExternalConnectorInboundMessage {
+  id: string;
+  connector_id: string;
+  external_message_id: string;
+  external_conversation_id: string;
+  external_user_id: string;
+  subject: string;
+  status: string;
+  attempt_count: number;
+  conversation_id: string | null;
+  ticket_id: string | null;
+  turn_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  processed_at: string | null;
+}
+
+export interface ExternalConnectorOutboundMessage {
+  id: string;
+  connector_id: string;
+  conversation_id: string | null;
+  recipient: string;
+  subject: string;
+  status: string;
+  attempt_count: number;
+  external_message_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface ExternalConnectorMessages {
+  inbound: ExternalConnectorInboundMessage[];
+  outbound: ExternalConnectorOutboundMessage[];
+}
+
+export interface ExternalConnectorQueryResult {
+  connector_id: string;
+  status_code: number;
+  data: unknown;
+}

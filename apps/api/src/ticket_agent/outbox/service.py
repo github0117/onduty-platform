@@ -150,6 +150,24 @@ def dispatch_outbox_event(event_id: UUID) -> DispatchResult:
                     args=[batch_job_id, correlation_id, str(event_id)],
                     task_id=f"ecommerce-listing-batch:{event_id}",
                 )
+        elif event_type == "connector.outbound.send":
+            outbound_message_id = payload["outbound_message_id"]
+            from ticket_agent.connectors.outbound import (
+                deliver_outbound_message,
+            )
+
+            deliver_outbound_message(UUID(outbound_message_id))
+        elif event_type == "connector.inbound.process":
+            inbound_message_id = payload["inbound_message_id"]
+            correlation_id = payload.get("correlation_id", str(event_id))
+            from ticket_agent.connectors.inbound import (
+                process_inbound_record,
+            )
+
+            process_inbound_record(
+                UUID(inbound_message_id),
+                correlation_id,
+            )
         else:
             raise ValueError(f"Unsupported outbox event type: {event_type}")
     except Exception as exc:

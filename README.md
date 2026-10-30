@@ -46,12 +46,30 @@
   无依据或校验不通过时转人工，不编造答案。
 - **MCP 工具治理**：只读工具自动执行；写工具走确定性策略、独立审批、
   幂等执行、事故对账与补偿审批。
+- **外部连接中心**：邮件渠道（IMAP 收信 / SMTP 回信）与只读 HTTP JSON 业务系统
+  共用一套连接器注册、密钥环境变量引用、签名 Webhook、幂等入站台账、Outbox
+  重试和管理页面；邮件来信会进入客服会话、工单和数字员工回答链路。
 - **客服工作台**：SSE 流式回复、自动派单、人工接管、风险分级、SLA、
   回复建议、反馈修复和审计。
 - **多租户与可靠性**：资源级租户校验、统一 403、幂等键、工单状态机白名单、
   限流和请求体上限。
 - **服务端 RBAC**：角色到能力只由后端维护，`GET /api/v1/me` 下发能力快照；
   菜单、路由和按钮按同一清单渲染，越权页面显示 403，只读角色不出现写操作入口。
+- **会话运行时**：买家消息生成带状态机的轮次（`PENDING → RUNNING →
+  COMPLETED / NEEDS_HUMAN / FAILED_RETRYABLE / FAILED_TERMINAL / CANCELLED`），
+  每次状态变化追加不可变事件；租约超时由后台任务回收重派发，失败可重试轮次
+  支持运营手动重试；上下文装配记录用到的消息、记忆、交接摘要和预算快照，
+  工作台“运行回放”抽屉可逐轮查看事件、门禁、Skill 与完成度。
+- **答案门禁与 Skill 契约**：每轮按 `AUTO_SEND / HUMAN_REVIEW / BLOCK` 三态
+  决定能否自动发送，只有依据全部校验通过才自动回信；Skill 以版本化契约描述
+  必做步骤和完成标准，每轮冻结快照，编辑 Skill 不会改动历史判定。
+- **交接与人工接管**：自动改路由、主管切换员工、人工接管和人工交还都落库为
+  交接记录并带确定性摘要，下一轮装配直接读取；接管期间数字员工不插话，
+  取消在途轮次，买家新消息只等人工。
+- **并发正确性**：会话串行、`client_message_id` 幂等、轮次事件序号在行锁内
+  分配；接管/交接/人工回复与 worker 之间的 PostgreSQL 死锁由有界重试吸收，
+  `scripts/stress_runtime_concurrency.py` 用真实栈跑接管、交接和重复消息竞态，
+  并可按需注入确定性死锁。
 
 ## 系统架构
 
@@ -122,6 +140,10 @@ make e2e-web       # Playwright 浏览器回归
 # 跨租户越权回归
 cd apps/api && uv run pytest tests/integration/test_tenant_resource_access.py -v
 
+# 会话运行时写路径并发验收（真实栈，含交接竞态与强制死锁注入）
+cd apps/api
+uv run python scripts/stress_runtime_concurrency.py http://127.0.0.1:8000 -n 20 --force-deadlocks
+
 # 最终一键验收
 make acceptance-final
 ```
@@ -129,14 +151,15 @@ make acceptance-final
 当前基线：
 
 ```text
-后端: 528 passed, 1 skipped（含 PostgreSQL/pgvector 专项）
+后端: 653 passed, 2 skipped（PostgreSQL 专项按 TEST_POSTGRES_URL 启用）
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
-Ruff / mypy: passed（185 个源文件）
+Ruff / mypy: passed（206 个源文件）
 TypeScript / Vite: passed
-Playwright: 165 passed, 2 skipped（4.4 分钟）
+Playwright: 174 passed, 2 skipped（5.4 分钟）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
-PostgreSQL migration: d4b9e1c7a2f3 (head)
+PostgreSQL migration: e1a7c4d90b62 (head)
+会话运行时压测: 20 次接管 + 10 次交接 + 3 次强制死锁，全通过
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
 ```
 

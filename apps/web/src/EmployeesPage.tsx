@@ -80,6 +80,8 @@ import {
   updateMcpConnector,
 } from "./api";
 import EmployeeProfileDrawer from "./EmployeeProfileDrawer";
+import ExternalConnectorsCard from "./ExternalConnectorsCard";
+import { useAuth } from "./auth";
 import {
   domainLabels,
   employeeReadiness,
@@ -394,9 +396,9 @@ const employeeSectionMeta: Record<
       "维护员工在什么情况下做什么、调用哪些能力，以及哪些行为必须转人工。",
   },
   integrations: {
-    title: "MCP · 业务系统连接",
+    title: "外部连接 · 邮件与业务系统",
     description:
-      "管理客户、订单、工单等外部系统的连接、工具发现和员工授权。",
+      "接入邮件渠道和只读业务系统，管理连接健康、业务入口绑定、消息收发和员工授权。",
   },
   routing: {
     title: "业务入口与员工路由",
@@ -875,7 +877,12 @@ export default function EmployeesPage({
       )}
 
       {section === "skills" && <AgentSkillsCard />}
-      {section === "integrations" && <McpConnectorsCard />}
+      {section === "integrations" && (
+        <>
+          <ExternalConnectorsCard />
+          <McpConnectorsCard />
+        </>
+      )}
       {section === "routing" && (
         <DigitalEmployeeRoutingCard
           employees={employees.data ?? []}
@@ -952,13 +959,44 @@ function AgentSkillsCard() {
   const [instructions, setInstructions] = useState("");
   const [triggers, setTriggers] = useState("");
   const [tools, setTools] = useState("");
+  const [definition, setDefinition] = useState("");
   const [status, setStatus] = useState("ACTIVE");
   const skills = useQuery({
     queryKey: ["agent-skills"],
     queryFn: listAgentSkills,
   });
+  const definitionError = (() => {
+    if (!definition.trim()) {
+      return null;
+    }
+    try {
+      const parsed: unknown = JSON.parse(definition);
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
+        return "执行契约必须是 JSON 对象";
+      }
+      return null;
+    } catch (error) {
+      return `JSON 解析失败：${(error as Error).message}`;
+    }
+  })();
   const save = useMutation({
     mutationFn: () => {
+      let parsedDefinition: Record<string, unknown> | undefined;
+      if (definition.trim()) {
+        const parsed = JSON.parse(definition) as Record<string, unknown>;
+        // Only send the contract when it actually changed; otherwise every
+        // name edit would bump the contract version.
+        const original = editing?.definition
+          ? JSON.stringify(editing.definition)
+          : null;
+        if (JSON.stringify(parsed) !== original) {
+          parsedDefinition = parsed;
+        }
+      }
       const input = {
         name: name.trim(),
         description: description.trim(),
@@ -974,10 +1012,19 @@ function AgentSkillsCard() {
         status,
       };
       return editing
-        ? updateAgentSkill(editing.id, input)
+        ? updateAgentSkill(editing.id, {
+            ...input,
+            expected_version: editing.version,
+            ...(parsedDefinition
+              ? { definition: parsedDefinition }
+              : {}),
+          })
         : createAgentSkill({
             code: code.trim(),
             ...input,
+            ...(parsedDefinition
+              ? { definition: parsedDefinition }
+              : {}),
           });
     },
     onSuccess: async () => {
@@ -1003,6 +1050,11 @@ function AgentSkillsCard() {
     setInstructions(skill?.instructions ?? "");
     setTriggers(skill?.triggers.join(", ") ?? "");
     setTools(skill?.tools.join(", ") ?? "");
+    setDefinition(
+      skill?.definition
+        ? JSON.stringify(skill.definition, null, 2)
+        : "",
+    );
     setStatus(skill?.status ?? "ACTIVE");
     setOpen(true);
   };
@@ -1055,6 +1107,16 @@ function AgentSkillsCard() {
             render: (value: string[]) => value.join(", ") || "仅使用知识检索",
           },
           {
+            title: "契约",
+            width: 130,
+            render: (_, skill) =>
+              skill.definition ? (
+                <Tag color="blue">v{skill.definition_version} 结构化</Tag>
+              ) : (
+                <Tag>宽松模式</Tag>
+              ),
+          },
+          {
             title: "版本",
             dataIndex: "version",
             width: 70,
@@ -1091,7 +1153,8 @@ function AgentSkillsCard() {
           disabled:
             !name.trim() ||
             !instructions.trim() ||
-            (!editing && !code.trim()),
+            (!editing && !code.trim()) ||
+            definitionError !== null,
         }}
         onOk={() => save.mutate()}
       >
@@ -1149,6 +1212,19 @@ function AgentSkillsCard() {
               placeholder="knowledge.search, logistics.query"
             />
           </Form.Item>
+          <Form.Item
+            label="执行契约（JSON，可选）"
+            extra="结构化步骤与完成条件；留空为宽松模式，运行时不会断言步骤完成。示例：{&quot;schema_version&quot;: 1, &quot;steps&quot;: [{&quot;id&quot;: &quot;identify_order&quot;, &quot;name&quot;: &quot;确认订单&quot;, &quot;required&quot;: true, &quot;evidence&quot;: [&quot;slot:order_id&quot;], &quot;completion&quot;: &quot;order_id != null&quot;}]}"
+            validateStatus={definitionError ? "error" : undefined}
+            help={definitionError ?? undefined}
+          >
+            <TextArea
+              rows={8}
+              value={definition}
+              onChange={(event) => setDefinition(event.target.value)}
+              placeholder='{"schema_version": 1, "steps": []}'
+            />
+          </Form.Item>
           <Form.Item label="Skill 指令" required>
             <TextArea
               rows={10}
@@ -1165,6 +1241,8 @@ function AgentSkillsCard() {
 
 function McpConnectorsCard() {
   const queryClient = useQueryClient();
+  const { hasCapability } = useAuth();
+  const canWrite = hasCapability("mcp.connectors.write");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<McpConnector | null>(null);
   const [code, setCode] = useState("");
@@ -1259,11 +1337,13 @@ function McpConnectorsCard() {
   return (
     <Card
       className="section-card"
-      title="MCP · 业务系统连接"
+      title="MCP · 工具型业务系统连接"
       extra={
-        <Button type="primary" onClick={() => openEditor()}>
-          新建 MCP 连接器
-        </Button>
+        canWrite ? (
+          <Button type="primary" onClick={() => openEditor()}>
+            新建 MCP 连接器
+          </Button>
+        ) : undefined
       }
     >
       <Paragraph type="secondary">
@@ -1337,23 +1417,26 @@ function McpConnectorsCard() {
           {
             title: "操作",
             width: 160,
-            render: (_, connector) => (
-              <Space>
-                <Button
-                  type="link"
-                  loading={
-                    discover.isPending &&
-                    discover.variables === connector.id
-                  }
-                  onClick={() => discover.mutate(connector.id)}
-                >
-                  测试/发现
-                </Button>
-                <Button type="link" onClick={() => openEditor(connector)}>
-                  编辑
-                </Button>
-              </Space>
-            ),
+            render: (_, connector) =>
+              canWrite ? (
+                <Space>
+                  <Button
+                    type="link"
+                    loading={
+                      discover.isPending &&
+                      discover.variables === connector.id
+                    }
+                    onClick={() => discover.mutate(connector.id)}
+                  >
+                    测试/发现
+                  </Button>
+                  <Button type="link" onClick={() => openEditor(connector)}>
+                    编辑
+                  </Button>
+                </Space>
+              ) : (
+                <Text type="secondary">只读</Text>
+              ),
           },
         ]}
       />

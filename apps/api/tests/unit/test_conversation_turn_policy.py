@@ -4,6 +4,9 @@ from ticket_agent.customer_service.turns import (
 from ticket_agent.tickets.domain import RiskLevel
 from ticket_agent.tickets.models import Ticket
 
+AUTO_SEND_GATE = {"decision": "AUTO_SEND", "reasons": []}
+HUMAN_REVIEW_GATE = {"decision": "HUMAN_REVIEW", "reasons": ["HIGH_RISK"]}
+
 
 def test_low_risk_grounded_answer_completes_turn() -> None:
     ticket = Ticket(
@@ -12,7 +15,7 @@ def test_low_risk_grounded_answer_completes_turn() -> None:
         needs_human=False,
     )
 
-    assert _can_complete_grounded_turn(ticket, "GROUNDED") is True
+    assert _can_complete_grounded_turn(ticket, "GROUNDED", AUTO_SEND_GATE) is True
 
 
 def test_ungrounded_or_human_turn_stays_open() -> None:
@@ -32,6 +35,34 @@ def test_ungrounded_or_human_turn_stays_open() -> None:
         needs_human=False,
     )
 
-    assert _can_complete_grounded_turn(ungrounded, "NO_KNOWLEDGE") is False
-    assert _can_complete_grounded_turn(human_review, "GROUNDED") is False
-    assert _can_complete_grounded_turn(high_risk, "GROUNDED") is False
+    assert (
+        _can_complete_grounded_turn(
+            ungrounded, "NO_KNOWLEDGE", AUTO_SEND_GATE
+        )
+        is False
+    )
+    assert (
+        _can_complete_grounded_turn(
+            human_review, "GROUNDED", AUTO_SEND_GATE
+        )
+        is False
+    )
+    assert (
+        _can_complete_grounded_turn(high_risk, "GROUNDED", AUTO_SEND_GATE)
+        is False
+    )
+
+
+def test_ticket_completion_requires_auto_send_gate() -> None:
+    ticket = Ticket(
+        category_primary="product_howto",
+        risk_level=RiskLevel.R0,
+        needs_human=False,
+    )
+
+    assert (
+        _can_complete_grounded_turn(ticket, "GROUNDED", HUMAN_REVIEW_GATE)
+        is False
+    )
+    # A turn recorded before the gate existed fails closed: a human sends it.
+    assert _can_complete_grounded_turn(ticket, "GROUNDED", None) is False

@@ -110,8 +110,8 @@ const routeMeta: Record<string, RouteMeta> = {
     category: "平台管理",
   },
   "/employees/integrations": {
-    title: "平台能力 · MCP 与工具",
-    description: "管理外部连接器、工具发现和员工授权",
+    title: "平台能力 · 外部连接",
+    description: "管理邮件渠道、只读业务系统、MCP 工具发现和员工授权",
     category: "平台管理",
   },
   "/employees/routing": {
@@ -237,7 +237,7 @@ const employeePageNavigation = [
   { key: "/employees/roster", label: "员工状态" },
   { key: "/employees/templates", label: "岗位模板" },
   { key: "/employees/skills", label: "Skill（岗位规程）" },
-  { key: "/employees/integrations", label: "MCP（业务连接）" },
+  { key: "/employees/integrations", label: "外部连接（邮件 / MCP）" },
   { key: "/employees/routing", label: "业务入口与分派" },
   { key: "/employees/route-evaluation", label: "路由评测" },
   { key: "/employees/supervisor", label: "主管编排" },
@@ -407,6 +407,7 @@ export default function App() {
   ].filter((item) => canAccessPath(item.key));
   const platformChildren = [
     { key: "/employees/roster", label: "员工、Skill 与 MCP" },
+    { key: "/employees/integrations", label: "外部连接（邮件 / MCP）" },
     { key: "/knowledge", label: "知识与评测" },
     { key: "/models", label: "模型与连接" },
     { key: "/operations", label: "运行与审计" },
