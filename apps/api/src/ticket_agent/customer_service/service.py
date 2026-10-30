@@ -1,12 +1,15 @@
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from time import sleep
 from typing import Any
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import String, cast, func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ticket_agent.audit.service import record_audit
@@ -90,6 +93,7 @@ from ticket_agent.digital_employees.router_service import (
 )
 from ticket_agent.identity.models import Principal
 from ticket_agent.knowledge.models import KnowledgeGapOccurrence
+from ticket_agent.shared.db import is_deadlock_error
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
@@ -97,6 +101,8 @@ from ticket_agent.tickets.models import Ticket, WorkflowTransition
 from ticket_agent.tickets.schemas import RequesterInput, SourceInput, TicketCreate
 from ticket_agent.tickets.service import TicketService
 from ticket_agent.tickets.transitions import transition_ticket
+
+logger = logging.getLogger(__name__)
 
 # Ticket states a human takeover may move to TAKEN_OVER. The list mirrors
 # ALLOWED_WORKFLOW_TRANSITIONS; a completed ticket stays completed because the
@@ -114,6 +120,12 @@ _HUMAN_TAKEOVER_TICKET_STATES = frozenset(
         WorkflowState.FAILED_RETRYABLE,
     }
 )
+
+# A takeover cancels the running turn while the worker may be finishing it, so
+# PostgreSQL can abort either side with a deadlock. The victim is retried from a
+# fresh transaction; the delay only spaces out the attempts.
+TAKEOVER_DEADLOCK_ATTEMPTS = 3
+TAKEOVER_DEADLOCK_BACKOFF_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -1800,6 +1812,22 @@ class CustomerConversationService:
                 # the message is visible and replayable, but it must never be
                 # claimed by the digital worker. NEEDS_HUMAN is terminal, and
                 # the router only dispatches PENDING turns.
+                # The ticket the first message just created must say a human
+                # owns it too; left in RECEIVED the workbench treats it as
+                # waiting for the digital employee and refuses the reply.
+                ticket.status = TicketStatus.WAITING_HUMAN
+                ticket.needs_human = True
+                ticket.human_reason = "HUMAN_TAKEOVER"
+                if ticket.workflow_state == WorkflowState.RECEIVED:
+                    transition_ticket(
+                        self.session,
+                        ticket,
+                        WorkflowState.NEEDS_HUMAN,
+                        reason_code="HUMAN_TAKEOVER",
+                        actor_type="USER",
+                        actor_id=human_owner_id,
+                    )
+                ticket.version += 1
                 transition_turn(
                     self.session,
                     turn,
@@ -1954,6 +1982,45 @@ class CustomerConversationService:
         return len(conversations)
 
     def takeover(
+        self,
+        conversation_id: UUID,
+        *,
+        expected_version: int,
+        agent_id: str,
+    ) -> CustomerConversation:
+        """Assign the conversation to a human and cancel in-flight turns.
+
+        The turn cancellation locks rows a worker may be finishing at the same
+        moment, and PostgreSQL resolves that lock cycle by aborting one side
+        (SQLSTATE 40P01). When this transaction is the victim nothing has been
+        committed, so a fresh attempt is safe; the version check is re-read
+        inside it and still rejects a stale operator request.
+        """
+        for attempt in range(TAKEOVER_DEADLOCK_ATTEMPTS):
+            try:
+                return self._takeover_once(
+                    conversation_id,
+                    expected_version=expected_version,
+                    agent_id=agent_id,
+                )
+            except OperationalError as exc:
+                self.session.rollback()
+                if (
+                    not is_deadlock_error(exc)
+                    or attempt + 1 >= TAKEOVER_DEADLOCK_ATTEMPTS
+                ):
+                    raise
+                logger.warning(
+                    "takeover of %s lost a deadlock with a live turn; "
+                    "retrying (attempt %s/%s)",
+                    conversation_id,
+                    attempt + 2,
+                    TAKEOVER_DEADLOCK_ATTEMPTS,
+                )
+                sleep(TAKEOVER_DEADLOCK_BACKOFF_SECONDS * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    def _takeover_once(
         self,
         conversation_id: UUID,
         *,

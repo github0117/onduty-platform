@@ -101,7 +101,9 @@ async function waitForTerminalTurn(
         turnId = payload.current_turn?.id ?? "";
         return payload.current_turn?.status;
       },
-      { timeout: 20_000 },
+      // The live stack answers with the configured model; a busy provider or
+      // the local fallback can take tens of seconds per turn.
+      { timeout: 60_000 },
     )
     .toBe("COMPLETED");
   expect(turnId).toBeTruthy();

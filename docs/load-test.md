@@ -116,3 +116,23 @@ uv run --project apps/api python scripts/load_test.py \
 生产级压测应使用独立负载机、固定数据集、多 worker 部署，并分别覆盖读路径、
 知识检索、模型生成、MCP 调用、审批写入和 SSE，给出各接口 P95 / P99、错误率、
 数据库连接池和 CPU/内存水位，而不是只报一个总 RPS。
+
+## 写路径并发验收（会话运行时）
+
+只读基线不覆盖写操作。会话运行时的写路径另有一个可重复的并发验收脚本：
+
+```text
+cd apps/api
+uv run python scripts/stress_runtime_concurrency.py http://127.0.0.1:8000 -n 20
+```
+
+它直接对运行中的真实栈发起“买家消息 vs 人工接管”“同一
+`client_message_id` 重复提交”“两条消息并发”三组竞态，并用 psycopg 读取
+PostgreSQL 断言结果（轮次终态、`CANCELLED` 无回复、接管后无新回复、
+单工单、序号互异、取消轮次不可重试）。脚本自建 `stress_agent_*` 员工与
+知识，结束时通过 `archive-test-data` 归档。
+
+接管与在途轮次会互相等待行锁，PostgreSQL 以 SQLSTATE `40P01` 中止一方；
+应用侧对两类受害者都做了有界重试（接管 3 次、worker 轮次 2 次），重试耗尽
+才交给租约回收。因此 `postgres` 日志里仍会出现 `deadlock detected`，只要
+API 没有 `ERROR` 且所有轮次收敛到终态，就属于已处理路径。

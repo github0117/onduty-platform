@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from ticket_agent.customer_service.context import assemble_context
 from ticket_agent.customer_service.models import (
@@ -23,7 +24,10 @@ from ticket_agent.customer_service.models import (
     CustomerMessage,
 )
 from ticket_agent.customer_service.service import CustomerConversationService
-from ticket_agent.customer_service.turns import process_conversation_turn
+from ticket_agent.customer_service.turns import (
+    ConversationTurnOrchestrator,
+    process_conversation_turn,
+)
 from ticket_agent.shared.db import SessionLocal
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
@@ -1089,3 +1093,168 @@ def test_completed_ticket_reopens_when_the_owner_keeps_talking(
         client, conversation_id, str(back["current_turn"]["id"])
     )
     assert back_view["current_turn"]["status"] == "COMPLETED"
+
+
+# --- deadlock recovery: takeover vs. the worker finishing a turn -----------
+
+
+class _DeadlockOrigin(Exception):
+    sqlstate = "40P01"
+
+
+def _deadlock_error() -> OperationalError:
+    return OperationalError(
+        "SELECT conversation_turns ... FOR UPDATE",
+        {},
+        _DeadlockOrigin("deadlock detected"),
+    )
+
+
+def test_takeover_retries_after_a_deadlock(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    employee_id = _employee(client, "deadlock_takeover", "死锁接管客服")
+    conversation_id = _conversation(
+        client,
+        requester_ref="deadlock-takeover-buyer",
+        employee_id=employee_id,
+    )
+    queued_turn = _queue_pending_turn(
+        conversation_id,
+        employee_id=employee_id,
+        content="我的订单 AB-9101 还没发货",
+    )
+    original = CustomerConversationService._takeover_once
+    calls: list[int] = []
+
+    def flaky(
+        self: CustomerConversationService,
+        conversation_id: UUID,
+        *,
+        expected_version: int,
+        agent_id: str,
+    ) -> CustomerConversation:
+        calls.append(1)
+        if len(calls) == 1:
+            # The first attempt lost a lock cycle against the worker.
+            raise _deadlock_error()
+        return original(
+            self,
+            conversation_id,
+            expected_version=expected_version,
+            agent_id=agent_id,
+        )
+
+    monkeypatch.setattr(CustomerConversationService, "_takeover_once", flaky)
+    before = client.get(
+        f"/api/v1/customer-service/conversations/{conversation_id}",
+        headers=AGENT,
+    )
+    takeover = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/takeover",
+        headers=AGENT,
+        json={"expected_version": before.json()["version"]},
+    )
+
+    assert takeover.status_code == 200, takeover.text
+    assert len(calls) == 2
+    assert takeover.json()["assigned_agent_id"] == "agent-1"
+    with SessionLocal() as session:
+        turn = session.get(ConversationTurn, UUID(queued_turn))
+        assert turn is not None
+        assert turn.status == "CANCELLED"
+    handoffs = client.get(
+        f"/api/v1/customer-service/conversations/{conversation_id}/handoffs",
+        headers=AGENT,
+    ).json()["items"]
+    assert [item["kind"] for item in handoffs] == ["HUMAN_TAKEOVER"]
+
+
+def test_takeover_does_not_retry_a_stale_version(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    employee_id = _employee(client, "stale_takeover", "过期接管客服")
+    conversation_id = _conversation(
+        client,
+        requester_ref="stale-takeover-buyer",
+        employee_id=employee_id,
+    )
+    original = CustomerConversationService._takeover_once
+    calls: list[int] = []
+
+    def counted(
+        self: CustomerConversationService,
+        conversation_id: UUID,
+        *,
+        expected_version: int,
+        agent_id: str,
+    ) -> CustomerConversation:
+        calls.append(1)
+        return original(
+            self,
+            conversation_id,
+            expected_version=expected_version,
+            agent_id=agent_id,
+        )
+
+    monkeypatch.setattr(CustomerConversationService, "_takeover_once", counted)
+    current = client.get(
+        f"/api/v1/customer-service/conversations/{conversation_id}",
+        headers=AGENT,
+    ).json()
+    takeover = client.post(
+        f"/api/v1/customer-service/conversations/{conversation_id}/takeover",
+        headers=AGENT,
+        json={"expected_version": current["version"] + 1},
+    )
+
+    assert takeover.status_code == 409, takeover.text
+    assert takeover.json()["code"] == "CONVERSATION_VERSION_CONFLICT"
+    assert len(calls) == 1
+
+
+def test_dispatch_retries_a_turn_whose_transaction_deadlocked(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    employee_id = _employee(client, "deadlock_dispatch", "死锁重试客服")
+    conversation_id = _conversation(
+        client,
+        requester_ref="deadlock-dispatch-buyer",
+        employee_id=employee_id,
+    )
+    queued_turn = _queue_pending_turn(
+        conversation_id,
+        employee_id=employee_id,
+        content="我的订单 AB-9102 一直没发货，能查一下吗？",
+    )
+    original = ConversationTurnOrchestrator.process
+    calls: list[int] = []
+
+    def flaky(
+        self: ConversationTurnOrchestrator,
+        turn_id: UUID,
+        *,
+        correlation_id: str,
+    ) -> UUID | None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise _deadlock_error()
+        return original(self, turn_id, correlation_id=correlation_id)
+
+    monkeypatch.setattr(ConversationTurnOrchestrator, "process", flaky)
+    process_conversation_turn(UUID(queued_turn), "deadlock-retry")
+
+    assert len(calls) == 2
+    with SessionLocal() as session:
+        turn = session.get(ConversationTurn, UUID(queued_turn))
+        assert turn is not None
+        assert turn.status in {
+            "COMPLETED",
+            "NEEDS_HUMAN",
+            "FAILED_RETRYABLE",
+            "FAILED_TERMINAL",
+        }
+        assert turn.lease_expires_at is None

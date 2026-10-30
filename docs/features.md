@@ -144,9 +144,14 @@
   （`POST /api/v1/customer-service/turns/{turn_id}/retry`，202，仅重试
   可重试轮次）。
 - 人工接管期间数字员工不插话：接管取消排队/执行中的轮次，买家新消息只生成
-  `NEEDS_HUMAN` 轮次（工单 `WAITING_HUMAN`）；人工回复并交还后写入
-  `HUMAN_RETURN` 交接，数字员工恢复接待，人工消息在上下文里标注为
+  `NEEDS_HUMAN` 轮次（工单 `WAITING_HUMAN`）；先接管、买家后发言时，第一条
+  消息新建的工单同样进入 `NEEDS_HUMAN`，人工可直接在工作台回复。人工回复并
+  交还后写入 `HUMAN_RETURN` 交接，数字员工恢复接待，人工消息在上下文里标注为
   “客服（人工）”。
+- 接管与在途轮次的锁竞争：两者会互相等待对方的行锁，PostgreSQL 以死锁
+  （SQLSTATE 40P01）中止其中一方。被中止的接管在全新事务里重试（最多 3 次，
+  重新校验版本）；被中止的 worker 轮次回滚后释放租约，从 `RUNNING` 恢复，
+  买家既不会看到 500，也不会遇到长时间卡住的轮次。
 - 员工交接落库到 `conversation_handoffs`（自动改路由 `AUTO_REROUTE` /
   人工切换 `OPERATOR_SWITCH` / 人工接管 `HUMAN_TAKEOVER` / 人工交还
   `HUMAN_RETURN`），含确定性摘要（确认事实、待办、承诺、上一轮回答

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from time import sleep
 from uuid import UUID
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ticket_agent.classification.classifier import AnalysisResult
@@ -38,12 +41,14 @@ from ticket_agent.ecommerce.models import EcommerceCategoryProfile
 from ticket_agent.knowledge.gap_events import record_knowledge_gap
 from ticket_agent.model_gateway.profile import build_classifier_for_employee
 from ticket_agent.routing.policy import get_routing_policy
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import SessionLocal, is_deadlock_error
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.tickets.transitions import transition_ticket
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationTurnOrchestrator:
@@ -251,6 +256,12 @@ class ConversationTurnOrchestrator:
                 retryable=exc.retryable,
             )
             return self._next_pending_turn(conversation.id, exclude=turn.id)
+        except OperationalError:
+            # The database aborted this transaction (a deadlock with a human
+            # takeover); every statement in it would fail until rolled back,
+            # so recovery belongs to the dispatch boundary, not ``_fail``.
+            self.session.rollback()
+            raise
         except Exception as exc:
             self._fail(
                 turn,
@@ -578,17 +589,65 @@ class ConversationTurnOrchestrator:
 MAX_QUEUED_TURNS_PER_DISPATCH = 10
 
 
+# A deadlock with a human takeover kills one transaction; retrying the turn in
+# a fresh one is cheap, while leaving it RUNNING would stall the buyer until the
+# lease reclaim job notices.
+MAX_TURN_DEADLOCK_RETRIES = 2
+TURN_DEADLOCK_BACKOFF_SECONDS = 0.05
+
+
+def _release_turn_lease(session: Session, turn_id: UUID) -> None:
+    """Let ``process`` resume a turn whose transaction was rolled back."""
+    turn = session.get(ConversationTurn, turn_id)
+    if turn is None:
+        return
+    if parse_turn_status(turn.status) not in {
+        TurnStatus.PENDING,
+        TurnStatus.RUNNING,
+    }:
+        return
+    turn.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    session.commit()
+
+
 def process_conversation_turn(turn_id: UUID, correlation_id: str) -> None:
     with SessionLocal() as session:
         orchestrator = ConversationTurnOrchestrator(session)
         current: UUID | None = turn_id
+        deadlock_retries = 0
         for _ in range(MAX_QUEUED_TURNS_PER_DISPATCH):
             if current is None:
                 return
-            current = orchestrator.process(
-                current,
-                correlation_id=correlation_id,
-            )
+            turn_under_dispatch = current
+            try:
+                current = orchestrator.process(
+                    turn_under_dispatch,
+                    correlation_id=correlation_id,
+                )
+            except OperationalError as exc:
+                session.rollback()
+                if not is_deadlock_error(exc):
+                    raise
+                deadlock_retries += 1
+                if deadlock_retries > MAX_TURN_DEADLOCK_RETRIES:
+                    # Hand the turn to the lease reclaim job instead of
+                    # spinning: it is already terminal or retryable there.
+                    _release_turn_lease(session, turn_under_dispatch)
+                    logger.exception(
+                        "conversation turn %s kept deadlocking; "
+                        "left it to the reclaim job",
+                        turn_under_dispatch,
+                    )
+                    return
+                logger.warning(
+                    "conversation turn %s lost a deadlock with a human action; "
+                    "retrying (attempt %s/%s)",
+                    turn_under_dispatch,
+                    deadlock_retries,
+                    MAX_TURN_DEADLOCK_RETRIES,
+                )
+                sleep(TURN_DEADLOCK_BACKOFF_SECONDS * deadlock_retries)
+                _release_turn_lease(session, turn_under_dispatch)
 
 
 def process_conversation_turn_stream(

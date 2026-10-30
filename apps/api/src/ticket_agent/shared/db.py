@@ -2,6 +2,7 @@ from collections.abc import Generator
 from typing import Any
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from ticket_agent.shared.settings import get_settings
@@ -58,6 +59,23 @@ def get_db() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+def is_deadlock_error(exc: BaseException) -> bool:
+    """True when PostgreSQL aborted this transaction to break a deadlock.
+
+    Two writers can take each other's row locks (a takeover cancels turns while
+    a worker finishes one), and PostgreSQL kills one transaction with SQLSTATE
+    ``40P01``. The loser's work is rolled back whole, so the caller may retry
+    the operation from a fresh transaction.
+    """
+    if not isinstance(exc, OperationalError):
+        return False
+    origin = getattr(exc, "orig", exc)
+    sqlstate = getattr(origin, "sqlstate", None) or getattr(origin, "pgcode", None)
+    if sqlstate == "40P01":
+        return True
+    return "deadlock detected" in str(origin).lower()
 
 
 def init_db() -> None:
