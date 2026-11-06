@@ -94,12 +94,12 @@ def get_ocr_provider(settings: Settings | None = None) -> OCRProvider | None: ..
 新增 `_parse_pdf_document(data, ocr_provider)`：
 
 - `ocr_provider is None`：走 `_parse_pdf_pages_pypdf`，复用 pypdf 逐页 `extract_text()`，页码写入 blocks。
-- `ocr_provider is not None`：走 `_parse_pdf_with_pymupdf`：
-  - `import pymupdf` 失败 → `PDF_PARSER_UNAVAILABLE`。
-  - `page.get_text("text")`；`len(text.strip()) >= min_text_chars` 直接使用，`ocr=False`。
-  - 否则当页 OCR 次数未超过 `knowledge_ocr_max_pages` 时 `page.get_pixmap(dpi=200, colorspace=pymupdf.csRGB, alpha=False).tobytes("png")` → provider OCR，`ocr=True`。
+- `ocr_provider is not None`：走 `_parse_pdf_with_pdfium`：
+  - `import pypdfium2` 失败 → `PDF_PARSER_UNAVAILABLE`。
+  - `page.get_textpage().get_text_range()`；`len(text.strip()) >= min_text_chars` 直接使用，`ocr=False`。
+  - 否则当页 OCR 次数未超过 `knowledge_ocr_max_pages` 时 `page.render(scale=200/72).to_pil()` → PNG → provider OCR，`ocr=True`。
   - 单页 `OCRUnavailableError` 回退原生文本并记录 warning `"OCR_FAILED"`；若整篇无可用文本，抛 `OCR_FAILED`（有原生文本则保留）。
-  - `parser_name="pymupdf"`；有 OCR 页时 `"pymupdf+<provider>"`。
+  - `parser_name="pdfium"`；有 OCR 页时 `"pdfium+<provider>"`。
 - 共用 `_page_blocks_from_texts(pages, ocr_pages)`：
   - `normalize_whitespace` 后，页数 ≥3 时用 `strip_repeated_page_artifacts` 去页眉页脚。
   - 每页 `clean_text(page, merge_wrapped=True)` 后 `_paragraph_blocks`，逐块写 `page=1-based` 与 `ocr`。
@@ -127,10 +127,9 @@ def get_ocr_provider(settings: Settings | None = None) -> OCRProvider | None: ..
 
 ## 7. 依赖
 
-- `apps/api/pyproject.toml` 增加 `pymupdf>=1.24,<2`。
-- mypy override 增加 `pymupdf` 的 `ignore_missing_imports`。
+- `apps/api/pyproject.toml` 增加 `pypdfium2>=4.30,<6` 与 `pillow>=10,<13`；dev 组增加 `reportlab>=4,<6`（仅测试构造 PDF）。
 - 执行 `cd apps/api && uv lock` 更新 `uv.lock`。
-- 已知风险：PyMuPDF 为 AGPL 许可。上线分发前需替换为 `pypdfium2`/商业许可；本轮先在内部环境使用并在开发日志标注。
+- 许可：初版曾用 PyMuPDF（AGPL），已替换为 pypdfium2（自带 PDFium，BSD-3-Clause）+ Pillow（HPND）+ reportlab（BSD，仅测试），全链均为宽松许可。
 
 ## 8. 测试矩阵
 
@@ -146,7 +145,7 @@ def get_ocr_provider(settings: Settings | None = None) -> OCRProvider | None: ..
    - 图片无 provider → `OCR_NOT_CONFIGURED`。
    - provider 抛错 → `OCR_FAILED`。
    - pypdf 多页文字 PDF → block 页码 1/2。
-   - pymupdf 混合 PDF：第 1 页文字、第 2 页图片（无文字）→ 第 2 页 OCR，block `ocr=True`、`page=2`。
+   - pdfium 混合 PDF：第 1 页文字、第 2 页图片（无文字）→ 第 2 页 OCR，block `ocr=True`、`page=2`。
    - 纯扫描 PDF 无 OCR → `EMPTY_DOCUMENT`。
 3. `tests/unit/test_knowledge_chunking.py` 增补
    - 跨页段落 chunk 的 `page_start/page_end`。
@@ -187,14 +186,13 @@ pnpm --dir apps/web build          # 前端无改动，仍执行生产构建
 
 ## 10. 文档更新
 
-- `outputs/07_开发日志.md`：记录实现、测试结果、未验收项、PyMuPDF 许可风险。
+- `outputs/07_开发日志.md`：记录实现、测试结果、未验收项、许可替换（PyMuPDF → pypdfium2）。
 - `outputs/06_当前实施状态.md`：把 P0-2 状态更新为已完成/待外部验收。
 - `.env.example`：新增 OCR 配置块。
 - `README.md`：知识库支持格式与 OCR 配置一节。
 
 ## 11. 风险与回滚
 
-- PyMuPDF AGPL 许可风险（见 §7）。
 - OCR 成本与延迟随页数增长：通过 `MAX_PAGES`、`MIN_TEXT_CHARS` 控制。
 - 低质量扫描件 OCR 结果可能含噪声：保留 `ocr=True` 标记与 `OCR_FAILED` warning，便于后续质量治理。
 - 回滚：设 `KNOWLEDGE_OCR_PROVIDER=none` 即恢复旧行为；已入库 chunk 的 `page_*` 字段对旧检索无破坏。

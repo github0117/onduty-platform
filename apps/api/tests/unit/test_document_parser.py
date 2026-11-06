@@ -1,8 +1,8 @@
 import io
 import zipfile
 
-import pymupdf
 import pytest
+from reportlab.pdfgen import canvas
 
 from ticket_agent.knowledge.document_parser import (
     DocumentParseError,
@@ -27,14 +27,14 @@ class _FakeOCR:
 
 
 def _pdf_bytes(texts: list[str | None]) -> bytes:
-    document = pymupdf.open()
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer)
     for text in texts:
-        page = document.new_page()
         if text:
-            page.insert_text((72, 72), text)
-    data = document.tobytes()
-    document.close()
-    return data
+            pdf.drawString(72, 720, text)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
 
 
 def _docx_bytes(text: str) -> bytes:
@@ -288,7 +288,7 @@ def test_parse_mixed_pdf_ocrs_only_low_text_page() -> None:
         ocr_min_text_chars=30,
     )
 
-    assert parsed.parser_name == "pymupdf+fake"
+    assert parsed.parser_name == "pdfium+fake"
     page_two = [block for block in parsed.blocks if block.page == 2]
     assert len(page_two) == 1
     assert page_two[0].ocr is True

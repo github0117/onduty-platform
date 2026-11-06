@@ -3,8 +3,8 @@
 ## T1 配置与依赖
 
 - [x] T1.1 `apps/api/src/ticket_agent/shared/settings.py` 新增 7 个 `knowledge_ocr_*` 字段与 `inherit_knowledge_ocr_credentials` validator。
-- [x] T1.2 `apps/api/pyproject.toml` 增加 `pymupdf>=1.24,<2` 与 mypy override。
-- [x] T1.3 `cd apps/api && uv lock` 更新 `apps/api/uv.lock`（pymupdf 1.28.2），`uv run python -c "import pymupdf"` 成功。
+- [x] T1.2 `apps/api/pyproject.toml` 增加 `pypdfium2>=4.30,<6`、`pillow>=10,<13`（初版曾用 pymupdf，因 AGPL 许可在 T8 替换）。
+- [x] T1.3 `cd apps/api && uv lock` 更新 `apps/api/uv.lock`。
 - [x] T1.4 `.env.example` 新增 OCR 配置块。
 
 ## T2 OCR provider
@@ -16,7 +16,7 @@
 
 - [x] T3.1 `document_parser.py`：`TextBlock` 增加 page/ocr，`BlockKind` 增加 image_text，`serialize_blocks` 条件输出。
 - [x] T3.2 `parse_document` 支持图片后缀并在未配置 OCR 时返回 `OCR_NOT_CONFIGURED`。
-- [x] T3.3 PDF 改为逐页：pypdf 路径写页码；启用 OCR 时用 pymupdf 渲染低文字页并 OCR。
+- [x] T3.3 PDF 改为逐页：pypdf 路径写页码；启用 OCR 时用 pypdfium2 渲染低文字页并 OCR。
 - [x] T3.4 `chunking.py`：`ChunkDraft` 增加 page_start/page_end，分块时保留页码。
 - [x] T3.5 `service.py`：持有 OCR provider 并传给两处 `parse_document`；`_write_chunks` 写 page_start/page_end。
 
@@ -40,13 +40,19 @@
 - [x] T6.4 `uv run mypy src`：208 files，no issues。
 - [x] T6.5 真实 PostgreSQL 验收：Docker 启动 `pgvector/pgvector:pg16`（PostgreSQL 16.15，pgvector 0.8.7），`alembic upgrade head` 落在 `e1a7c4d90b62`，`migration_preflight --expect-head` 返回 `at_head`；真实 OCR 上传 201、chunk 页码 1/1；`scripts/smoke_closed_loop.py` 在 PostgreSQL 上通过。
 - [x] T6.6 全栈 Smoke 与 `pnpm --dir apps/web build`：uvicorn + `scripts/smoke_closed_loop.py` 通过；tsc 与 Vite build 通过。
-- [x] T6.7 真实图片/扫描 PDF 上传：本机 `.env` 的 `KNOWLEDGE_OCR_*`（复用 DashScope 密钥，`qwen-vl-ocr`）真实调用通过；在真实 PostgreSQL 上经 HTTP 上传扫描 PDF，201，parser `pymupdf+dashscope`，chunk `page_start=1/page_end=1`。
+- [x] T6.7 真实图片/扫描 PDF 上传：本机 `.env` 的 `KNOWLEDGE_OCR_*`（复用 DashScope 密钥，`qwen-vl-ocr`）真实调用通过；在真实 PostgreSQL 上经 HTTP 上传扫描 PDF，201，chunk `page_start=1/page_end=1`（验收时 parser 为 `pymupdf+dashscope`，T8 后变更为 `pdfium+dashscope`）。
 
 ## T7 文档
 
 - [x] T7.1 更新 `outputs/07_开发日志.md`。
 - [x] T7.2 更新 `outputs/06_当前实施状态.md`。
 - [x] T7.3 更新 `README.md` 知识库格式与 OCR 配置说明。
+
+## T8 许可整改（PyMuPDF AGPL → pypdfium2）
+
+- [x] T8.1 `document_parser.py`：`_parse_pdf_with_pymupdf` 重写为 `_parse_pdf_with_pdfium`，渲染 `page.render(scale=200/72).to_pil()` → PNG；`parser_name` 改为 `pdfium[+provider]`。
+- [x] T8.2 测试改用 reportlab（BSD）构造 PDF；`pymupdf+fake` 断言改为 `pdfium+fake`。
+- [x] T8.3 依赖：移除 pymupdf，新增 pypdfium2 5.14.0 / pillow 12.3.0 / reportlab 5.1.0（dev）；`uv lock` 同步。
 
 ## 完成定义
 

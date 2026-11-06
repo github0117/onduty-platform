@@ -1,9 +1,10 @@
+import io
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-import pymupdf
 import pytest
 from fastapi.testclient import TestClient
+from reportlab.pdfgen import canvas
 from sqlalchemy import select
 
 from ticket_agent.ecommerce.models import EcommerceProduct
@@ -1582,14 +1583,14 @@ def test_structured_chunking_metadata_when_v2_enabled(
 
 
 def _pdf_bytes(texts: list[str | None]) -> bytes:
-    document = pymupdf.open()
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer)
     for text in texts:
-        page = document.new_page()
         if text:
-            page.insert_text((72, 72), text)
-    data = document.tobytes()
-    document.close()
-    return data
+            pdf.drawString(72, 720, text)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
 
 
 def _pdf_chunks(version_id: UUID) -> list[KnowledgeChunk]:

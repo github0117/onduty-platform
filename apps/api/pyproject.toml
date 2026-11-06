@@ -20,7 +20,8 @@ dependencies = [
   "langgraph>=0.6,<2",
   "mcp>=1.30,<2",
   "pypdf>=5,<7",
-  "pymupdf>=1.24,<2",
+  "pypdfium2>=4.30,<6",
+  "pillow>=10,<13",
 ]
 
 [dependency-groups]
@@ -29,6 +30,7 @@ dev = [
   "pytest-cov>=5,<7",
   "ruff>=0.8,<1",
   "mypy>=1.13,<2",
+  "reportlab>=4,<6",
 ]
 
 [tool.uv]
@@ -65,7 +67,7 @@ module = ["celery", "celery.*", "kombu", "kombu.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["pypdf", "pymupdf"]
+module = ["pypdf", "pypdfium2"]
 ignore_missing_imports = true
 
 

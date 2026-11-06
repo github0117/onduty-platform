@@ -1,3 +1,4 @@
+import importlib.metadata
 import io
 import re
 import zipfile
@@ -553,7 +554,7 @@ def _parse_pdf_document(
             parser_name="pypdf",
             parser_version=_pypdf_version(),
         )
-    return _parse_pdf_with_pymupdf(
+    return _parse_pdf_with_pdfium(
         data,
         ocr_provider=ocr_provider,
         ocr_max_pages=ocr_max_pages,
@@ -577,26 +578,27 @@ def _pdf_page_texts(data: bytes) -> list[str]:
         raise DocumentParseError("INVALID_PDF", "PDF document could not be parsed.") from exc
 
 
-def _parse_pdf_with_pymupdf(
+_PDF_OCR_DPI = 200
+
+
+def _parse_pdf_with_pdfium(
     data: bytes,
     *,
     ocr_provider: OCRProvider,
     ocr_max_pages: int,
     ocr_min_text_chars: int,
 ) -> ParsedDocument:
+    # pypdfium2 bundles PDFium (BSD-3-Clause) and replaces PyMuPDF (AGPL).
     try:
-        import pymupdf
+        import pypdfium2 as pdfium
     except ImportError as exc:
         raise DocumentParseError(
             "PDF_PARSER_UNAVAILABLE",
-            "Scanned PDF support requires the optional pymupdf package.",
+            "Scanned PDF support requires the optional pypdfium2 package.",
         ) from exc
-    # PyMuPDF ships without type information; route through Any so the
-    # typed boundary stays on our own parser structures.
-    pymupdf_module: Any = pymupdf
 
     try:
-        document = pymupdf_module.open(stream=data, filetype="pdf")
+        document = pdfium.PdfDocument(data)
     except Exception as exc:
         raise DocumentParseError("INVALID_PDF", "PDF document could not be parsed.") from exc
 
@@ -604,35 +606,41 @@ def _parse_pdf_with_pymupdf(
     ocr_pages: set[int] = set()
     warnings: list[str] = []
     try:
-        for index in range(document.page_count):
-            page = document.load_page(index)
-            text = page.get_text("text") or ""
-            if len(text.strip()) >= ocr_min_text_chars:
-                page_texts.append(text)
-                continue
-            if len(ocr_pages) >= ocr_max_pages:
-                page_texts.append(text)
-                continue
-            pixmap = page.get_pixmap(
-                dpi=200,
-                colorspace=pymupdf_module.csRGB,
-                alpha=False,
-            )
-            rendered = pixmap.tobytes("png")
+        for index in range(len(document)):
+            page = document[index]
             try:
-                result = ocr_provider.extract_text(
-                    data=rendered,
-                    content_type="image/png",
-                )
-            except OCRUnavailableError:
-                warnings.append("OCR_FAILED")
-                page_texts.append(text)
-                continue
-            if result.text.strip():
-                page_texts.append(result.text)
-                ocr_pages.add(index + 1)
-            else:
-                page_texts.append(text)
+                text_page = page.get_textpage()
+                try:
+                    text = text_page.get_text_range() or ""
+                finally:
+                    text_page.close()
+                if len(text.strip()) >= ocr_min_text_chars:
+                    page_texts.append(text)
+                    continue
+                if len(ocr_pages) >= ocr_max_pages:
+                    page_texts.append(text)
+                    continue
+                bitmap = page.render(scale=_PDF_OCR_DPI / 72)
+                pil_image = bitmap.to_pil()
+                buffer = io.BytesIO()
+                pil_image.save(buffer, format="PNG")
+                rendered = buffer.getvalue()
+                try:
+                    result = ocr_provider.extract_text(
+                        data=rendered,
+                        content_type="image/png",
+                    )
+                except OCRUnavailableError:
+                    warnings.append("OCR_FAILED")
+                    page_texts.append(text)
+                    continue
+                if result.text.strip():
+                    page_texts.append(result.text)
+                    ocr_pages.add(index + 1)
+                else:
+                    page_texts.append(text)
+            finally:
+                page.close()
     finally:
         document.close()
 
@@ -640,12 +648,12 @@ def _parse_pdf_with_pymupdf(
     all_warnings = list(dict.fromkeys([*warnings, *clean_warnings]))
     if not blocks and "OCR_FAILED" in all_warnings:
         raise DocumentParseError("OCR_FAILED", "Knowledge OCR failed for every page.")
-    parser_name = f"pymupdf+{ocr_provider.name}" if ocr_pages else "pymupdf"
+    parser_name = f"pdfium+{ocr_provider.name}" if ocr_pages else "pdfium"
     return _parsed(
         blocks,
         all_warnings,
         parser_name=parser_name,
-        parser_version=str(getattr(pymupdf, "__version__", "unknown")),
+        parser_version=_pdfium_version(),
     )
 
 
@@ -682,3 +690,10 @@ def _pypdf_version() -> str:
     except ImportError:
         return "unavailable"
     return str(pypdf.__version__)
+
+
+def _pdfium_version() -> str:
+    try:
+        return importlib.metadata.version("pypdfium2")
+    except importlib.metadata.PackageNotFoundError:
+        return "unavailable"
