@@ -27,19 +27,13 @@ COPY migrations ./migrations
 COPY scripts ./scripts
 COPY assets ./assets
 COPY src ./src
-COPY vendor/langgraph /app/vendor/langgraph
-COPY vendor/langgraph-runtime.pth /app/.venv/lib/python3.11/site-packages/langgraph-runtime.pth
 RUN uv sync --frozen --no-dev
-RUN uv pip install --python /app/.venv/bin/python --no-cache \
-    "charset-normalizer==3.5.2" \
-    "orjson==3.13.0" \
-    "ormsgpack==1.13.0" \
-    "uuid-utils==0.18.0" \
-    "xxhash==4.0.2" \
-    "zstandard==0.25.0" \
-    "rpds-py==2026.6.3"
 
 ENV PATH="/app/.venv/bin:$PATH"
+
+# The image and CI both resolve LangGraph from uv.lock; fail the build if the
+# graph API used by the reply-suggestion flow cannot be imported.
+RUN python -c "import importlib.metadata as m; from langgraph.graph import END, START, StateGraph; print('langgraph', m.version('langgraph'), StateGraph.__module__)"
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app \

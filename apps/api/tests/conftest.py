@@ -15,6 +15,13 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE}"
 os.environ["APP_AUTH_MODE"] = "dev"
 os.environ["TASK_MODE"] = "inline"
 os.environ["RATE_LIMIT_ENABLED"] = "false"
+# Local .env may enable real OCR/chunking for manual acceptance; tests must
+# always run against deterministic offline defaults.
+os.environ["KNOWLEDGE_OCR_PROVIDER"] = "none"
+os.environ["KNOWLEDGE_OCR_BASE_URL"] = ""
+os.environ["KNOWLEDGE_OCR_API_KEY"] = ""
+os.environ["KNOWLEDGE_OCR_MODEL_NAME"] = ""
+os.environ["KNOWLEDGE_CHUNKING_VERSION"] = "v1"
 os.environ["ECOMMERCE_CONTENT_PROVIDER"] = "local"
 os.environ["ECOMMERCE_IMAGE_PROVIDER"] = "local"
 os.environ["ECOMMERCE_VISUAL_AUDIT_PROVIDER"] = "none"

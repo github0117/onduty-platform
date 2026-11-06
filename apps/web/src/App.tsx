@@ -10,7 +10,6 @@ import type { KnowledgeSection } from "./KnowledgePage";
 import { message } from "./feedback";
 import {
   consumeIdentitySwitchNotice,
-  isTestIdentityMode,
   switchTestIdentity,
   testIdentityProfiles,
   useAuth,
@@ -326,7 +325,6 @@ function routeForTarget(target: string): string {
 export default function App() {
   const queryClient = useQueryClient();
   const {
-    me,
     roleLabel,
     activeBusinessUnitId,
     activeBusinessUnitLabel,

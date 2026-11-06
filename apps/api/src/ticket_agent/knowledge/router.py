@@ -1030,6 +1030,8 @@ def search_knowledge(
                 version=hit.version,
                 content=hit.content,
                 score=hit.score,
+                page_start=hit.page_start,
+                page_end=hit.page_end,
             )
             for hit in hits
         ],

@@ -193,6 +193,8 @@ class KnowledgeHitView(BaseModel):
     version: str
     content: str
     score: float
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 class KnowledgeSearchResponse(BaseModel):

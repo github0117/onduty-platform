@@ -10,7 +10,7 @@ from ticket_agent.shared.settings import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 
-def _remote_embedding_ready(settings: Settings) -> bool:
+def remote_embedding_ready(settings: Settings) -> bool:
     """Whether a remote embedding endpoint is actually configured.
 
     A deployment that asks for ``openai_compatible`` without a key is almost
@@ -19,7 +19,7 @@ def _remote_embedding_ready(settings: Settings) -> bool:
     Self-hosted endpoints without a credential must set
     ``EMBEDDING_ALLOW_EMPTY_API_KEY=true`` to opt out of this guard.
     """
-    if not settings.embedding_base_url:
+    if not settings.embedding_base_url or not settings.embedding_model_name:
         return False
     return bool(settings.embedding_api_key) or settings.embedding_allow_empty_api_key
 
@@ -28,7 +28,7 @@ def _remote_embedding_ready(settings: Settings) -> bool:
 def _get_default_embedding_provider() -> EmbeddingProvider:
     settings = get_settings()
     if settings.embedding_provider == "openai_compatible":
-        if _remote_embedding_ready(settings):
+        if remote_embedding_ready(settings):
             return OpenAICompatibleEmbeddingProvider(settings)
         logger.warning(
             "Embedding provider is openai_compatible but no endpoint/key is "
@@ -44,7 +44,7 @@ def get_embedding_provider(
     if usage_guard is None:
         return _get_default_embedding_provider()
     settings = get_settings()
-    if settings.embedding_provider == "openai_compatible" and _remote_embedding_ready(
+    if settings.embedding_provider == "openai_compatible" and remote_embedding_ready(
         settings
     ):
         return OpenAICompatibleEmbeddingProvider(

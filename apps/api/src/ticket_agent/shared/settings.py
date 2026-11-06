@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     knowledge_context_prune_enabled: bool = True
     knowledge_context_max_chars: int = 5000
     knowledge_max_file_bytes: int = 20 * 1024 * 1024
+    knowledge_ocr_provider: Literal["none", "dashscope"] = "none"
+    knowledge_ocr_base_url: str = ""
+    knowledge_ocr_api_key: str = ""
+    knowledge_ocr_model_name: str = ""
+    knowledge_ocr_timeout_seconds: float = 60.0
+    knowledge_ocr_max_pages: int = 50
+    knowledge_ocr_min_text_chars: int = 30
     knowledge_reranker: Literal["hybrid", "vector"] = "hybrid"
     knowledge_vector_weight: float = 0.6
     knowledge_lexical_weight: float = 0.4
@@ -239,6 +246,21 @@ class Settings(BaseSettings):
                 self.query_rewrite_api_key = self.model_api_key
             if not self.query_rewrite_model_name:
                 self.query_rewrite_model_name = self.model_name
+        return self
+
+    @model_validator(mode="after")
+    def inherit_knowledge_ocr_credentials(self) -> "Settings":
+        # OCR calls an OpenAI-compatible vision endpoint. When no dedicated
+        # endpoint is configured, reuse the runtime model credentials; keys
+        # are only inherited from the environment, never hard-coded.
+        if self.knowledge_ocr_provider != "dashscope":
+            return self
+        if not self.knowledge_ocr_base_url:
+            self.knowledge_ocr_base_url = self.model_base_url
+        if not self.knowledge_ocr_api_key:
+            self.knowledge_ocr_api_key = self.model_api_key
+        if not self.knowledge_ocr_model_name:
+            self.knowledge_ocr_model_name = self.model_name
         return self
 
     @model_validator(mode="after")

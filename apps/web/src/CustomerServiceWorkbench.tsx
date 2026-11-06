@@ -233,7 +233,10 @@ export default function CustomerServiceWorkbench({
     return () => controller.abort();
   }, [queryClient, selectedConversationId]);
 
-  const conversationItems = conversations.data?.items ?? [];
+  const conversationItems = useMemo(
+    () => conversations.data?.items ?? [],
+    [conversations.data?.items],
+  );
   const filteredConversations = useMemo(() => {
     if (filter === "mine") {
       return conversationItems.filter(

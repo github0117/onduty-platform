@@ -20,7 +20,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   ApiError,
@@ -104,7 +104,6 @@ import type {
   DigitalEmployeeTemplate,
   McpConnector,
   ManagedEmployeeTemplateRevision,
-  WorkforceTask,
 } from "./types";
 import { message } from "./feedback";
 
@@ -2995,7 +2994,10 @@ function SupervisorTaskCard() {
       message.error(error.message);
     },
   });
-  const taskItems = tasks.data?.items ?? [];
+  const taskItems = useMemo(
+    () => tasks.data?.items ?? [],
+    [tasks.data?.items],
+  );
   const selectedTask =
     taskItems.find((task) => task.id === selectedTaskId) ??
     taskItems[0];

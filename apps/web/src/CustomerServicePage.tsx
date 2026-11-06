@@ -3132,7 +3132,10 @@ export default function CustomerServicePage({
 
   const ticket = detail.data;
   const pendingReview = ticket?.workflow_state === "PENDING_REVIEW";
-  const conversationItems = conversations.data?.items ?? [];
+  const conversationItems = useMemo(
+    () => conversations.data?.items ?? [],
+    [conversations.data?.items],
+  );
   const filteredConversations = useMemo(() => {
     if (conversationFilter === "review") {
       return conversationItems.filter(

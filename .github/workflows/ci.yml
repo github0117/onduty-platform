@@ -84,7 +84,11 @@ jobs:
       - run: uv run alembic upgrade head
       - name: Detect model/migration drift
         run: uv run alembic check
-      - run: uv run pytest tests/integration/test_postgres_pgvector.py -q
+      - name: Run PostgreSQL integration tests
+        run: |
+          uv run pytest -q \
+            tests/integration/test_postgres_pgvector.py \
+            tests/integration/test_postgres_turn_event_sequence.py
 
   rag-gate:
     name: RAG HOLDOUT regression gate
@@ -289,6 +293,7 @@ jobs:
           cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: pnpm test:unit
       - run: pnpm build
 
   e2e:
