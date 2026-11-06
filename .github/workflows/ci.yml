@@ -194,6 +194,11 @@ jobs:
             --min-context-precision 0.15 \
             --min-no-grounding-accuracy 1.0 \
             --max-unresolved-passages 0
+      - name: Stop API
+        if: always()
+        # The nohup'd `uv run uvicorn` keeps a uv process alive; without this
+        # the post-job setup-uv cache prune times out waiting for its lock.
+        run: pkill -f "uvicorn ticket_agent.main:app" || true
       - name: Upload API log
         if: failure()
         uses: actions/upload-artifact@v4
@@ -273,6 +278,11 @@ jobs:
             --min-document-recall-at-k 0.80 \
             --min-chunk-mrr 0.60 \
             --max-unresolved-passages 0
+      - name: Stop API
+        if: always()
+        # The nohup'd `uv run uvicorn` keeps a uv process alive; without this
+        # the post-job setup-uv cache prune times out waiting for its lock.
+        run: pkill -f "uvicorn ticket_agent.main:app" || true
       - name: Upload API log
         if: failure()
         uses: actions/upload-artifact@v4

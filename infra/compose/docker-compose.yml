@@ -1,3 +1,11 @@
+x-api-build: &api-build
+  context: ../../apps/api
+  dockerfile: Dockerfile
+  args:
+    # 默认国际源；国内本机可在 infra/compose/.env 或 shell 里覆盖为镜像。
+    PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
+    APT_MIRROR: ${APT_MIRROR:-}
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -30,9 +38,7 @@ services:
 
   migrate:
     image: ticket-agent-api:local
-    build:
-      context: ../../apps/api
-      dockerfile: Dockerfile
+    build: *api-build
     profiles: ["app"]
     env_file:
       - path: ../../.env
@@ -133,9 +139,7 @@ services:
 
   api:
     image: ticket-agent-api:local
-    build:
-      context: ../../apps/api
-      dockerfile: Dockerfile
+    build: *api-build
     profiles: ["app"]
     env_file:
       - path: ../../.env
@@ -263,9 +267,7 @@ services:
 
   worker:
     image: ticket-agent-api:local
-    build:
-      context: ../../apps/api
-      dockerfile: Dockerfile
+    build: *api-build
     profiles: ["app"]
     ports: []
     env_file:
@@ -293,9 +295,7 @@ services:
 
   beat:
     image: ticket-agent-api:local
-    build:
-      context: ../../apps/api
-      dockerfile: Dockerfile
+    build: *api-build
     profiles: ["app"]
     ports: []
     env_file:
