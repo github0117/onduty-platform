@@ -35,6 +35,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: uv run ruff check src tests
       - run: uv run mypy src
+      - name: License audit (Python dependencies)
+        run: uv run python ../../scripts/check_licenses.py --skip-node
       - name: Run test suite with coverage gate
         run: |
           set -o pipefail
@@ -295,6 +297,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm test:unit
       - run: pnpm build
+      - name: License audit (Node dependencies)
+        run: python3 ../../scripts/check_licenses.py --node-only
 
   e2e:
     name: Playwright end-to-end

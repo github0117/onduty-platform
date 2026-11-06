@@ -21,7 +21,7 @@ LOAD_TEST_CONCURRENCY ?= 50
 LOAD_TEST_DURATION ?= 60
 LOAD_TEST_ARGS ?=
 
-.PHONY: install test smoke load-test infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint typecheck test-unit format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke preflight migrate-check db-backup db-restore observability-up observability-down e2e-web e2e-web-docker
+.PHONY: install test smoke load-test infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint licenses typecheck test-unit format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke preflight migrate-check db-backup db-restore observability-up observability-down e2e-web e2e-web-docker
 
 install:
 	cd apps/api && uv sync --all-groups
@@ -73,6 +73,9 @@ typecheck:
 
 test-unit:
 	cd apps/web && ./node_modules/.bin/vitest run
+
+licenses:
+	cd apps/api && uv run $(UV_RUN_FLAGS) python ../../scripts/check_licenses.py
 
 build:
 	cd apps/web && ./node_modules/.bin/vite build
