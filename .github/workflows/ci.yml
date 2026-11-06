@@ -28,6 +28,7 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
+          cache-suffix: backend
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
@@ -80,6 +81,7 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
+          cache-suffix: postgres
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
@@ -124,6 +126,7 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
+          cache-suffix: rag-holdout
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
@@ -243,6 +246,7 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
+          cache-suffix: rag-quality
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
@@ -267,7 +271,7 @@ jobs:
             --top-k 5 \
             --min-chunk-recall-at-k 0.85 \
             --min-document-recall-at-k 0.80 \
-            --min-mrr 0.60 \
+            --min-chunk-mrr 0.60 \
             --max-unresolved-passages 0
       - name: Upload API log
         if: failure()
@@ -309,11 +313,12 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.25.0
+      # No setup-node pnpm cache here: dependencies install into the local
+      # .pnpm-store for the Docker build context, so the default store path
+      # never exists and the post-job cache save would fail the run.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: apps/web/pnpm-lock.yaml
       - name: Install frontend dependencies
         working-directory: apps/web
         env:
