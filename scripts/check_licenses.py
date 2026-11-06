@@ -298,7 +298,7 @@ def main() -> int:
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
     with args.report.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(
             ["ecosystem", "name", "version", "license", "status", "reason", "allowlist_note"]
         )
