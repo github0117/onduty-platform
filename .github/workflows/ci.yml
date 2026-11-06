@@ -322,6 +322,13 @@ jobs:
       - name: Build frontend
         working-directory: apps/web
         run: pnpm build
+      - name: Build application image
+        # mock-business/worker/beat reference ticket-agent-api:local without
+        # their own build section, so `up --build` could try to pull it from
+        # a registry before api finishes building. Build the tag explicitly.
+        run: >-
+          docker compose -f infra/compose/docker-compose.yml
+          --profile app --profile test build api
       - name: Start demo stack
         run: |
           set -o pipefail
