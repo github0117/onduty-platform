@@ -18,27 +18,26 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import {
-  createDigitalEmployeeRouteEvaluationCase,
-  deleteDigitalEmployeeRouteEvaluationCase,
   listBusinessServiceEntries,
   listDigitalEmployeeRouteDecisions,
-  listDigitalEmployeeRouteEvaluationCases,
-  listDigitalEmployeeRouteEvaluationRuns,
   listDigitalEmployeeRouteIntentConflicts,
   listDigitalEmployeeRouteRules,
   replaceBusinessServiceEntryEmployees,
-  runDigitalEmployeeRouteEvaluation,
-  updateDigitalEmployeeRouteEvaluationCase,
   updateDigitalEmployeeRouteRule,
 } from "../../api";
 import { message } from "../../feedback";
+import {
+  accuracyPercent,
+  enabledCaseCount,
+  filterEvaluationResults,
+  useRouteEvaluation,
+} from "./useRouteEvaluation";
 import type {
   BusinessServiceEntry,
   DigitalEmployee,
   DigitalEmployeeRouteCandidate,
   DigitalEmployeeRouteEvaluationCase,
   DigitalEmployeeRouteEvaluationDataset,
-  DigitalEmployeeRouteEvaluationRun,
   DigitalEmployeeRouteIntentConflictList,
   DigitalEmployeeRouteRule,
 } from "../../types";
@@ -720,11 +719,9 @@ export function RouteEvaluationCard({
   employees: DigitalEmployee[];
   entries: BusinessServiceEntry[];
 }) {
-  const queryClient = useQueryClient();
   const [entryId, setEntryId] = useState("");
   const [dataset, setDataset] =
     useState<DigitalEmployeeRouteEvaluationDataset>("TUNING");
-  const [selectedRunId, setSelectedRunId] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [editingCase, setEditingCase] =
     useState<DigitalEmployeeRouteEvaluationCase | null>(null);
@@ -756,79 +753,15 @@ export function RouteEvaluationCard({
       employee.status === "ACTIVE" &&
       employee.business_unit_id === entry?.business_unit_id,
   );
-  const cases = useQuery({
-    queryKey: ["route-evaluation-cases", entryId, dataset],
-    queryFn: () => listDigitalEmployeeRouteEvaluationCases(entryId, dataset),
-    enabled: Boolean(entryId),
-  });
-  const runs = useQuery({
-    queryKey: ["route-evaluation-runs", entryId, dataset],
-    queryFn: () => listDigitalEmployeeRouteEvaluationRuns(entryId, dataset),
-    enabled: Boolean(entryId),
-  });
-  const selectedRun: DigitalEmployeeRouteEvaluationRun | undefined =
-    runs.data?.items.find((item) => item.id === selectedRunId) ??
-    runs.data?.items[0];
-  const saveCase = useMutation({
-    mutationFn: () => {
-      if (!entryId) throw new Error("请选择业务入口");
-      if (!expectedEmployeeId) throw new Error("请选择应处理员工");
-      if (!question.trim()) throw new Error("请填写评测问题");
-      if (editingCase) {
-        return updateDigitalEmployeeRouteEvaluationCase(editingCase.id, {
-          expectedEmployeeId,
-          dataset: caseDataset,
-          question: question.trim(),
-          notes: notes.trim(),
-          enabled: caseEnabled,
-        });
-      }
-      return createDigitalEmployeeRouteEvaluationCase({
-        serviceEntryId: entryId,
-        expectedEmployeeId,
-        dataset: caseDataset,
-        question: question.trim(),
-        notes: notes.trim(),
-        enabled: caseEnabled,
-      });
-    },
-    onSuccess: async () => {
-      message.success(editingCase ? "评测问题已更新" : "评测问题已添加");
-      setModalOpen(false);
-      setEditingCase(null);
-      await queryClient.invalidateQueries({
-        queryKey: ["route-evaluation-cases", entryId],
-      });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const removeCase = useMutation({
-    mutationFn: (caseId: string) =>
-      deleteDigitalEmployeeRouteEvaluationCase(caseId),
-    onSuccess: async () => {
-      message.success("评测问题已删除");
-      await queryClient.invalidateQueries({
-        queryKey: ["route-evaluation-cases", entryId],
-      });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const runEvaluation = useMutation({
-    mutationFn: () => {
-      if (!entryId) throw new Error("请选择业务入口");
-      return runDigitalEmployeeRouteEvaluation(entryId, dataset);
-    },
-    onSuccess: async (run) => {
-      message.success(
-        `路由评测完成：准确率 ${(run.accuracy * 100).toFixed(0)}%`,
-      );
-      setSelectedRunId(run.id);
-      await queryClient.invalidateQueries({
-        queryKey: ["route-evaluation-runs", entryId],
-      });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
+  const {
+    cases,
+    runs,
+    selectedRun,
+    setSelectedRunId,
+    saveCase,
+    removeCase,
+    runEvaluation,
+  } = useRouteEvaluation({ entryId, dataset });
   const openCreate = () => {
     setEditingCase(null);
     setQuestion("");
@@ -853,9 +786,7 @@ export function RouteEvaluationCard({
     setExpectedEmployeeId(item.expected_employee_id);
     setModalOpen(true);
   };
-  const accuracyRate = selectedRun
-    ? Math.round(selectedRun.accuracy * 100)
-    : 0;
+  const accuracyRate = accuracyPercent(selectedRun);
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -920,7 +851,7 @@ export function RouteEvaluationCard({
           <Card size="small">
             <Statistic
               title="启用的问题"
-              value={(cases.data ?? []).filter((item) => item.enabled).length}
+              value={enabledCaseCount(cases.data)}
               suffix={`/ ${cases.data?.length ?? 0}`}
             />
           </Card>
@@ -1161,8 +1092,9 @@ export function RouteEvaluationCard({
           <Table
             rowKey="case_id"
             size="small"
-            dataSource={selectedRun.results.filter(
-              (item) => !failuresOnly || !item.matched,
+            dataSource={filterEvaluationResults(
+              selectedRun.results,
+              failuresOnly,
             )}
             pagination={{ pageSize: 10, showSizeChanger: true }}
             expandable={{
@@ -1282,7 +1214,26 @@ export function RouteEvaluationCard({
         title={editingCase ? "编辑评测问题" : "添加评测问题"}
         okText={editingCase ? "保存问题" : "添加问题"}
         confirmLoading={saveCase.isPending}
-        onOk={() => saveCase.mutate()}
+        onOk={() =>
+          saveCase.mutate(
+            {
+              caseId: editingCase?.id ?? null,
+              values: {
+                expectedEmployeeId,
+                dataset: caseDataset,
+                question,
+                notes,
+                enabled: caseEnabled,
+              },
+            },
+            {
+              onSuccess: () => {
+                setModalOpen(false);
+                setEditingCase(null);
+              },
+            },
+          )
+        }
         onCancel={() => {
           setModalOpen(false);
           setEditingCase(null);

@@ -17,17 +17,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import {
-  createEmployeeDraftTrial,
-  evaluateEmployeeDraft,
   listEmployeeDraftRevisions,
-  listEmployeeDrafts,
-  promoteEmployeeDraftToTemplate,
-  publishEmployeeDraft,
-  reopenEmployeeDraft,
   restoreEmployeeDraftRevision,
-  reviewEmployeeDraft,
-  rollbackEmployeeDraft,
-  updateEmployeeDraft,
 } from "../../api";
 import { message } from "../../feedback";
 import type {
@@ -35,25 +26,19 @@ import type {
   DigitalEmployeeDraftRevision,
 } from "../../types";
 import { draftStatus, draftStatusColor } from "./shared";
+import type { DraftAction } from "./useEmployeeDrafts";
+import { useEmployeeDrafts } from "./useEmployeeDrafts";
 
 const { Paragraph, Text } = Typography;
 const { TextArea } = Input;
 
-export type DraftAction =
-  | "APPROVE"
-  | "REJECT"
-  | "REOPEN"
-  | "TRIAL"
-  | "EVALUATE"
-  | "PUBLISH"
-  | "ROLLBACK";
+export type { DraftAction };
 
 export function EmployeeDraftsCard({
   onEditEmployee,
 }: {
   onEditEmployee: (employeeId: string) => void;
 }) {
-  const queryClient = useQueryClient();
   const [reviewTarget, setReviewTarget] = useState<{
     draft: DigitalEmployeeDraft;
     decision: "APPROVE" | "REJECT";
@@ -81,117 +66,8 @@ export function EmployeeDraftsCard({
     }, 400);
     return () => window.clearTimeout(timer);
   }, []);
-  const drafts = useQuery({
-    queryKey: ["employee-drafts"],
-    queryFn: listEmployeeDrafts,
-    refetchInterval: 10_000,
-  });
-  const action = useMutation({
-    mutationFn: (input: {
-      draftId: string;
-      action: DraftAction;
-      note?: string;
-    }): Promise<DigitalEmployeeDraft> => {
-      if (input.action === "APPROVE" || input.action === "REJECT") {
-        return reviewEmployeeDraft(input.draftId, {
-          decision: input.action,
-          note: input.note ?? "",
-        });
-      }
-      if (input.action === "TRIAL") {
-        return createEmployeeDraftTrial(input.draftId);
-      }
-      if (input.action === "REOPEN") {
-        return reopenEmployeeDraft(input.draftId);
-      }
-      if (input.action === "EVALUATE") {
-        return evaluateEmployeeDraft(input.draftId);
-      }
-      if (input.action === "PUBLISH") {
-        return publishEmployeeDraft(input.draftId);
-      }
-      return rollbackEmployeeDraft(input.draftId);
-    },
-    onSuccess: async (_draft, input) => {
-      const labels: Record<DraftAction, string> = {
-        APPROVE: "员工草案已批准",
-        REJECT: "员工草案已拒绝",
-        REOPEN: "员工草案已重新打开",
-        TRIAL: "试用员工已创建",
-        EVALUATE: "员工评测已完成",
-        PUBLISH: "数字员工已正式发布",
-        ROLLBACK: "数字员工已回滚停用",
-      };
-      message.success(labels[input.action]);
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["employee-drafts"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["employee-draft-revisions"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["digital-employees"],
-        }),
-      ]);
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const promoteToTemplate = useMutation({
-    mutationFn: (draftId: string) =>
-      promoteEmployeeDraftToTemplate(draftId),
-    onSuccess: async () => {
-      message.success(
-        "已生成模板草案，请到岗位模板页面完成批准和发布",
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["employee-drafts"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["managed-employee-templates"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["digital-employee-templates"],
-        }),
-      ]);
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const editDraft = useMutation({
-    mutationFn: (draft: DigitalEmployeeDraft) =>
-      updateEmployeeDraft(draft.id, {
-        name: editName.trim(),
-        capabilities: editCapabilities
-          .split(/[,，\n]/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-        intents: editIntents
-          .split(/[,，\n]/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-        skillCodes: editSkillCodes
-          .split(/[,，\n]/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-        toolAllowlist: editTools
-          .split(/[,，\n]/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-      }),
-    onSuccess: async () => {
-      message.success("员工草案已更新");
-      setEditTarget(null);
-      await queryClient.invalidateQueries({
-        queryKey: ["employee-drafts"],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["employee-draft-revisions"],
-      });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const items = drafts.data?.items ?? [];
+  const { drafts, items, action, promoteToTemplate, updateDraft } =
+    useEmployeeDrafts();
 
   const confirmAction = (
     draft: DigitalEmployeeDraft,
@@ -547,11 +423,22 @@ export function EmployeeDraftsCard({
         okText="保存草案"
         cancelText="取消"
         width={720}
-        confirmLoading={editDraft.isPending}
+        confirmLoading={updateDraft.isPending}
         okButtonProps={{ disabled: !editName.trim() }}
         onCancel={() => setEditTarget(null)}
         onOk={() => {
-          if (editTarget) editDraft.mutate(editTarget);
+          if (!editTarget) return;
+          updateDraft.mutate(
+            {
+              draftId: editTarget.id,
+              name: editName,
+              capabilities: editCapabilities,
+              intents: editIntents,
+              skillCodes: editSkillCodes,
+              tools: editTools,
+            },
+            { onSuccess: () => setEditTarget(null) },
+          );
         }}
       >
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
