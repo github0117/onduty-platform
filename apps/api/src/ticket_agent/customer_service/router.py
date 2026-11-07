@@ -1,6 +1,6 @@
 import asyncio
+import contextlib
 import json
-import queue
 import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -896,22 +896,30 @@ def stream_customer_message(
     # Release the request's read transaction before the worker writes in its
     # own session (SQLite tests would otherwise block on a shared lock).
     db.close()
-    events: queue.Queue[dict[str, object]] = queue.Queue()
-    worker: threading.Thread | None = None
-    if turn_id is not None:
-        worker = threading.Thread(
-            target=process_conversation_turn_stream,
-            args=(
-                turn_id,
-                correlation_id(request),
-                events.put,
-            ),
-            daemon=True,
-            name=f"conversation-turn-{turn_id}",
-        )
-        worker.start()
 
     async def event_stream() -> AsyncIterator[str]:
+        loop = asyncio.get_running_loop()
+        events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        worker: threading.Thread | None = None
+        if turn_id is not None:
+
+            def publish(event: dict[str, object]) -> None:
+                # The server may shut the loop down mid-turn; the worker's
+                # database writes are already durable.
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(events.put_nowait, event)
+
+            worker = threading.Thread(
+                target=process_conversation_turn_stream,
+                args=(
+                    turn_id,
+                    correlation_id(request),
+                    publish,
+                ),
+                daemon=True,
+                name=f"conversation-turn-{turn_id}",
+            )
+            worker.start()
         yield _sse_event(
             "start",
             {
@@ -932,8 +940,9 @@ def stream_customer_message(
             return
         while True:
             try:
-                event = await asyncio.to_thread(events.get, True, 0.5)
-            except queue.Empty:
+                async with asyncio.timeout(0.5):
+                    event = await events.get()
+            except TimeoutError:
                 # Starlette cancels this generator on client disconnect;
                 # keep-alives just stop proxy idle timeouts meanwhile.
                 yield ": keep-alive\n\n"

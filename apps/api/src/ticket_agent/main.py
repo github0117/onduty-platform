@@ -1,4 +1,5 @@
 import json
+import logging
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -9,7 +10,7 @@ from threading import Lock
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import text
@@ -43,6 +44,7 @@ from ticket_agent.identity.router import router as identity_router
 from ticket_agent.integrations.metrics import SyncMetricsService
 from ticket_agent.integrations.router import router as integration_router
 from ticket_agent.knowledge.metrics import RagMetricsService
+from ticket_agent.knowledge.readiness import rag_readiness_issues
 from ticket_agent.knowledge.router import router as knowledge_router
 from ticket_agent.logistics.router import router as logistics_router
 from ticket_agent.mcp_connectors.router import router as mcp_connector_router
@@ -73,6 +75,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 demo_reset_lock = Lock()
 DEMO_RESET_DB_LOCK_KEY = 84739021
 DEMO_RESET_CONFIRMATION = "reset-bu_demo"
@@ -208,6 +211,18 @@ def health_live() -> HealthResponse:
 def health_ready() -> HealthResponse:
     with SessionLocal() as session:
         session.execute(text("SELECT 1"))
+    issues = rag_readiness_issues(settings)
+    if issues:
+        logger.warning("RAG readiness failed: %s", "; ".join(issues))
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "database": "ok",
+                "environment": settings.app_env,
+                "issues": issues,
+            },
+        )
     return HealthResponse(
         status="ok",
         database="ok",

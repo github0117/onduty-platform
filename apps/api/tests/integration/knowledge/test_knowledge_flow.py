@@ -1,13 +1,16 @@
+import io
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from reportlab.pdfgen import canvas
 from sqlalchemy import select
 
 from ticket_agent.ecommerce.models import EcommerceProduct
 from ticket_agent.knowledge.local_embedding import LocalEmbeddingProvider
 from ticket_agent.knowledge.models import KnowledgeChunk, KnowledgeVersion
+from ticket_agent.knowledge.ocr import OCRResult
 from ticket_agent.knowledge.query_rewrite import (
     QueryRewriteError,
     query_rewrite_fallback_total,
@@ -1577,6 +1580,111 @@ def test_structured_chunking_metadata_when_v2_enabled(
     assert paragraph_chunk.metadata_json["chunking_version"] == "v2"
     table_chunk = next(chunk for chunk in chunks if "仅退款" in chunk.content)
     assert table_chunk.metadata_json["block_kinds"] == ["table"]
+
+
+def _pdf_bytes(texts: list[str | None]) -> bytes:
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer)
+    for text in texts:
+        if text:
+            pdf.drawString(72, 720, text)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
+def _pdf_chunks(version_id: UUID) -> list[KnowledgeChunk]:
+    with SessionLocal() as session:
+        return list(
+            session.execute(
+                select(KnowledgeChunk).where(
+                    KnowledgeChunk.knowledge_version_id == version_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+def test_pdf_version_chunks_record_page_range(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document_id = _create_document(client, title="退款政策扫描件")
+    monkeypatch.setenv("KNOWLEDGE_CHUNKING_VERSION", "v2")
+    get_settings.cache_clear()
+    try:
+        with SessionLocal() as session:
+            version = KnowledgeService(session).create_version_from_file(
+                UUID(document_id),
+                version_label="pdf-pages",
+                filename="policy.pdf",
+                content_type="application/pdf",
+                data=_pdf_bytes(
+                    [
+                        "Page one describes the refund workflow in detail.",
+                        "Page two lists the evidence required for a claim.",
+                    ]
+                ),
+            )
+            chunks = _pdf_chunks(version.id)
+            blocks_payload = version.content_blocks_json
+    finally:
+        get_settings.cache_clear()
+
+    assert chunks
+    assert all(chunk.metadata_json["chunking_version"] == "v2" for chunk in chunks)
+    assert all(chunk.metadata_json["page_start"] == 1 for chunk in chunks)
+    assert max(chunk.metadata_json["page_end"] for chunk in chunks) == 2
+    assert blocks_payload is not None
+    assert {block["page"] for block in blocks_payload["blocks"]} == {1, 2}
+
+
+class _FakeImageOCR:
+    name = "fake"
+
+    def extract_text(self, *, data: bytes, content_type: str) -> OCRResult:
+        del data, content_type
+        return OCRResult(
+            text="扫描条款：签收后七天内可以申请退款。",
+            provider=self.name,
+            model_name="fake-model",
+        )
+
+
+def test_image_version_uses_ocr_and_records_page(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document_id = _create_document(client, title="退款条款截图")
+    monkeypatch.setenv("KNOWLEDGE_CHUNKING_VERSION", "v2")
+    monkeypatch.setattr(
+        "ticket_agent.knowledge.service.get_ocr_provider",
+        lambda settings: _FakeImageOCR(),
+    )
+    get_settings.cache_clear()
+    try:
+        with SessionLocal() as session:
+            version = KnowledgeService(session).create_version_from_file(
+                UUID(document_id),
+                version_label="image-ocr",
+                filename="scan.png",
+                content_type="image/png",
+                data=b"\x89PNG\r\n",
+            )
+            chunks = _pdf_chunks(version.id)
+            blocks_payload = version.content_blocks_json
+    finally:
+        get_settings.cache_clear()
+
+    assert blocks_payload is not None
+    block = blocks_payload["blocks"][0]
+    assert block["kind"] == "image_text"
+    assert block["page"] == 1
+    assert block["ocr"] is True
+    assert len(chunks) == 1
+    assert chunks[0].metadata_json["page_start"] == 1
+    assert chunks[0].metadata_json["page_end"] == 1
 
 
 class _RecordingEmbedding(LocalEmbeddingProvider):

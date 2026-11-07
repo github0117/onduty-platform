@@ -44,6 +44,12 @@
   改写，最近运行会展示平均上下文字符数/估算 token 和未解析段落原因；
   真实 embedding 与远端 rerank 已做协议和公开集 A/B，远端 rerank 默认仍关闭；
   无依据或校验不通过时转人工，不编造答案。
+- **知识库文件与 OCR**：支持 `txt/md/html/docx/pdf/png/jpg/jpeg/webp/bmp/tif/tiff`。
+  PDF 逐页解析并记录页码；`KNOWLEDGE_OCR_PROVIDER=dashscope` 时，图片直接 OCR，
+  扫描 PDF 的纯文字页不 OCR、低文字页渲染后 OCR（`MAX_PAGES` 控制页数上限）。
+  未配置 OCR 时图片上传返回 `OCR_NOT_CONFIGURED`，纯扫描 PDF 返回
+  `EMPTY_DOCUMENT`，不会静默入库空内容。页码随 block 与 chunk metadata
+  （`page_start/page_end`）写入检索命中，回答引用可直接展示来源页。
 - **MCP 工具治理**：只读工具自动执行；写工具走确定性策略、独立审批、
   幂等执行、事故对账与补偿审批。
 - **外部连接中心**：邮件渠道（IMAP 收信 / SMTP 回信）与只读 HTTP JSON 业务系统
@@ -132,8 +138,9 @@ Top 10”合并修复任务、负反馈聚类与未处理的抽检失败，给�
 
 ```bash
 make test          # 后端测试
-make lint          # Ruff
-make typecheck     # mypy + TypeScript
+make lint          # 后端 Ruff + 前端 TypeScript/ESLint
+make typecheck     # 后端 mypy
+make test-unit     # 前端 Vitest 单元测试
 make build         # Vite production build
 make e2e-web       # Playwright 浏览器回归
 

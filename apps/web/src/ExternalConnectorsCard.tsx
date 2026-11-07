@@ -38,7 +38,6 @@ import type {
   BusinessServiceEntry,
   DigitalEmployee,
   ExternalConnector,
-  ExternalConnectorBinding,
   ExternalConnectorInboundMessage,
   ExternalConnectorOutboundMessage,
   ExternalConnectorQueryResult,

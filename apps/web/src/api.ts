@@ -70,7 +70,6 @@ import type {
   KnowledgeEvaluationDataset,
   KnowledgeEvaluationRun,
   KnowledgeEvaluationRunList,
-  KnowledgeFeedback,
   KnowledgeFeedbackClusterList,
   KnowledgeFeedbackList,
   KnowledgeRepairTask,

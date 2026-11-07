@@ -1439,175 +1439,246 @@ class CustomerConversationService:
             )
         )
         if small_talk_reply is not None:
-            # Greetings and self-introduction need no evidence, so the gate
-            # clears them explicitly. Leaving gate_json NULL would make the
-            # connector treat them as unreviewed and never auto-send.
-            small_talk_gate = evaluate_gate(
-                GateContext(
-                    grounding_status="NOT_REQUIRED",
-                    claims=[],
-                    citations=[],
-                    risk_level=None,
-                    ticket_needs_human=False,
-                    skill_completion=None,
-                    path="small_talk",
-                )
-            )
-            ticket_id = conversation.current_ticket_id
-            buyer_message = CustomerMessage(
-                conversation_id=conversation.id,
-                sequence=sequence,
-                role="BUYER",
-                content=payload.content.strip(),
-                ticket_id=ticket_id,
-                created_by=principal.actor_id,
-            )
-            self.session.add(buyer_message)
-            self.session.flush()
-            # The fast path reads what the conversation already established:
-            # memory facts and the latest handoff. Without this the greeting
-            # ignored everything the buyer had said before it.
-            fast_path_context = assemble_context(
-                self.session,
-                conversation_id=conversation.id,
-                current_message=buyer_message,
-            )
-            small_talk_reply = (
-                _small_talk_reply(
-                    payload.content,
-                    enterprise_service=enterprise_service,
-                    kind=small_talk_kind,
-                    employee=small_talk_employee,
-                    memory=fast_path_context.memory,
-                )
-                or small_talk_reply
-            )
-            assistant_message = CustomerMessage(
-                conversation_id=conversation.id,
-                sequence=sequence + 1,
-                role="ASSISTANT",
-                content=small_talk_reply,
-                ticket_id=ticket_id,
-                created_by="digital_employee",
-            )
-            self.session.add(assistant_message)
-            self.session.flush()
-            lease_seconds = get_settings().conversation_turn_lease_seconds
-            turn = ConversationTurn(
-                conversation_id=conversation.id,
-                ticket_id=ticket_id,
-                sequence=self._next_turn_sequence(conversation.id),
-                status=TurnStatus.PENDING.value,
-                stage_label="问候已直接回复",
-                user_message_id=buyer_message.id,
-                assistant_message_id=assistant_message.id,
-                employee_id=conversation.employee_id,
-                intent="small_talk",
-                correlation_id=correlation_id,
-                client_message_id=payload.client_message_id,
-                attempt_count=1,
-                lease_expires_at=new_lease(lease_seconds),
-                analysis_json={
-                    "small_talk_kind": small_talk_kind,
-                },
-                context_json=fast_path_context.payload,
-                response_provider="deterministic",
-                response_model=(
-                    "employee-self-introduction-v1"
-                    if small_talk_kind == "identity"
-                    else "small-talk-v1"
-                ),
-                grounding_status="NOT_REQUIRED",
-                gate_json=jsonable_encoder(small_talk_gate),
-                citations_json=[],
-                trace_json=["small_talk_fast_path"],
-                tool_calls_json=[],
-                started_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
-            )
-            self.session.add(turn)
-            self.session.flush()
-            buyer_message.turn_id = turn.id
-            assistant_message.turn_id = turn.id
-            record_turn_event(
-                self.session,
-                turn,
-                event_type="TURN_CREATED",
-                actor_id="digital_employee.small_talk",
-                correlation_id=correlation_id,
-                payload={"fast_path": "small_talk"},
-            )
-            record_turn_event(
-                self.session,
-                turn,
-                event_type="CONTEXT_ASSEMBLED",
-                actor_id="digital_employee.small_talk",
-                correlation_id=correlation_id,
-                payload={**fast_path_context.payload, "fast_path": "small_talk"},
-            )
-            transition_turn(
-                self.session,
-                turn,
-                TurnStatus.RUNNING,
-                reason_code="SMALL_TALK_FAST_PATH",
-                actor_id="digital_employee.small_talk",
-                correlation_id=correlation_id,
-            )
-            record_turn_event(
-                self.session,
-                turn,
-                event_type="GATE_EVALUATED",
-                actor_id="digital_employee.small_talk",
-                correlation_id=correlation_id,
-                payload={
-                    "decision": small_talk_gate["decision"],
-                    "reasons": small_talk_gate["reasons"],
-                    "version": small_talk_gate["version"],
-                },
-            )
-            transition_turn(
-                self.session,
-                turn,
-                TurnStatus.COMPLETED,
-                reason_code="SMALL_TALK_ANSWERED",
-                actor_id="digital_employee.small_talk",
-                correlation_id=correlation_id,
-                stage_label="问候已直接回复",
-                payload={
-                    "grounding_status": "NOT_REQUIRED",
-                    "small_talk_kind": small_talk_kind,
-                    "gate_decision": small_talk_gate["decision"],
-                },
-            )
-            turn.lease_expires_at = None
-            self._update_memory(
-                conversation.id,
-                turn.sequence,
-                payload.content,
-                small_talk_reply,
-                turn_id=turn.id,
-            )
-            conversation.status = "ACTIVE"
-            conversation.version += 1
-            record_audit(
-                self.session,
-                correlation_id=correlation_id,
-                event_type="customer_service.small_talk.answered",
-                actor_type="SERVICE",
-                actor_id="digital_employee.small_talk",
-                resource_type="customer_conversation",
-                resource_id=conversation.id,
-                action="answer",
-                decision="EXECUTED",
-                payload={"message": payload.content.strip()},
-            )
-            self.session.commit()
-            self.session.refresh(conversation)
-            return BuyerMessageResult(
+            return self._answer_small_talk(
                 conversation=conversation,
-                turn_id=None,
-                replayed=False,
+                payload=payload,
+                sequence=sequence,
+                enterprise_service=enterprise_service,
+                small_talk_kind=small_talk_kind,
+                small_talk_employee=small_talk_employee,
+                small_talk_reply=small_talk_reply,
+                principal=principal,
+                correlation_id=correlation_id,
             )
+
+        ticket, created, previous_employee_id, reroute_reason = (
+            self._resolve_initial_ticket(
+                conversation=conversation,
+                payload=payload,
+                body=body,
+                source_system=source_system,
+                enterprise_service=enterprise_service,
+                human_owner_id=human_owner_id,
+                principal=principal,
+                correlation_id=correlation_id,
+            )
+        )
+        if created:
+            return self._create_initial_turn(
+                conversation=conversation,
+                ticket=ticket,
+                payload=payload,
+                sequence=sequence,
+                previous_employee_id=previous_employee_id,
+                reroute_reason=reroute_reason,
+                human_owner_id=human_owner_id,
+                principal=principal,
+                correlation_id=correlation_id,
+            )
+        return BuyerMessageResult(
+            conversation=conversation,
+            turn_id=None,
+            replayed=False,
+        )
+
+
+    def _answer_small_talk(
+        self,
+        *,
+        conversation: CustomerConversation,
+        payload: CustomerMessageCreate,
+        sequence: int,
+        enterprise_service: bool,
+        small_talk_kind: SmallTalkKind | None,
+        small_talk_employee: DigitalEmployee | None,
+        small_talk_reply: str,
+        principal: Principal,
+        correlation_id: str,
+    ) -> BuyerMessageResult:
+        """Answer a greeting or self-introduction without the agent loop."""
+        # Greetings and self-introduction need no evidence, so the gate
+        # clears them explicitly. Leaving gate_json NULL would make the
+        # connector treat them as unreviewed and never auto-send.
+        small_talk_gate = evaluate_gate(
+            GateContext(
+                grounding_status="NOT_REQUIRED",
+                claims=[],
+                citations=[],
+                risk_level=None,
+                ticket_needs_human=False,
+                skill_completion=None,
+                path="small_talk",
+            )
+        )
+        ticket_id = conversation.current_ticket_id
+        buyer_message = CustomerMessage(
+            conversation_id=conversation.id,
+            sequence=sequence,
+            role="BUYER",
+            content=payload.content.strip(),
+            ticket_id=ticket_id,
+            created_by=principal.actor_id,
+        )
+        self.session.add(buyer_message)
+        self.session.flush()
+        # The fast path reads what the conversation already established:
+        # memory facts and the latest handoff. Without this the greeting
+        # ignored everything the buyer had said before it.
+        fast_path_context = assemble_context(
+            self.session,
+            conversation_id=conversation.id,
+            current_message=buyer_message,
+        )
+        small_talk_reply = (
+            _small_talk_reply(
+                payload.content,
+                enterprise_service=enterprise_service,
+                kind=small_talk_kind,
+                employee=small_talk_employee,
+                memory=fast_path_context.memory,
+            )
+            or small_talk_reply
+        )
+        assistant_message = CustomerMessage(
+            conversation_id=conversation.id,
+            sequence=sequence + 1,
+            role="ASSISTANT",
+            content=small_talk_reply,
+            ticket_id=ticket_id,
+            created_by="digital_employee",
+        )
+        self.session.add(assistant_message)
+        self.session.flush()
+        lease_seconds = get_settings().conversation_turn_lease_seconds
+        turn = ConversationTurn(
+            conversation_id=conversation.id,
+            ticket_id=ticket_id,
+            sequence=self._next_turn_sequence(conversation.id),
+            status=TurnStatus.PENDING.value,
+            stage_label="问候已直接回复",
+            user_message_id=buyer_message.id,
+            assistant_message_id=assistant_message.id,
+            employee_id=conversation.employee_id,
+            intent="small_talk",
+            correlation_id=correlation_id,
+            client_message_id=payload.client_message_id,
+            attempt_count=1,
+            lease_expires_at=new_lease(lease_seconds),
+            analysis_json={
+                "small_talk_kind": small_talk_kind,
+            },
+            context_json=fast_path_context.payload,
+            response_provider="deterministic",
+            response_model=(
+                "employee-self-introduction-v1"
+                if small_talk_kind == "identity"
+                else "small-talk-v1"
+            ),
+            grounding_status="NOT_REQUIRED",
+            gate_json=jsonable_encoder(small_talk_gate),
+            citations_json=[],
+            trace_json=["small_talk_fast_path"],
+            tool_calls_json=[],
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+        )
+        self.session.add(turn)
+        self.session.flush()
+        buyer_message.turn_id = turn.id
+        assistant_message.turn_id = turn.id
+        record_turn_event(
+            self.session,
+            turn,
+            event_type="TURN_CREATED",
+            actor_id="digital_employee.small_talk",
+            correlation_id=correlation_id,
+            payload={"fast_path": "small_talk"},
+        )
+        record_turn_event(
+            self.session,
+            turn,
+            event_type="CONTEXT_ASSEMBLED",
+            actor_id="digital_employee.small_talk",
+            correlation_id=correlation_id,
+            payload={**fast_path_context.payload, "fast_path": "small_talk"},
+        )
+        transition_turn(
+            self.session,
+            turn,
+            TurnStatus.RUNNING,
+            reason_code="SMALL_TALK_FAST_PATH",
+            actor_id="digital_employee.small_talk",
+            correlation_id=correlation_id,
+        )
+        record_turn_event(
+            self.session,
+            turn,
+            event_type="GATE_EVALUATED",
+            actor_id="digital_employee.small_talk",
+            correlation_id=correlation_id,
+            payload={
+                "decision": small_talk_gate["decision"],
+                "reasons": small_talk_gate["reasons"],
+                "version": small_talk_gate["version"],
+            },
+        )
+        transition_turn(
+            self.session,
+            turn,
+            TurnStatus.COMPLETED,
+            reason_code="SMALL_TALK_ANSWERED",
+            actor_id="digital_employee.small_talk",
+            correlation_id=correlation_id,
+            stage_label="问候已直接回复",
+            payload={
+                "grounding_status": "NOT_REQUIRED",
+                "small_talk_kind": small_talk_kind,
+                "gate_decision": small_talk_gate["decision"],
+            },
+        )
+        turn.lease_expires_at = None
+        self._update_memory(
+            conversation.id,
+            turn.sequence,
+            payload.content,
+            small_talk_reply,
+            turn_id=turn.id,
+        )
+        conversation.status = "ACTIVE"
+        conversation.version += 1
+        record_audit(
+            self.session,
+            correlation_id=correlation_id,
+            event_type="customer_service.small_talk.answered",
+            actor_type="SERVICE",
+            actor_id="digital_employee.small_talk",
+            resource_type="customer_conversation",
+            resource_id=conversation.id,
+            action="answer",
+            decision="EXECUTED",
+            payload={"message": payload.content.strip()},
+        )
+        self.session.commit()
+        self.session.refresh(conversation)
+        return BuyerMessageResult(
+            conversation=conversation,
+            turn_id=None,
+            replayed=False,
+        )
+
+    def _resolve_initial_ticket(
+        self,
+        *,
+        conversation: CustomerConversation,
+        payload: CustomerMessageCreate,
+        body: str,
+        source_system: str,
+        enterprise_service: bool,
+        human_owner_id: str | None,
+        principal: Principal,
+        correlation_id: str,
+    ) -> tuple[Ticket, bool, UUID | None, str | None]:
+        """Reuse the conversation's ticket or create its first one."""
         existing_ticket = (
             self.session.get(Ticket, conversation.current_ticket_id)
             if conversation.current_ticket_id
@@ -1740,160 +1811,170 @@ class CustomerConversationService:
                 # a concurrent message must not pick the same message sequence.
                 commit=False,
             )
-        if created:
-            # Snapshot the turn this message continues before the new one
-            # exists; a handoff summarises the predecessor, not the successor.
-            previous_turn = latest_turn(self.session, conversation.id)
-            buyer_message = CustomerMessage(
-                conversation_id=conversation.id,
-                sequence=sequence,
-                role="BUYER",
-                content=payload.content.strip(),
-                ticket_id=ticket.id,
-                created_by=principal.actor_id,
-            )
-            self.session.add(buyer_message)
-            self.session.flush()
-            employee = (
-                self.session.get(DigitalEmployee, ticket.employee_id)
-                if ticket.employee_id
-                else None
-            )
-            turn = ConversationTurn(
-                conversation_id=conversation.id,
-                ticket_id=ticket.id,
-                sequence=self._next_turn_sequence(conversation.id),
-                status=TurnStatus.PENDING.value,
-                stage_label="正在识别问题",
-                user_message_id=buyer_message.id,
-                employee_id=ticket.employee_id,
-                employee_config_revision=(
-                    employee.config_revision if employee else None
-                ),
+        return ticket, created, previous_employee_id, reroute_reason
+
+    def _create_initial_turn(
+        self,
+        *,
+        conversation: CustomerConversation,
+        ticket: Ticket,
+        payload: CustomerMessageCreate,
+        sequence: int,
+        previous_employee_id: UUID | None,
+        reroute_reason: str | None,
+        human_owner_id: str | None,
+        principal: Principal,
+        correlation_id: str,
+    ) -> BuyerMessageResult:
+        """Open the first turn for a conversation's newly linked ticket."""
+        # Snapshot the turn this message continues before the new one
+        # exists; a handoff summarises the predecessor, not the successor.
+        previous_turn = latest_turn(self.session, conversation.id)
+        buyer_message = CustomerMessage(
+            conversation_id=conversation.id,
+            sequence=sequence,
+            role="BUYER",
+            content=payload.content.strip(),
+            ticket_id=ticket.id,
+            created_by=principal.actor_id,
+        )
+        self.session.add(buyer_message)
+        self.session.flush()
+        employee = (
+            self.session.get(DigitalEmployee, ticket.employee_id)
+            if ticket.employee_id
+            else None
+        )
+        turn = ConversationTurn(
+            conversation_id=conversation.id,
+            ticket_id=ticket.id,
+            sequence=self._next_turn_sequence(conversation.id),
+            status=TurnStatus.PENDING.value,
+            stage_label="正在识别问题",
+            user_message_id=buyer_message.id,
+            employee_id=ticket.employee_id,
+            employee_config_revision=(
+                employee.config_revision if employee else None
+            ),
+            correlation_id=correlation_id,
+            client_message_id=payload.client_message_id,
+            lease_expires_at=new_lease(
+                get_settings().conversation_turn_lease_seconds
+            ),
+            analysis_json={},
+            citations_json=[],
+            trace_json=[],
+            tool_calls_json=[],
+            started_at=datetime.now(UTC),
+        )
+        self.session.add(turn)
+        self.session.flush()
+        buyer_message.turn_id = turn.id
+        if (
+            previous_employee_id is not None
+            and ticket.employee_id is not None
+            and ticket.employee_id != previous_employee_id
+        ):
+            # The router moved the conversation to another employee: this
+            # turn must inherit what the previous one established.
+            handoff = create_handoff(
+                self.session,
+                conversation=conversation,
+                from_turn=previous_turn,
+                to_employee=employee,
+                kind="AUTO_REROUTE",
+                reason_code=reroute_reason or "TOPIC_CHANGED",
+                actor_id="digital_employee.router",
                 correlation_id=correlation_id,
-                client_message_id=payload.client_message_id,
-                lease_expires_at=new_lease(
-                    get_settings().conversation_turn_lease_seconds
-                ),
-                analysis_json={},
-                citations_json=[],
-                trace_json=[],
-                tool_calls_json=[],
-                started_at=datetime.now(UTC),
+                # The reroute already moved the conversation; the
+                # previous employee is the one the turn started with.
+                from_employee_id=previous_employee_id,
             )
-            self.session.add(turn)
-            self.session.flush()
-            buyer_message.turn_id = turn.id
-            if (
-                previous_employee_id is not None
-                and ticket.employee_id is not None
-                and ticket.employee_id != previous_employee_id
-            ):
-                # The router moved the conversation to another employee: this
-                # turn must inherit what the previous one established.
-                handoff = create_handoff(
+            handoff.to_turn_id = turn.id
+            turn.handoff_id = handoff.id
+        record_turn_event(
+            self.session,
+            turn,
+            event_type="TURN_CREATED",
+            actor_id=principal.actor_id,
+            actor_type="USER",
+            correlation_id=correlation_id,
+            payload={
+                "ticket_id": str(ticket.id),
+                "employee_id": (
+                    str(ticket.employee_id) if ticket.employee_id else None
+                ),
+            },
+        )
+        conversation.current_ticket_id = ticket.id
+        if conversation.employee_id is None:
+            conversation.employee_id = ticket.employee_id
+        conversation.status = "ACTIVE"
+        if human_owner_id is not None:
+            # A human owns the conversation right now: this turn exists so
+            # the message is visible and replayable, but it must never be
+            # claimed by the digital worker. NEEDS_HUMAN is terminal, and
+            # the router only dispatches PENDING turns.
+            # The ticket the first message just created must say a human
+            # owns it too; left in RECEIVED the workbench treats it as
+            # waiting for the digital employee and refuses the reply.
+            ticket.status = TicketStatus.WAITING_HUMAN
+            ticket.needs_human = True
+            ticket.human_reason = "HUMAN_TAKEOVER"
+            if ticket.workflow_state == WorkflowState.RECEIVED:
+                transition_ticket(
                     self.session,
-                    conversation=conversation,
-                    from_turn=previous_turn,
-                    to_employee=employee,
-                    kind="AUTO_REROUTE",
-                    reason_code=reroute_reason or "TOPIC_CHANGED",
-                    actor_id="digital_employee.router",
-                    correlation_id=correlation_id,
-                    # The reroute already moved the conversation; the
-                    # previous employee is the one the turn started with.
-                    from_employee_id=previous_employee_id,
+                    ticket,
+                    WorkflowState.NEEDS_HUMAN,
+                    reason_code="HUMAN_TAKEOVER",
+                    actor_type="USER",
+                    actor_id=human_owner_id,
                 )
-                handoff.to_turn_id = turn.id
-                turn.handoff_id = handoff.id
-            record_turn_event(
+            ticket.version += 1
+            transition_turn(
                 self.session,
                 turn,
-                event_type="TURN_CREATED",
-                actor_id=principal.actor_id,
-                actor_type="USER",
+                TurnStatus.RUNNING,
+                reason_code="HUMAN_HANDLING",
+                actor_id=human_owner_id,
+                actor_type="AGENT",
                 correlation_id=correlation_id,
-                payload={
-                    "ticket_id": str(ticket.id),
-                    "employee_id": (
-                        str(ticket.employee_id) if ticket.employee_id else None
-                    ),
-                },
             )
-            conversation.current_ticket_id = ticket.id
-            if conversation.employee_id is None:
-                conversation.employee_id = ticket.employee_id
-            conversation.status = "ACTIVE"
-            if human_owner_id is not None:
-                # A human owns the conversation right now: this turn exists so
-                # the message is visible and replayable, but it must never be
-                # claimed by the digital worker. NEEDS_HUMAN is terminal, and
-                # the router only dispatches PENDING turns.
-                # The ticket the first message just created must say a human
-                # owns it too; left in RECEIVED the workbench treats it as
-                # waiting for the digital employee and refuses the reply.
-                ticket.status = TicketStatus.WAITING_HUMAN
-                ticket.needs_human = True
-                ticket.human_reason = "HUMAN_TAKEOVER"
-                if ticket.workflow_state == WorkflowState.RECEIVED:
-                    transition_ticket(
-                        self.session,
-                        ticket,
-                        WorkflowState.NEEDS_HUMAN,
-                        reason_code="HUMAN_TAKEOVER",
-                        actor_type="USER",
-                        actor_id=human_owner_id,
-                    )
-                ticket.version += 1
-                transition_turn(
-                    self.session,
-                    turn,
-                    TurnStatus.RUNNING,
-                    reason_code="HUMAN_HANDLING",
-                    actor_id=human_owner_id,
-                    actor_type="AGENT",
-                    correlation_id=correlation_id,
-                )
-                transition_turn(
-                    self.session,
-                    turn,
-                    TurnStatus.NEEDS_HUMAN,
-                    reason_code="HUMAN_TAKEOVER",
-                    actor_id=human_owner_id,
-                    actor_type="AGENT",
-                    correlation_id=correlation_id,
-                    stage_label="已由人工接管，等待人工回复",
-                    payload={"handover_agent_id": human_owner_id},
-                )
-                turn.lease_expires_at = None
-                self.session.commit()
-                self.session.refresh(conversation)
-                return BuyerMessageResult(
-                    conversation=conversation,
-                    turn_id=None,
-                    replayed=False,
-                )
-            from ticket_agent.digital_employees.models import (
-                DigitalEmployeeRouteDecision,
+            transition_turn(
+                self.session,
+                turn,
+                TurnStatus.NEEDS_HUMAN,
+                reason_code="HUMAN_TAKEOVER",
+                actor_id=human_owner_id,
+                actor_type="AGENT",
+                correlation_id=correlation_id,
+                stage_label="已由人工接管，等待人工回复",
+                payload={"handover_agent_id": human_owner_id},
             )
-
-            route_decision = self.session.scalar(
-                select(DigitalEmployeeRouteDecision).where(
-                    DigitalEmployeeRouteDecision.ticket_id == ticket.id
-                )
-            )
-            if route_decision is not None:
-                route_decision.conversation_id = conversation.id
+            turn.lease_expires_at = None
             self.session.commit()
             self.session.refresh(conversation)
             return BuyerMessageResult(
                 conversation=conversation,
-                turn_id=turn.id,
+                turn_id=None,
                 replayed=False,
             )
+        from ticket_agent.digital_employees.models import (
+            DigitalEmployeeRouteDecision,
+        )
+
+        route_decision = self.session.scalar(
+            select(DigitalEmployeeRouteDecision).where(
+                DigitalEmployeeRouteDecision.ticket_id == ticket.id
+            )
+        )
+        if route_decision is not None:
+            route_decision.conversation_id = conversation.id
+        self.session.commit()
+        self.session.refresh(conversation)
         return BuyerMessageResult(
             conversation=conversation,
-            turn_id=None,
+            turn_id=turn.id,
             replayed=False,
         )
 

@@ -1,0 +1,10 @@
+# Weak-copyleft and otherwise-restricted dependencies we knowingly ship.
+#
+# Format: `<ecosystem>:<package>  # <why this is acceptable>`
+# Anything not listed here that resolves to review/unknown fails the check.
+# Strong copyleft (AGPL/GPL/SSPL/BUSL) can never be allowlisted.
+
+python:certifi  # MPL-2.0: unmodified CA bundle, consumed as a dependency only
+python:pathspec  # MPL-2.0: build/test-time path matching, not bundled into the product
+python:psycopg  # LGPL-3.0: unmodified PostgreSQL driver, dynamically linked at runtime
+python:psycopg-binary  # LGPL-3.0: unmodified binary wheel of the same driver

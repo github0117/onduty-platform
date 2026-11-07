@@ -12,6 +12,8 @@ class ChunkDraft:
     embedding_text: str
     section_path: tuple[str, ...] = ()
     block_kinds: tuple[str, ...] = ()
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 def chunk_blocks(
@@ -48,7 +50,13 @@ def chunk_blocks(
             del section_path[max(level - 1, 0) :]
             section_path.append(text)
             continue
-        section_blocks.append({"kind": kind, "text": text})
+        section_blocks.append(
+            {
+                "kind": kind,
+                "text": text,
+                "page": block.get("page"),
+            }
+        )
     flush_section()
     return drafts
 
@@ -71,22 +79,49 @@ def _pack_section(
         content = "\n".join(str(item["text"]) for item in buffer).strip()
         if content:
             kinds = tuple(dict.fromkeys(str(item["kind"]) for item in buffer))
-            drafts.append(_draft(section_path, content, kinds))
+            page_start, page_end = _page_range(buffer)
+            drafts.append(
+                _draft(
+                    section_path,
+                    content,
+                    kinds,
+                    page_start=page_start,
+                    page_end=page_end,
+                )
+            )
         buffer.clear()
         size = 0
 
     for block in blocks:
         text = str(block["text"])
         kind = str(block["kind"])
+        page = block.get("page")
+        page_number = page if isinstance(page, int) else None
         if kind == "table":
             # Tables are atomic: never split rows, never share a chunk.
             flush()
-            drafts.append(_draft(section_path, text, ("table",)))
+            drafts.append(
+                _draft(
+                    section_path,
+                    text,
+                    ("table",),
+                    page_start=page_number,
+                    page_end=page_number,
+                )
+            )
             continue
         if len(text) > max_chars:
             flush()
             for piece in _split_long_text(text, target_chars=target_chars):
-                drafts.append(_draft(section_path, piece, (kind,)))
+                drafts.append(
+                    _draft(
+                        section_path,
+                        piece,
+                        (kind,),
+                        page_start=page_number,
+                        page_end=page_number,
+                    )
+                )
             continue
         if size and size + len(text) > target_chars:
             flush()
@@ -100,6 +135,9 @@ def _draft(
     section_path: tuple[str, ...],
     content: str,
     kinds: tuple[str, ...],
+    *,
+    page_start: int | None = None,
+    page_end: int | None = None,
 ) -> ChunkDraft:
     embedding_text = (
         f"{' > '.join(section_path)}\n{content}" if section_path else content
@@ -109,7 +147,20 @@ def _draft(
         embedding_text=embedding_text,
         section_path=section_path,
         block_kinds=kinds,
+        page_start=page_start,
+        page_end=page_end,
     )
+
+
+def _page_range(blocks: list[dict[str, Any]]) -> tuple[int | None, int | None]:
+    pages = [
+        block["page"]
+        for block in blocks
+        if isinstance(block.get("page"), int)
+    ]
+    if not pages:
+        return None, None
+    return min(pages), max(pages)
 
 
 def _split_long_text(text: str, *, target_chars: int) -> list[str]:
