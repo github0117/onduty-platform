@@ -66,17 +66,16 @@ import {
   riskLevels,
   sandboxStorageKey,
   ticketOutcome,
-  viewModeStorageKey,
   workflowColor,
   type ConversationFilter,
-  type ConversationTurn,
-  type CustomerDemoScenario,
   type CustomerServiceSection,
   type CustomerServiceSurfaceMode,
   type HistoryScope,
   type StoredSandboxState,
 } from "./features/customer-service/model";
 import { useApprovalMutations } from "./features/customer-service/useApprovalMutations";
+import { useConversationHistory } from "./features/customer-service/useConversationHistory";
+import { useCustomerServiceView } from "./features/customer-service/useCustomerServiceView";
 import { useCustomerServiceQueries } from "./features/customer-service/useCustomerServiceQueries";
 import { useReplyMutations } from "./features/customer-service/useReplyMutations";
 import { useTicketMutations } from "./features/customer-service/useTicketMutations";
@@ -99,11 +98,6 @@ export default function CustomerServicePage({
   const { hasCapability } = useAuth();
   const [stored] = useState(loadSandboxState);
   const canOpenAdmin = hasCapability("service.admin");
-  const [demoScenario, setDemoScenario] = useState<CustomerDemoScenario>(() =>
-    new URLSearchParams(window.location.search).get("scenario") === "ecommerce"
-      ? "ecommerce"
-      : "enterprise",
-  );
   const [employeeId, setEmployeeId] = useState(stored?.employeeId ?? "");
   const [currentAgentId, setCurrentAgentId] = useState("");
   const [conversationFilter, setConversationFilter] =
@@ -131,18 +125,24 @@ export default function CustomerServicePage({
   const [optimizationStyle, setOptimizationStyle] = useState<
     "professional" | "concise" | "empathetic"
   >("professional");
-  const [historyScope, setHistoryScope] = useState<HistoryScope>("current");
-  const [followLatest, setFollowLatest] = useState(true);
-  const historyContainerRef = useRef<HTMLDivElement>(null);
+  const {
+    historyScope,
+    setHistoryScope,
+    followLatest,
+    setFollowLatest,
+    historyContainerRef,
+    scrollToTicketOnLoad,
+    setScrollToTicketOnLoad,
+    history,
+    setHistory,
+  } = useConversationHistory({
+    initialHistory: stored?.history ?? [],
+  });
   const conversationListRef = useRef<HTMLDivElement>(null);
   const ticketPanelRef = useRef<HTMLDivElement>(null);
-  const [scrollToTicketOnLoad, setScrollToTicketOnLoad] = useState(false);
   const [logisticsOrderId, setLogisticsOrderId] = useState("");
   const [trackingNumber, setTrackingNumber] = useState("");
   const [carrierCode, setCarrierCode] = useState("");
-  const [history, setHistory] = useState<ConversationTurn[]>(
-    stored?.history ?? [],
-  );
   const [conversationId, setConversationId] = useState(
     stored?.conversationId ?? "",
   );
@@ -171,49 +171,10 @@ export default function CustomerServicePage({
   const [compensationNote, setCompensationNote] = useState("");
   const [assignmentResult, setAssignmentResult] =
     useState<AssignmentRunResult | null>(null);
-  const [viewMode, setViewMode] = useState<CustomerServiceSurfaceMode>(() => {
-    const requestedPane = new URLSearchParams(
-      window.location.search,
-    ).get("pane");
-    if (requestedPane === "workbench") return "workspace";
-    if (requestedPane === "admin" && technicalMode) return "admin";
-    if (section === "workbench") return "workspace";
-    if (
-      section === "admin" ||
-      section === "approvals" ||
-      section === "incidents"
-    ) {
-      return "admin";
-    }
-    if (section === "chat") return "chat";
-    const storedMode = window.localStorage.getItem(viewModeStorageKey);
-    return storedMode === "admin" && technicalMode ? "admin" : "chat";
+  const { demoScenario, viewMode, setViewMode } = useCustomerServiceView({
+    technicalMode,
+    section,
   });
-  useEffect(() => {
-    const onPopState = () => {
-      setDemoScenario(
-        new URLSearchParams(window.location.search).get("scenario") ===
-          "ecommerce"
-          ? "ecommerce"
-          : "enterprise",
-      );
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
-
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    if (!url.searchParams.has("pane")) return;
-    url.searchParams.delete("pane");
-    window.history.replaceState({}, document.title, url);
-  }, []);
-
-  useEffect(() => {
-    if (!technicalMode && viewMode === "admin") {
-      setViewMode("chat");
-    }
-  }, [technicalMode, viewMode]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -241,10 +202,6 @@ export default function CustomerServicePage({
     subject,
     ticketId,
   ]);
-
-  useEffect(() => {
-    window.localStorage.setItem(viewModeStorageKey, viewMode);
-  }, [viewMode]);
 
   const isAdminSurface = viewMode === "admin" && canOpenAdmin;
   const canViewApprovals = hasCapability("service.approvals.view");
@@ -426,7 +383,7 @@ export default function CustomerServicePage({
     setManualReplyText("");
     setHistoryScope("current");
     setFollowLatest(true);
-  }, [conversationId]);
+  }, [conversationId, setFollowLatest, setHistoryScope]);
 
   useEffect(() => {
     const currentTicketId = conversationDetail.data?.current_ticket_id;
@@ -726,6 +683,7 @@ export default function CustomerServicePage({
     followLatest,
     historyEntries.length,
     historyScope,
+    historyContainerRef,
   ]);
 
   useEffect(() => {
@@ -758,7 +716,7 @@ export default function CustomerServicePage({
       setScrollToTicketOnLoad(false);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [conversationId, scrollToTicketOnLoad, ticket]);
+  }, [conversationId, scrollToTicketOnLoad, ticket, setScrollToTicketOnLoad]);
 
   const selectConversation = (
     selectedConversationId: string,
