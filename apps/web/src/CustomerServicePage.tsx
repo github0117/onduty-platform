@@ -19,7 +19,7 @@ import {
   Timeline,
   Typography,
 } from "antd";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
   useMemo,
@@ -28,41 +28,7 @@ import {
 } from "react";
 
 import {
-  ApiError,
-  actOnMcpActionIncident,
-  addCustomerConversationMessage,
-  acknowledgeCustomerServiceNotification,
-  autoAssignCustomerConversations,
-  createCustomerConversation,
-  createKnowledgeFeedback,
-  decideMcpToolApproval,
-  generateCustomerReplySuggestion,
-  getCustomerConversation,
-  getCustomerAssignmentQueue,
-  getCustomerServiceMetrics,
-  getCustomerServiceHistoryMetrics,
-  getRuntimeConfig,
-  getTicket,
   heartbeatCustomerAgent,
-  listEcommerceProducts,
-  listCustomerAgentPresence,
-  listCustomerServiceAlerts,
-  listCustomerServiceNotifications,
-  listDigitalEmployees,
-  listEcommerceCategoryProfiles,
-  listEmployeeKnowledgeBindings,
-  listCustomerConversations,
-  listKnowledgeSpaces,
-  listMcpToolApprovals,
-  listMcpActionIncidents,
-  optimizeCustomerReply,
-  queryLogistics,
-  reconcileMcpActionIncident,
-  releaseCustomerConversation,
-  reviewTicket,
-  requestMcpActionCompensation,
-  sendManualCustomerReply,
-  takeOverCustomerConversation,
   watchCustomerConversation,
 } from "./api";
 import type {
@@ -110,12 +76,15 @@ import {
   type HistoryScope,
   type StoredSandboxState,
 } from "./features/customer-service/model";
+import { useApprovalMutations } from "./features/customer-service/useApprovalMutations";
+import { useCustomerServiceQueries } from "./features/customer-service/useCustomerServiceQueries";
+import { useReplyMutations } from "./features/customer-service/useReplyMutations";
+import { useTicketMutations } from "./features/customer-service/useTicketMutations";
 
 export type { CustomerServiceSection };
 
 const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
-const terminalStates = new Set(["COMPLETED", "FAILED_TERMINAL"]);
 
 export default function CustomerServicePage({
   technicalMode = false,
@@ -283,116 +252,41 @@ export default function CustomerServicePage({
   const canViewIncidents = hasCapability("service.incidents.view");
   const canManageIncidents = hasCapability("service.incidents.manage");
 
-  const employees = useQuery({
-    queryKey: ["digital-employees"],
-    queryFn: listDigitalEmployees,
-    enabled: isAdminSurface && hasCapability("employees.directory"),
+  const {
+    employees,
+    categories,
+    products,
+    spaces,
+    conversations,
+    presence,
+    assignmentQueue,
+    serviceAlerts,
+    notifications,
+    mcpApprovals,
+    mcpIncidents,
+    metrics,
+    historyMetrics,
+    runtime,
+    detail,
+    conversationDetail,
+    knowledgeBindings,
+  } = useCustomerServiceQueries({
+    isAdminSurface,
+    section,
+    approvalFilter,
+    incidentFilter,
+    ticketId,
+    conversationId,
+    employeeId,
+    canViewApprovals,
+    canViewIncidents,
+    canViewEmployeeDirectory: hasCapability("employees.directory"),
   });
-  const categories = useQuery({
-    queryKey: ["ecommerce-categories"],
-    queryFn: listEcommerceCategoryProfiles,
-    enabled: isAdminSurface,
-  });
-  const products = useQuery({
-    queryKey: ["ecommerce-products"],
-    queryFn: listEcommerceProducts,
-    enabled: isAdminSurface,
-  });
-  const spaces = useQuery({
-    queryKey: ["knowledge", "spaces"],
-    queryFn: listKnowledgeSpaces,
-    enabled: isAdminSurface,
-  });
-  const conversations = useQuery({
-    queryKey: ["customer-conversations"],
-    queryFn: listCustomerConversations,
-    refetchInterval: 5_000,
-    enabled: isAdminSurface,
-  });
-  const presence = useQuery({
-    queryKey: ["customer-agent-presence"],
-    queryFn: listCustomerAgentPresence,
-    refetchInterval: 15_000,
-    enabled: isAdminSurface,
-  });
-  const assignmentQueue = useQuery({
-    queryKey: ["customer-assignment-queue"],
-    queryFn: getCustomerAssignmentQueue,
-    refetchInterval: 5_000,
-    enabled: isAdminSurface,
-  });
-  const serviceAlerts = useQuery({
-    queryKey: ["customer-service-alerts"],
-    queryFn: listCustomerServiceAlerts,
-    refetchInterval: 10_000,
-    enabled: isAdminSurface,
-  });
-  const notifications = useQuery({
-    queryKey: ["customer-service-notifications"],
-    queryFn: listCustomerServiceNotifications,
-    refetchInterval: 15_000,
-    enabled: isAdminSurface,
-  });
-  const mcpApprovals = useQuery({
-    queryKey: ["mcp-tool-approvals", approvalFilter],
-    queryFn: () =>
-      listMcpToolApprovals(
-        approvalFilter === "ALL" ? undefined : approvalFilter,
-      ),
-    refetchInterval: 10_000,
-    enabled: canViewApprovals && section === "approvals",
-  });
-  const mcpIncidents = useQuery({
-    queryKey: ["mcp-action-incidents", incidentFilter],
-    queryFn: () =>
-      listMcpActionIncidents(
-        incidentFilter === "ALL" ? undefined : incidentFilter,
-      ),
-    refetchInterval: 10_000,
-    enabled: canViewIncidents && section === "incidents",
-  });
-  const metrics = useQuery({
-    queryKey: ["customer-service-metrics"],
-    queryFn: getCustomerServiceMetrics,
-    refetchInterval: 10_000,
-    enabled: isAdminSurface && section === "admin",
-  });
-  const historyMetrics = useQuery({
-    queryKey: ["customer-service-history-metrics"],
-    queryFn: () => getCustomerServiceHistoryMetrics(7),
-    refetchInterval: 60_000,
-    enabled: isAdminSurface && section === "admin",
-  });
-  const runtime = useQuery({
-    queryKey: ["system-runtime"],
-    queryFn: getRuntimeConfig,
-    enabled: isAdminSurface,
-  });
-  const detail = useQuery({
-    queryKey: ["ticket", ticketId],
-    queryFn: () => getTicket(ticketId),
-    enabled: isAdminSurface && Boolean(ticketId),
-    refetchInterval: (query) =>
-      terminalStates.has(query.state.data?.workflow_state ?? "")
-        ? false
-        : 2_000,
-  });
-  const conversationDetail = useQuery({
-    queryKey: ["customer-conversation", conversationId],
-    queryFn: () => getCustomerConversation(conversationId),
-    enabled: isAdminSurface && Boolean(conversationId),
-    refetchInterval: 10_000,
-  });
-  const knowledgeBindings = useQuery({
-    queryKey: [
-      "knowledge-bindings",
-      detail.data?.employee.id ?? employeeId,
-    ],
-    queryFn: () =>
-      listEmployeeKnowledgeBindings(detail.data?.employee.id ?? employeeId),
-    enabled:
-      isAdminSurface && Boolean(detail.data?.employee.id || employeeId),
-  });
+
+  const currentAgentCapacity =
+    presence.data?.items.find(
+      (agent) => agent.agent_id === currentAgentId,
+    )?.max_conversations ?? 5;
 
   const selectedCategory = categories.data?.find(
     (category) => category.id === categoryProfileId,
@@ -544,43 +438,29 @@ export default function CustomerServicePage({
     if (conversationCategoryId) setCategoryProfileId(conversationCategoryId);
   }, [conversationDetail.data]);
 
-  const createTicket = useMutation({
-    mutationFn: async (input: {
-      subject: string;
-      body: string;
-      newConversation?: boolean;
-      autoRoute?: boolean;
-    }) => {
-      const conversation = conversationId && !input.newConversation
-        ? { id: conversationId }
-        : await createCustomerConversation({
-            employeeId: input.autoRoute ? undefined : employeeId,
-            category:
-              demoScenario === "ecommerce" && categoryProfileId
-                ? {
-                    name:
-                      categories.data?.find(
-                        (item) => item.id === categoryProfileId,
-                      )?.name ?? "通用商品",
-                    profileId: categoryProfileId,
-                  }
-                : undefined,
-            scenario: demoScenario,
-          });
-      const updated = await addCustomerConversationMessage(conversation.id, {
-        content: `${input.subject}\n${input.body}`,
-        productId:
-          demoScenario === "ecommerce"
-            ? categoryProducts.find((product) => product.id === productId)?.id
-            : undefined,
-        sku:
-          demoScenario === "ecommerce"
-            ? categoryProducts.find((product) => product.id === productId)?.sku
-            : undefined,
-      });
-      return updated;
-    },
-    onSuccess: (conversation, input) => {
+  const {
+    createTicket,
+    review,
+    feedback,
+    assignment,
+    autoAssign,
+    acknowledgeNotification,
+  } = useTicketMutations({
+    conversationId,
+    conversationDetail: conversationDetail.data,
+    employeeId,
+    demoScenario,
+    categoryProfileId,
+    categoryProfileName: categories.data?.find(
+      (item) => item.id === categoryProfileId,
+    )?.name,
+    productId,
+    categoryProducts,
+    ticketId,
+    ticketDetail: detail.data,
+    feedbackSpace,
+    currentAgentCapacity,
+    onConversationCreated: (conversation, input) => {
       setHistory((current) =>
         input.newConversation
           ? [{ role: "BUYER", text: input.body }]
@@ -589,380 +469,72 @@ export default function CustomerServicePage({
       setConversationId(conversation.id);
       setTicketId(conversation.current_ticket_id ?? "");
       setScrollToTicketOnLoad(true);
-      queryClient.invalidateQueries({ queryKey: ["customer-conversations"] });
-      queryClient.invalidateQueries({ queryKey: ["customer-assignment-queue"] });
-      message.success("测试问题已提交，接下来接管会话并查看处理结果");
     },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const review = useMutation({
-    mutationFn: ({
-      decision,
-      text,
-    }: {
-      decision: "ACCEPTED" | "EDITED_AND_ACCEPTED";
-      text?: string;
-    }) => reviewTicket(detail.data!.id, detail.data!.version, decision, text),
-    onSuccess: async (_result, variables) => {
-      const answer =
-        variables.decision === "EDITED_AND_ACCEPTED"
-          ? variables.text
-          : detail.data?.draft?.text;
-      if (answer) {
-        setHistory((current) => [
-          ...current,
-          { role: "ASSISTANT", text: answer },
-        ]);
-      }
-      message.success("审核结果已保存");
-      await queryClient.invalidateQueries({
-        queryKey: ["ticket", ticketId],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-conversation", conversationId],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-conversations"],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-assignment-queue"],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-conversations"],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-assignment-queue"],
-      });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const feedback = useMutation({
-    mutationFn: (rating: "POSITIVE" | "NEGATIVE") => {
-      const ticket = detail.data;
-      if (!ticket?.draft) throw new Error("还没有可评价的回答");
-      if (!feedbackSpace) {
-        throw new Error("当前数字员工没有可用于反馈的知识空间绑定");
-      }
-      return createKnowledgeFeedback({
-        employeeId: ticket.employee.id,
-        knowledgeSpaceId: feedbackSpace.id,
-        ticketId: ticket.id,
-        query: `${ticket.subject}\n${ticket.body}`,
-        answer: ticket.draft.text,
-        rating,
-        reasonCode: rating === "POSITIVE" ? "HELPFUL" : "WRONG_ANSWER",
-      });
-    },
-    onSuccess: (result) => {
-      message.success(
-        result.repair_task_id ? "反馈已记录并生成修复任务" : "反馈已记录",
-      );
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const assignment = useMutation({
-    mutationFn: async (action: "takeover" | "release") => {
-      if (!conversationId || !conversationDetail.data) {
-        throw new Error("当前没有可操作的会话");
-      }
-      return action === "takeover"
-        ? takeOverCustomerConversation(
-            conversationId,
-            conversationDetail.data.version,
-          )
-        : releaseCustomerConversation(conversationId);
-    },
-    onSuccess: (_result, action) => {
-      message.success(action === "takeover" ? "会话已接管" : "会话已释放");
-      if (action === "takeover") {
-        window.setTimeout(() => {
-          ticketPanelRef.current?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          });
-        }, 150);
-      }
-    },
-    onError: (error: Error) => {
-      if (error instanceof ApiError) {
-        if (error.code === "AGENT_CAPACITY_REACHED") {
-          message.warning(
-            `当前客服已负责 ${currentAgentCapacity} 个活动会话，请先释放一个会话。`,
-          );
-          return;
-        }
-        if (
-          error.code === "CONVERSATION_VERSION_CONFLICT" ||
-          error.code === "CONVERSATION_ALREADY_ASSIGNED"
-        ) {
-          message.warning("会话状态已变化，已为你刷新最新状态。");
-          return;
-        }
-      }
-      message.error(error.message);
-    },
-    onSettled: () => {
-      void Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["customer-conversation", conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["customer-conversations"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["customer-assignment-queue"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["customer-agent-presence"],
-        }),
+    onReviewAnswer: (answer) => {
+      setHistory((current) => [
+        ...current,
+        { role: "ASSISTANT", text: answer },
       ]);
     },
-  });
-  const autoAssign = useMutation({
-    mutationFn: autoAssignCustomerConversations,
-    onSuccess: async (result) => {
-      setAssignmentResult(result);
-      message.success(
-        `自动分配 ${result.assigned_count} 个会话，剩余 ${result.unassigned_count} 个`,
-      );
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-assignment-queue"],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-conversations"],
-      });
+    onAssignmentResult: (result) => setAssignmentResult(result),
+    onTakeOver: () => {
+      window.setTimeout(() => {
+        ticketPanelRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 150);
     },
-    onError: (error: Error) => message.error(error.message),
   });
-  const acknowledgeNotification = useMutation({
-    mutationFn: acknowledgeCustomerServiceNotification,
-    onSuccess: async () => {
-      message.success("主管告警已确认");
-      await queryClient.invalidateQueries({
-        queryKey: ["customer-service-notifications"],
-      });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const decideApproval = useMutation({
-    mutationFn: (input: {
-      approval: McpToolApproval;
-      decision: "APPROVE" | "REJECT";
-    }) =>
-      decideMcpToolApproval(input.approval.id, {
-        decision: input.decision,
-        expectedVersion: input.approval.version,
-        note: approvalNote.trim(),
-      }),
-    onSuccess: async (approval) => {
+  const {
+    decideApproval,
+    updateIncident,
+    reconcileIncident,
+    requestCompensation,
+  } = useApprovalMutations({
+    approvalNote,
+    incidentNote,
+    incidentOutcome,
+    compensationToolId,
+    compensationArguments,
+    compensationNote,
+    onApprovalDecisionHandled: () => {
       setApprovalDecision(null);
       setApprovalNote("");
-      message.success(
-        approval.status === "SUCCEEDED"
-          ? "审批通过，写工具已执行一次"
-          : approval.status === "REJECTED"
-            ? "审批已拒绝，写工具未执行"
-            : `审批已处理：${approvalStatusLabels[approval.status] ?? approval.status}`,
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["mcp-tool-approvals"] }),
-        queryClient.invalidateQueries({ queryKey: ["tool-calls"] }),
-      ]);
     },
-    onError: (error: Error) => {
-      if (error instanceof ApiError) {
-        if (error.code === "MCP_APPROVAL_SELF_APPROVAL_DENIED") {
-          message.error("申请人与审批人不能是同一个账号，请更换审批人。");
-          return;
-        }
-        if (error.code === "MCP_APPROVAL_VERSION_CONFLICT") {
-          message.warning("审批单状态已变化，请刷新后重新确认。");
-          void queryClient.invalidateQueries({
-            queryKey: ["mcp-tool-approvals"],
-          });
-          return;
-        }
-      }
-      message.error(error.message);
-    },
-  });
-  const updateIncident = useMutation({
-    mutationFn: (input: {
-      incident: McpActionIncident;
-      action: "acknowledge" | "resolve";
-    }) =>
-      actOnMcpActionIncident(input.incident.id, input.action, {
-        expectedVersion: input.incident.version,
-        note: incidentNote.trim(),
-        outcome:
-          input.action === "resolve" ? incidentOutcome : undefined,
-      }),
-    onSuccess: async (incident) => {
+    onIncidentActionHandled: () => {
       setIncidentDecision(null);
       setIncidentNote("");
-      message.success(
-        incident.status === "RESOLVED"
-          ? "事故已关闭，处理结论已留档"
-          : "事故已确认，已分配给当前处理人",
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["mcp-action-incidents"],
-        }),
-        queryClient.invalidateQueries({ queryKey: ["tool-calls"] }),
-      ]);
     },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const reconcileIncident = useMutation({
-    mutationFn: (incident: McpActionIncident) =>
-      reconcileMcpActionIncident(incident.id, {
-        expectedVersion: incident.version,
-      }),
-    onSuccess: async (incident) => {
-      message.success(
-        incident.reconciliation_status === "SUCCEEDED"
-          ? "对账查询完成，请根据真实结果填写事故结论"
-          : "对账失败，请检查只读工具和参数",
-      );
-      await queryClient.invalidateQueries({
-        queryKey: ["mcp-action-incidents"],
-      });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const requestCompensation = useMutation({
-    mutationFn: (incident: McpActionIncident) => {
-      let parsedArguments: Record<string, unknown>;
-      try {
-        parsedArguments = JSON.parse(compensationArguments) as Record<
-          string,
-          unknown
-        >;
-      } catch {
-        throw new Error("补偿参数必须是合法 JSON 对象");
-      }
-      return requestMcpActionCompensation(incident.id, {
-        expectedVersion: incident.version,
-        toolId: compensationToolId.trim() || undefined,
-        arguments: parsedArguments,
-        note: compensationNote.trim(),
-      });
-    },
-    onSuccess: async (incident) => {
+    onCompensationRequested: () => {
       setCompensationIncident(null);
       setCompensationToolId("");
       setCompensationArguments("{}");
       setCompensationNote("");
-      message.success(
-        `补偿审批已创建：${incident.compensation_approval_id?.slice(0, 8)}`,
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["mcp-action-incidents"],
-        }),
-        queryClient.invalidateQueries({ queryKey: ["mcp-tool-approvals"] }),
-      ]);
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
-  const manualReply = useMutation({
-    mutationFn: (resolve: boolean) => {
-      if (!conversationId) throw new Error("请先选择一个会话");
-      if (conversationDetail.data?.assigned_agent_id !== currentAgentId) {
-        throw new Error("请先接管会话，再进行人工回复");
-      }
-      if (!manualReplyText.trim()) {
-        throw new Error("请输入人工回复内容");
-      }
-      return sendManualCustomerReply(
-        conversationId,
-        manualReplyText.trim(),
-        resolve,
-      );
-    },
-    onSuccess: (_conversation, resolve) => {
-      setManualReplyText("");
-      message.success(resolve ? "回复已发送，会话已解决" : "人工回复已发送");
-    },
-    onError: (error: Error) => message.error(error.message),
-    onSettled: () => {
-      void Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["customer-conversation", conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["ticket", ticketId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["customer-conversations"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["customer-assignment-queue"],
-        }),
-      ]);
     },
   });
-  const logistics = useMutation({
-    mutationFn: () => {
-      if (!logisticsOrderId.trim() && !trackingNumber.trim()) {
-        throw new Error("请输入订单号或运单号");
-      }
-      return queryLogistics({
-        orderId: logisticsOrderId.trim(),
-        trackingNumber: trackingNumber.trim(),
-        carrierCode: carrierCode.trim(),
-      });
-    },
-    onError: (error: Error) => {
-      if (
-        error instanceof ApiError &&
-        error.code === "LOGISTICS_PROVIDER_NOT_CONFIGURED"
-      ) {
-        message.warning("物流查询接口尚未配置，系统不会生成虚假物流状态。");
-        return;
-      }
-      message.error(error.message);
-    },
-  });
-  const replySuggestion = useMutation({
-    mutationFn: (_options?: { silent?: boolean }) => {
-      if (!conversationId) throw new Error("请先选择一个会话");
-      return generateCustomerReplySuggestion(conversationId);
-    },
-    onSuccess: (suggestion, options) => {
-      setManualReplyText(suggestion.text);
+  const {
+    manualReply,
+    logistics,
+    replySuggestion,
+    optimizeReply,
+  } = useReplyMutations({
+    conversationId,
+    conversationAssignedAgentId: conversationDetail.data?.assigned_agent_id,
+    currentAgentId,
+    manualReplyText,
+    ticketId,
+    logisticsOrderId,
+    trackingNumber,
+    carrierCode,
+    optimizationStyle,
+    onManualReplySent: () => setManualReplyText(""),
+    onSuggestionLoaded: (text) => {
+      setManualReplyText(text);
       setAutoSuggestionError("");
-      if (!options?.silent) {
-        message.success(
-          suggestion.fallback_used
-            ? "已重新生成建议，但模型调用失败，当前为本地规则建议"
-            : "AI 回复草稿已重新生成，请确认后发送",
-        );
-      }
     },
-    onError: (error: Error, options) => {
-      setAutoSuggestionError(error.message);
-      if (!options?.silent) {
-        message.error(error.message);
-      }
-    },
-  });
-  const optimizeReply = useMutation({
-    mutationFn: () => {
-      if (!conversationId) throw new Error("请先选择一个会话");
-      if (!manualReplyText.trim()) throw new Error("请先输入或生成回复内容");
-      return optimizeCustomerReply(
-        conversationId,
-        manualReplyText.trim(),
-        optimizationStyle,
-      );
-    },
-    onSuccess: (result) => {
-      setManualReplyText(result.text);
-      message.success("AI 已优化当前回复，请确认后再发送");
-    },
-    onError: (error: Error) => message.error(error.message),
+    onSuggestionFailed: (errorMessage) => setAutoSuggestionError(errorMessage),
+    onReplyOptimized: (text) => setManualReplyText(text),
   });
 
   const ticket = detail.data;
@@ -1005,10 +577,6 @@ export default function CustomerServicePage({
       Boolean(currentAgentId) &&
       conversation.assigned_agent_id === currentAgentId,
   ).length;
-  const currentAgentCapacity =
-    presence.data?.items.find(
-      (agent) => agent.agent_id === currentAgentId,
-    )?.max_conversations ?? 5;
   const capacityReached =
     Boolean(currentAgentId) &&
     currentAgentLoad >= currentAgentCapacity;
