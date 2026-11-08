@@ -21,6 +21,7 @@ from ticket_agent.shared.db import Base
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets import models  # noqa: F401
 from ticket_agent.tools import models as tool_models  # noqa: F401
+from ticket_agent.workflows import models as workflow_models  # noqa: F401
 from ticket_agent.workforce import models as workforce_models  # noqa: F401
 
 config = context.config
