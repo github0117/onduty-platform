@@ -153,8 +153,8 @@ make acceptance-final
 
 # 可观测性栈（Prometheus + Alertmanager + Grafana）
 make observability-up
-# 告警 webhook 由 .env 的 ALERT_WEBHOOK_URL 指定；本地未设置时回落到
-# host.docker.internal:9999/alerts，可配合本地 HTTP sink 验证送达。
+# 告警 webhook 由 .env 的 ALERT_WEBHOOK_URL 指定；未设置时启动日志会
+# 打印 WARN 并回落到 host.docker.internal:9999/alerts，生产必须配置真实端。
 ```
 
 当前基线：

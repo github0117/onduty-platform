@@ -48,6 +48,9 @@ def test_compose_wires_alertmanager_into_observability_profile() -> None:
 
     service = compose["services"]["alertmanager"]
     assert service["profiles"] == ["observability"]
-    assert "ALERT_WEBHOOK_URL" in service["environment"]
+    environment = service["environment"]
+    assert environment["ALERT_WEBHOOK_URL"] == "${ALERT_WEBHOOK_URL:-}"
+    assert environment["ALERT_WEBHOOK_FALLBACK"].startswith("http://")
+    assert "ALERT_WEBHOOK_URL is not set" in " ".join(service["command"])
     assert service["volumes"][0].startswith("../alertmanager/alertmanager.yml")
     assert "alertmanager_data" in compose["volumes"]

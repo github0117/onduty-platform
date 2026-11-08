@@ -32,6 +32,7 @@ curl -s http://localhost:9093/-/healthy
 curl -s http://localhost:9090/api/v1/alertmanagers
 ```
 
-未设置 `ALERT_WEBHOOK_URL` 时回落到 `host.docker.internal:9999/alerts`，
-可在宿主机启动任意 HTTP sink 验证 firing/resolved 通知。
+未设置 `ALERT_WEBHOOK_URL` 时启动日志会打印 WARN，并回落到
+`host.docker.internal:9999/alerts`，仅用于本机验证；生产环境必须设置
+真实接收端，否则告警不会离开当前环境。
 
