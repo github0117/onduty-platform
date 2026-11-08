@@ -32,7 +32,20 @@
 make observability-up
 curl -s http://localhost:9093/-/healthy
 curl -s http://localhost:9090/api/v1/alertmanagers
+
+# Grafana 健康、默认数据源与自动导入的看板
+curl -s -u admin:admin http://localhost:3000/api/health
+curl -s -u admin:admin http://localhost:3000/api/datasources
+curl -s -u admin:admin 'http://localhost:3000/api/search?type=dash-db'
+
+# /metrics 鉴权：无令牌 401，带 token 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/metrics
+curl -s -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" \
+  http://localhost:8000/metrics | grep '^ticket_worker_workflow_'
 ```
+
+`.env` 未设置 `METRICS_SCRAPE_TOKEN` 时，API 与 Prometheus 共用 compose
+默认值 `local-metrics-token`；生产必须改为独立强随机值。
 
 未设置 `ALERT_WEBHOOK_URL` 时启动日志会打印 WARN，并回落到
 `host.docker.internal:9999/alerts`，仅用于本机验证；生产环境必须设置
