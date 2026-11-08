@@ -27,7 +27,7 @@ from ticket_agent.customer_service.models import (
     CustomerConversation,
     CustomerMessage,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.models import OutboxEvent
 
 OUTBOUND_DIRECTIONS = {"OUTBOUND", "BIDIRECTIONAL"}
@@ -127,7 +127,7 @@ def deliver_outbound_message(outbound_id: UUID) -> None:
     Terminal failures are recorded on the row and swallowed: retrying a
     rejected recipient forever would only fill the outbox.
     """
-    with SessionLocal() as session:
+    with system_session() as session:
         outbound = session.scalar(
             select(ExternalOutboundMessage)
             .where(ExternalOutboundMessage.id == outbound_id)

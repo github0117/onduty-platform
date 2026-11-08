@@ -167,6 +167,7 @@ class TicketService:
                 event_type="ticket.received",
                 payload_json={
                     "ticket_id": str(ticket.id),
+                    "business_unit_id": ticket.business_unit_id,
                     "correlation_id": correlation_id,
                 },
             )
@@ -510,6 +511,7 @@ class TicketService:
                 event_type="ticket.sync_external",
                 payload_json={
                     "ticket_id": str(ticket.id),
+                    "business_unit_id": ticket.business_unit_id,
                     "correlation_id": correlation_id,
                 },
             )
@@ -730,6 +732,7 @@ class TicketService:
             event_type="ticket.sync_external",
             payload_json={
                 "ticket_id": str(ticket.id),
+                "business_unit_id": ticket.business_unit_id,
                 "correlation_id": correlation_id,
             },
         )
@@ -857,6 +860,7 @@ class TicketService:
                 event_type="ticket.sync_external",
                 payload_json={
                     "ticket_id": str(ticket.id),
+                    "business_unit_id": ticket.business_unit_id,
                     "correlation_id": correlation_id,
                 },
             )

@@ -1,5 +1,6 @@
 import logging
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from time import sleep
 from typing import Any, TypeVar
 
@@ -66,6 +67,21 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 def get_db() -> Generator[Session, None, None]:
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@contextmanager
+def system_session() -> Iterator[Session]:
+    """Session for workers that run without an HTTP principal.
+
+    Tenant scoping is not implicit here: callers filter by
+    ``business_unit_id`` explicitly, which is why every workflow and outbox
+    row carries that column.
+    """
     session = SessionLocal()
     try:
         yield session

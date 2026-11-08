@@ -2,11 +2,11 @@ from uuid import UUID
 
 from ticket_agent.knowledge.reindex import KnowledgeReindexService
 from ticket_agent.knowledge.service import KnowledgeService
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 
 def ingest_knowledge_version_job(version_id: UUID, correlation_id: str) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         KnowledgeService(session).ingest_stored_version(
             version_id,
             correlation_id=correlation_id,
@@ -14,7 +14,7 @@ def ingest_knowledge_version_job(version_id: UUID, correlation_id: str) -> None:
 
 
 def reindex_knowledge_job(job_id: UUID, correlation_id: str) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         KnowledgeReindexService(session).run_job(
             job_id,
             correlation_id=correlation_id,

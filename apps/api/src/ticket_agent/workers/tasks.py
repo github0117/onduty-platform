@@ -26,7 +26,7 @@ from ticket_agent.knowledge.worker import (
 )
 from ticket_agent.mcp_connectors.incidents import McpActionIncidentService
 from ticket_agent.outbox.service import dispatch_pending_events
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.workers.celery_app import celery_app
@@ -34,6 +34,20 @@ from ticket_agent.workers.process_ticket import process_ticket_job
 from ticket_agent.workforce.worker import execute_workforce_task_job
 
 logger = logging.getLogger(__name__)
+
+
+@celery_app.task(name="ticket_agent.workflow.run")
+def execute_workflow_run_task(run_id: str) -> None:
+    from ticket_agent.workflows.service import execute_workflow_run
+
+    execute_workflow_run(UUID(run_id))
+
+
+@celery_app.task(name="ticket_agent.workflow.dispatch_due")
+def dispatch_due_workflows_task() -> int:
+    from ticket_agent.workflows.service import dispatch_due_workflows
+
+    return dispatch_due_workflows()
 
 
 @celery_app.task(
@@ -52,7 +66,7 @@ def process_ticket_task(
     del outbox_event_id
     try:
         process_ticket_job(UUID(ticket_id), correlation_id)
-        with SessionLocal() as session:
+        with system_session() as session:
             ticket = session.get(Ticket, UUID(ticket_id))
             if ticket is not None:
                 auto_assign_customer_conversations_job(
@@ -74,7 +88,7 @@ def poll_email_connectors_task() -> int:
 
 @celery_app.task(name="ticket_agent.customer_service.reclaim_offline")
 def reclaim_offline_customer_agents_task() -> int:
-    with SessionLocal() as session:
+    with system_session() as session:
         return CustomerConversationService(session).reclaim_offline_conversations()
 
 
@@ -82,7 +96,7 @@ def reclaim_offline_customer_agents_task() -> int:
 def reclaim_conversation_turns_task() -> int:
     """Re-dispatch turns whose worker died before finishing."""
     settings = get_settings()
-    with SessionLocal() as session:
+    with system_session() as session:
         turn_ids = reclaim_stuck_turns(
             session,
             limit=settings.conversation_turn_reclaim_batch_size,
@@ -100,13 +114,13 @@ def reclaim_conversation_turns_task() -> int:
 
 @celery_app.task(name="ticket_agent.customer_service.escalate_sla")
 def escalate_customer_service_sla_task() -> int:
-    with SessionLocal() as session:
+    with system_session() as session:
         return CustomerConversationService(session).escalate_overdue_conversations()
 
 
 @celery_app.task(name="ticket_agent.customer_service.notify_supervisors")
 def notify_customer_service_supervisors_task() -> int:
-    with SessionLocal() as session:
+    with system_session() as session:
         return CustomerConversationService(session).sync_supervisor_notifications()
 
 
@@ -120,7 +134,7 @@ def auto_assign_customer_conversations_task(
 @celery_app.task(name="ticket_agent.mcp.reconcile_incidents")
 def reconcile_mcp_incidents_task() -> int:
     settings = get_settings()
-    with SessionLocal() as session:
+    with system_session() as session:
         return McpActionIncidentService(session).reconcile_open_incidents(
             limit=settings.mcp_reconciliation_batch_size,
         )

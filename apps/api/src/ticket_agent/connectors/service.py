@@ -43,7 +43,7 @@ from ticket_agent.connectors.schemas import (
     _validate_http,
 )
 from ticket_agent.digital_employees.models import DigitalEmployee
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 
 
@@ -564,7 +564,7 @@ def retry_outbound(
 ) -> ExternalOutboundMessage:
     from ticket_agent.connectors.outbound import deliver_outbound_message
 
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.scalar(
             select(ExternalOutboundMessage)
             .where(ExternalOutboundMessage.id == outbound_id)
@@ -586,7 +586,7 @@ def retry_outbound(
     # its own retry schedule for events it owns.
     with contextlib.suppress(ConnectorError):
         deliver_outbound_message(outbound_id)
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ExternalOutboundMessage, outbound_id)
         if row is None:
             raise ApiProblem(

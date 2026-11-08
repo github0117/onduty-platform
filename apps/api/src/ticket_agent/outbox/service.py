@@ -4,7 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import or_, select
 
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.models import OutboxEvent
 from ticket_agent.workers.process_ticket import process_ticket_job
@@ -19,7 +19,7 @@ class DispatchResult:
 
 def dispatch_outbox_event(event_id: UUID) -> DispatchResult:
     settings = get_settings()
-    with SessionLocal() as session:
+    with system_session() as session:
         event = session.scalar(
             select(OutboxEvent).where(OutboxEvent.id == event_id).with_for_update()
         )
@@ -45,6 +45,13 @@ def dispatch_outbox_event(event_id: UUID) -> DispatchResult:
         event_type = event.event_type
 
     try:
+        if settings.workflow_engine_enabled and _dispatch_through_workflow(
+            event_type=event_type,
+            payload=payload,
+            event_id=event_id,
+        ):
+            _mark_sent(event_id)
+            return DispatchResult(event_id=event_id, dispatched=True)
         if event_type == "ticket.received":
             ticket_id = payload["ticket_id"]
             correlation_id = payload.get("correlation_id", str(event_id))
@@ -178,13 +185,66 @@ def dispatch_outbox_event(event_id: UUID) -> DispatchResult:
     return DispatchResult(event_id=event_id, dispatched=True)
 
 
+def _dispatch_through_workflow(
+    *,
+    event_type: str,
+    payload: dict[str, object],
+    event_id: UUID,
+) -> bool:
+    """Hand known event types to the durable workflow engine.
+
+    Returns ``False`` when the event has no workflow mapping (or lacks the
+    ``business_unit_id`` an older queued row would not have), in which case the
+    caller keeps the legacy one-shot path.
+    """
+    from ticket_agent.workflows.service import (
+        dispatch_workflow_run,
+        ensure_ecommerce_publish_run,
+        ensure_knowledge_ingest_run,
+        ensure_ticket_sync_run,
+    )
+
+    correlation_id = str(payload.get("correlation_id") or event_id)
+    business_unit_id = payload.get("business_unit_id")
+    with system_session() as session:
+        if event_type == "ticket.sync_external":
+            run_id, _created = ensure_ticket_sync_run(
+                session,
+                ticket_id=UUID(str(payload["ticket_id"])),
+                correlation_id=correlation_id,
+                outbox_event_id=event_id,
+                business_unit_id=str(business_unit_id) if business_unit_id else None,
+            )
+        elif event_type == "ecommerce.listing.publish" and business_unit_id:
+            run_id, _created = ensure_ecommerce_publish_run(
+                session,
+                business_unit_id=str(business_unit_id),
+                task_id=UUID(str(payload["task_id"])),
+                correlation_id=correlation_id,
+                outbox_event_id=event_id,
+            )
+        elif event_type == "knowledge.version.ingest" and business_unit_id:
+            run_id, _created = ensure_knowledge_ingest_run(
+                session,
+                business_unit_id=str(business_unit_id),
+                version_id=UUID(str(payload["version_id"])),
+                correlation_id=correlation_id,
+                outbox_event_id=event_id,
+            )
+        else:
+            return False
+        session.commit()
+    dispatch_workflow_run(run_id)
+    return True
+
+
 def dispatch_pending_events(limit: int | None = None) -> list[DispatchResult]:
     settings = get_settings()
     batch_size = limit or settings.outbox_batch_size
     now = datetime.now(UTC)
     stale_before = now - timedelta(minutes=2)
 
-    with SessionLocal() as session:
+    with system_session() as session:
         events = session.scalars(
             select(OutboxEvent)
             .where(
@@ -203,7 +263,7 @@ def dispatch_pending_events(limit: int | None = None) -> list[DispatchResult]:
 
 
 def _mark_sent(event_id: UUID) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         event = session.get(OutboxEvent, event_id)
         if event is None:
             return
@@ -215,7 +275,7 @@ def _mark_sent(event_id: UUID) -> None:
 
 def _mark_retry(event_id: UUID, error: str) -> None:
     settings = get_settings()
-    with SessionLocal() as session:
+    with system_session() as session:
         event = session.get(OutboxEvent, event_id)
         if event is None:
             return

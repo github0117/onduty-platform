@@ -3,7 +3,7 @@ from uuid import UUID
 from ticket_agent.agent_runs.models import AgentRun
 from ticket_agent.agent_runs.service import AgentRunService
 from ticket_agent.digital_employees.service import DigitalEmployeeService
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.domain import WorkflowState
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.workflow.registry import get_workflow
@@ -11,7 +11,7 @@ from ticket_agent.workflow.registry import get_workflow
 
 def process_ticket_job(ticket_id: UUID, correlation_id: str) -> None:
     """Initial in-process worker boundary; replace with Celery dispatch later."""
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = session.get(Ticket, ticket_id)
         if ticket is None:
             return
@@ -43,7 +43,7 @@ def process_ticket_job(ticket_id: UUID, correlation_id: str) -> None:
                 session.commit()
         except Exception as exc:
             session.rollback()
-            with SessionLocal() as failure_session:
+            with system_session() as failure_session:
                 failed_run = failure_session.get(AgentRun, run_id)
                 if failed_run is not None:
                     AgentRunService(failure_session).fail_run(failed_run, exc)

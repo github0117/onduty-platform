@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     mcp_reconciliation_batch_size: int = 20
     outbox_batch_size: int = 50
     outbox_retry_base_seconds: int = 5
+    # Durable workflow engine. When disabled, outbox dispatch keeps the
+    # pre-workflow one-shot path so an operator can roll back without a deploy.
+    workflow_engine_enabled: bool = True
+    workflow_step_lease_seconds: int = 120
+    workflow_retry_base_seconds: int = 5
+    workflow_dispatch_batch_size: int = 50
     connector_poll_batch_size: int = 20
     connector_auto_reply_enabled: bool = True
     connector_max_inbound_attempts: int = 3
@@ -121,11 +127,13 @@ class Settings(BaseSettings):
     knowledge_context_prune_enabled: bool = True
     knowledge_context_max_chars: int = 5000
     knowledge_max_file_bytes: int = 20 * 1024 * 1024
+    # OCR for scanned PDFs and images. ``none`` keeps uploads on the text
+    # parser so a deployment without an OCR endpoint never blocks ingestion.
     knowledge_ocr_provider: Literal["none", "dashscope"] = "none"
     knowledge_ocr_base_url: str = ""
     knowledge_ocr_api_key: str = ""
     knowledge_ocr_model_name: str = ""
-    knowledge_ocr_timeout_seconds: float = 60.0
+    knowledge_ocr_timeout_seconds: float = 30.0
     knowledge_ocr_max_pages: int = 50
     knowledge_ocr_min_text_chars: int = 30
     knowledge_reranker: Literal["hybrid", "vector"] = "hybrid"
@@ -249,18 +257,16 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def inherit_knowledge_ocr_credentials(self) -> "Settings":
-        # OCR calls an OpenAI-compatible vision endpoint. When no dedicated
-        # endpoint is configured, reuse the runtime model credentials; keys
-        # are only inherited from the environment, never hard-coded.
-        if self.knowledge_ocr_provider != "dashscope":
-            return self
-        if not self.knowledge_ocr_base_url:
-            self.knowledge_ocr_base_url = self.model_base_url
-        if not self.knowledge_ocr_api_key:
-            self.knowledge_ocr_api_key = self.model_api_key
-        if not self.knowledge_ocr_model_name:
-            self.knowledge_ocr_model_name = self.model_name
+    def inherit_ocr_credentials(self) -> "Settings":
+        # OCR is another multimodal call to the model gateway; inherit the
+        # endpoint and key when no dedicated OCR endpoint is configured.
+        if self.knowledge_ocr_provider == "dashscope":
+            if not self.knowledge_ocr_base_url:
+                self.knowledge_ocr_base_url = self.model_base_url
+            if not self.knowledge_ocr_api_key:
+                self.knowledge_ocr_api_key = self.model_api_key
+            if not self.knowledge_ocr_model_name:
+                self.knowledge_ocr_model_name = self.model_name
         return self
 
     @model_validator(mode="after")

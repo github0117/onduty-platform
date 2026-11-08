@@ -2604,6 +2604,7 @@ class EcommerceService:
                 event_type="ecommerce.listing.publish",
                 payload_json={
                     "task_id": str(task.id),
+                    "business_unit_id": task.business_unit_id,
                     "correlation_id": correlation_id,
                 },
             )
@@ -2864,6 +2865,7 @@ class EcommerceService:
             event_type="ecommerce.listing.publish",
             payload_json={
                 "task_id": str(task.id),
+                "business_unit_id": task.business_unit_id,
                 "correlation_id": correlation_id,
             },
         )

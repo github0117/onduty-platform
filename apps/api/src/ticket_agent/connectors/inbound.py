@@ -31,7 +31,7 @@ from ticket_agent.customer_service.schemas import CustomerMessageCreate
 from ticket_agent.customer_service.service import CustomerConversationService
 from ticket_agent.customer_service.turns import process_conversation_turn
 from ticket_agent.identity.models import Principal
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import WorkflowState
@@ -106,7 +106,7 @@ def ingest_envelope(
     raised, so an unbound or disabled connector leaves an auditable trace
     instead of silently dropping the message.
     """
-    with SessionLocal() as session:
+    with system_session() as session:
         connector = session.get(ExternalConnector, connector_id)
         if connector is None:
             raise ApiProblem(
@@ -254,7 +254,7 @@ def _service_principal(
 
 
 def process_inbound_record(inbound_id: UUID, correlation_id: str) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.scalar(
             select(ExternalInboundMessage)
             .where(ExternalInboundMessage.id == inbound_id)
@@ -349,7 +349,7 @@ def _mark_processed(
     conversation_id: UUID,
     correlation_id: str,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ExternalInboundMessage, inbound_id)
         if row is None:
             return
@@ -380,7 +380,7 @@ def _mark_failed(
     code: str,
     message: str,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.scalar(
             select(ExternalInboundMessage)
             .where(ExternalInboundMessage.id == inbound_id)
@@ -413,7 +413,7 @@ def _maybe_send_auto_reply(inbound_id: UUID, *, correlation_id: str) -> None:
     settings = get_settings()
     if not settings.connector_auto_reply_enabled:
         return
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ExternalInboundMessage, inbound_id)
         if row is None or row.conversation_id is None:
             return
@@ -464,7 +464,7 @@ def retry_inbound(
     *,
     connector_id: UUID,
 ) -> ExternalInboundMessage:
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.scalar(
             select(ExternalInboundMessage)
             .where(ExternalInboundMessage.id == inbound_id)
@@ -485,7 +485,7 @@ def retry_inbound(
         row.processed_at = None
         session.commit()
     process_inbound_record(inbound_id, f"connector-inbound-retry-{inbound_id}")
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ExternalInboundMessage, inbound_id)
         if row is None:
             raise ApiProblem(
@@ -506,7 +506,7 @@ def poll_correlation_id(connector_id: UUID, external_message_id: str) -> str:
 
 
 def poll_connector(connector_id: UUID) -> int:
-    with SessionLocal() as session:
+    with system_session() as session:
         connector = session.get(ExternalConnector, connector_id)
         if connector is None or connector.status != "ACTIVE":
             return 0
@@ -549,7 +549,7 @@ def _acknowledge(adapter: object, token: str) -> None:
 
 
 def poll_email_connectors_job() -> int:
-    with SessionLocal() as session:
+    with system_session() as session:
         connector_ids = list(
             session.scalars(
                 select(ExternalConnector.id).where(
