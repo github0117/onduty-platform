@@ -131,9 +131,9 @@ db-restore:
 	./scripts/db_restore.sh $(DUMP) $(RESTORE_CONFIRM)
 
 observability-up:
-	docker compose -f infra/compose/docker-compose.yml --profile observability up -d prometheus grafana
+	docker compose -f infra/compose/docker-compose.yml --profile observability up -d prometheus alertmanager grafana
 
 observability-down:
-	docker compose -f infra/compose/docker-compose.yml --profile observability stop prometheus grafana
+	docker compose -f infra/compose/docker-compose.yml --profile observability stop prometheus alertmanager grafana
 
 

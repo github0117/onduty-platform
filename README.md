@@ -88,6 +88,8 @@ flowchart LR
   Worker --> Biz["业务系统 / MCP 工具"]
   Beat["Celery Beat"] --> Redis
   Prom["Prometheus"] -. "/metrics 抓取" .-> API
+  Prom --> Alertmanager["Alertmanager"]
+  Alertmanager --> Hook["Webhook 接收端"]
   Grafana["Grafana"] --> Prom
 ```
 
@@ -148,12 +150,17 @@ uv run python scripts/stress_runtime_concurrency.py http://127.0.0.1:8000 -n 20 
 
 # 最终一键验收
 make acceptance-final
+
+# 可观测性栈（Prometheus + Alertmanager + Grafana）
+make observability-up
+# 告警 webhook 由 .env 的 ALERT_WEBHOOK_URL 指定；本地未设置时回落到
+# host.docker.internal:9999/alerts，可配合本地 HTTP sink 验证送达。
 ```
 
 当前基线：
 
 ```text
-后端: 708 passed, 3 skipped（跳过项为需真实外部依赖的用例）
+后端: 715 passed, 3 skipped（配置 TEST_POSTGRES_URL 时 718 passed）
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
 Ruff / mypy: passed（216 个源文件）

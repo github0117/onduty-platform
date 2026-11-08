@@ -14,3 +14,24 @@
 
 告警阈值需要在真实流量基线上校准。
 
+`prometheus.yml` 的 `alerting` 段把告警投递到 compose 内的
+`alertmanager:9093`。Alertmanager 的路由与抑制规则见
+`../alertmanager/alertmanager.yml`：
+
+- `critical` 10 秒后首投，1 小时重复。
+- `warning` 30 秒后首投，4 小时重复。
+- 同一 `alertname` + `business_unit` 的 critical 会抑制对应 warning。
+- webhook URL 不写入配置，由容器启动时从 `ALERT_WEBHOOK_URL` 写入
+  `/tmp/alert_webhook_url`，供 `url_file` 读取；`send_resolved` 已开启。
+
+本地验证：
+
+```bash
+make observability-up
+curl -s http://localhost:9093/-/healthy
+curl -s http://localhost:9090/api/v1/alertmanagers
+```
+
+未设置 `ALERT_WEBHOOK_URL` 时回落到 `host.docker.internal:9999/alerts`，
+可在宿主机启动任意 HTTP sink 验证 firing/resolved 通知。
+

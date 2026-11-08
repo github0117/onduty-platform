@@ -346,6 +346,33 @@ services:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["observability"]
+    ports:
+      - "9093:9093"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # 生产环境必须在 .env 中设置真实 webhook；本地未设置时回落到
+      # host.docker.internal:9999，仅用于链路验证，不会静默转发到外部。
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://host.docker.internal:9999/alerts}
+    # 与 Prometheus metrics token 相同：URL 不写入镜像或配置文件，
+    # 启动时落成 0600 临时文件供 url_file 读取。
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        printf '%s' "$$ALERT_WEBHOOK_URL" > /tmp/alert_webhook_url;
+        chmod 600 /tmp/alert_webhook_url;
+        exec /bin/alertmanager
+        --config.file=/etc/alertmanager/alertmanager.yml
+        --storage.path=/alertmanager
+    volumes:
+      - ../alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+
   grafana:
     image: grafana/grafana:11.3.0
     profiles: ["observability"]
@@ -363,4 +390,5 @@ volumes:
   ticket_agent_redis:
   ticket_agent_local_objects:
   ticket_agent_beat:
+  alertmanager_data:
 
