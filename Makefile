@@ -136,4 +136,12 @@ observability-up:
 observability-down:
 	docker compose -f infra/compose/docker-compose.yml --profile observability stop prometheus alertmanager grafana
 
+observability-feishu-up:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	test -n "$$FEISHU_WEBHOOK_URL" || { echo "FEISHU_WEBHOOK_URL is required"; exit 1; }; \
+	ALERT_WEBHOOK_URL=http://alert-relay:8080/alerts docker compose -f infra/compose/docker-compose.yml --profile observability --profile feishu-alerts up -d prometheus alertmanager alert-relay grafana
+
+observability-feishu-down:
+	docker compose -f infra/compose/docker-compose.yml --profile observability --profile feishu-alerts stop prometheus alertmanager alert-relay grafana
+
 

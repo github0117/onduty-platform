@@ -347,7 +347,9 @@ services:
       - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    # 0.27.0 在 webhook 接收端返回非 2xx（如 relay 返回 502）时会 panic 退出，
+    # 升级到 0.28.1 后已验证同一场景只重试、不崩溃。
+    image: prom/alertmanager:v0.28.1
     profiles: ["observability"]
     ports:
       - "9093:9093"
@@ -378,6 +380,21 @@ services:
     volumes:
       - ../alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
+
+  alert-relay:
+    image: python:3.12-alpine
+    profiles: ["feishu-alerts"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
+      FEISHU_WEBHOOK_SECRET: ${FEISHU_WEBHOOK_SECRET:-}
+    command: ["python", "-u", "/app/relay.py"]
+    volumes:
+      - ../alert-relay/relay.py:/app/relay.py:ro
+    # 不发布到宿主机，只在 compose 网络内供 Alertmanager 调用。
+    expose:
+      - "8080"
 
   grafana:
     image: grafana/grafana:11.3.0

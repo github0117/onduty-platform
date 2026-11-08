@@ -88,8 +88,9 @@ flowchart LR
   Worker --> Biz["业务系统 / MCP 工具"]
   Beat["Celery Beat"] --> Redis
   Prom["Prometheus"] -. "/metrics 抓取" .-> API
-  Prom --> Alertmanager["Alertmanager"]
-  Alertmanager --> Hook["Webhook 接收端"]
+  Prom --> Alertmanager["Alertmanager 0.28.1"]
+  Alertmanager --> Relay["Webhook / 飞书 relay"]
+  Relay --> Feishu["飞书群机器人"]
   Grafana["Grafana"] --> Prom
 ```
 
@@ -155,12 +156,16 @@ make acceptance-final
 make observability-up
 # 告警 webhook 由 .env 的 ALERT_WEBHOOK_URL 指定；未设置时启动日志会
 # 打印 WARN 并回落到 host.docker.internal:9999/alerts，生产必须配置真实端。
+
+# 飞书群自定义机器人告警（Prometheus → Alertmanager → alert-relay → 飞书）
+# .env 设置 FEISHU_WEBHOOK_URL（启用签名时再填 FEISHU_WEBHOOK_SECRET）
+make observability-feishu-up
 ```
 
 当前基线：
 
 ```text
-后端: 715 passed, 3 skipped（配置 TEST_POSTGRES_URL 时 718 passed）
+后端: 721 passed, 3 skipped（配置 TEST_POSTGRES_URL 时 724 passed）
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
 Ruff / mypy: passed（216 个源文件）

@@ -48,9 +48,26 @@ def test_compose_wires_alertmanager_into_observability_profile() -> None:
 
     service = compose["services"]["alertmanager"]
     assert service["profiles"] == ["observability"]
+    # 0.27.0 在接收端返回非 2xx 时会 panic，回归锁定已验证的 0.28.1。
+    assert service["image"] == "prom/alertmanager:v0.28.1"
     environment = service["environment"]
     assert environment["ALERT_WEBHOOK_URL"] == "${ALERT_WEBHOOK_URL:-}"
     assert environment["ALERT_WEBHOOK_FALLBACK"].startswith("http://")
     assert "ALERT_WEBHOOK_URL is not set" in " ".join(service["command"])
     assert service["volumes"][0].startswith("../alertmanager/alertmanager.yml")
     assert "alertmanager_data" in compose["volumes"]
+
+
+def test_compose_wires_feishu_relay_behind_alertmanager() -> None:
+    compose = yaml.safe_load(
+        (ROOT / "infra/compose/docker-compose.yml").read_text(encoding="utf-8")
+    )
+
+    service = compose["services"]["alert-relay"]
+    assert service["profiles"] == ["feishu-alerts"]
+    assert service["environment"]["FEISHU_WEBHOOK_URL"] == "${FEISHU_WEBHOOK_URL:-}"
+    assert service["environment"]["FEISHU_WEBHOOK_SECRET"] == "${FEISHU_WEBHOOK_SECRET:-}"
+    assert service["volumes"][0] == "../alert-relay/relay.py:/app/relay.py:ro"
+    assert service["expose"] == ["8080"]
+    # relay 不对外发布端口，只允许 compose 网络内的 Alertmanager 调用。
+    assert "ports" not in service
