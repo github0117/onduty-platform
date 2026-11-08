@@ -4,11 +4,11 @@ from uuid import UUID, uuid4
 from fastapi.testclient import TestClient
 
 from ticket_agent.model_gateway.models import ModelCall
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 
 def test_model_metrics_endpoint(client: TestClient) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(
             ModelCall(
                 employee_id=uuid4(),
@@ -72,7 +72,7 @@ def test_model_budget_endpoint_reports_current_period_usage(
     assert created.status_code == 201, created.text
     employee_id = created.json()["id"]
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(
             ModelCall(
                 employee_id=UUID(employee_id),

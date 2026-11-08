@@ -29,7 +29,10 @@ groups:
           description: Check knowledge coverage, retrieval thresholds and embedding version.
 
       - alert: TicketPolicyCitationCoverageLow
-        expr: ticket_worker_rag_policy_citation_coverage < 0.95
+        # 没有 policy 声明的业务单元，覆盖率按 0/0 记为 0.0，需用声明数排除误报。
+        expr: >-
+          ticket_worker_rag_policy_claims > 0
+          and ticket_worker_rag_policy_citation_coverage < 0.95
         for: 10m
         labels:
           severity: critical
@@ -72,4 +75,60 @@ groups:
         annotations:
           summary: Shared rate limiter rejects more than one request per second
           description: Check client retry behavior, per-actor limits and Redis availability.
+
+  - name: ticket-workflow-engine
+    rules:
+      - alert: WorkflowDeadLetterPresent
+        expr: max by (business_unit) (ticket_worker_workflow_dead_letter_runs) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A workflow run is in dead letter and needs a replay decision
+          description: Open Operations -> Workflows, inspect last_error, then replay or fix the upstream cause.
+
+      - alert: WorkflowStepBacklogGrowing
+        expr: >-
+          max by (business_unit) (
+            ticket_worker_workflow_steps_due
+            - (ticket_worker_workflow_steps_due offset 15m)
+          ) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Due workflow steps keep growing
+          description: Check that the beat dispatcher runs and that workers keep up with the queue.
+
+      - alert: WorkflowBacklogAgeHigh
+        expr: max by (business_unit) (ticket_worker_workflow_backlog_age_seconds) > 1800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The oldest pending workflow step is older than 30 minutes
+          description: Check scheduler cadence and whether steps are being retried with long backoff.
+
+      - alert: WorkflowRetryStorm
+        expr: max by (business_unit) (ticket_worker_workflow_steps_retrying) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 20 workflow steps are retrying
+          description: Check the external dependency that the failing steps call before replaying in bulk.
+
+      - alert: WorkflowLeaseReclaimLoop
+        expr: >-
+          max by (business_unit) (
+            ticket_worker_workflow_step_attempts_total
+            - (ticket_worker_workflow_step_attempts_total offset 30m)
+          ) > 100 and max by (business_unit) (ticket_worker_workflow_dead_letter_steps) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Attempts keep growing while dead letter steps exist
+          description: Inspect worker crashes and lease timeouts; a reclaim loop usually means a step hangs past the lease.
+
 

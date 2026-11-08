@@ -8,6 +8,8 @@ import type {
   AnswerQualitySummary,
   AnswerQualityVerdict,
   KnowledgeGapList,
+  WorkflowReplayResponse,
+  WorkflowRunList,
   BusinessServiceEntry,
   AgentPresence,
   AgentPresenceList,
@@ -1438,6 +1440,32 @@ export function getRuntimeConfig(): Promise<RuntimeConfig> {
 
 export function getAgentRuns(limit = 50): Promise<AgentRunList> {
   return request(`/api/v1/agent-runs?business_unit_id=bu_demo&limit=${limit}`);
+}
+
+export function listWorkflowRuns(
+  status?: string,
+  limit = 50,
+): Promise<WorkflowRunList> {
+  const statusQuery = status
+    ? `&status_filter=${encodeURIComponent(status)}`
+    : "";
+  return request(
+    `/api/v1/workflows/runs?business_unit_id=bu_demo&limit=${limit}${statusQuery}`,
+  );
+}
+
+export function listWorkflowDeadLetters(limit = 50): Promise<WorkflowRunList> {
+  return request(
+    `/api/v1/workflows/dead-letters?business_unit_id=bu_demo&limit=${limit}`,
+  );
+}
+
+export function replayWorkflowRun(runId: string): Promise<WorkflowReplayResponse> {
+  return request(`/api/v1/workflows/runs/${runId}/replay`, {
+    method: "POST",
+    body: "{}",
+    signal: AbortSignal.timeout(30_000),
+  });
 }
 
 export function getAgentRunTrace(runId: string): Promise<AgentRunTrace> {

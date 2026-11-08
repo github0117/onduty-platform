@@ -1985,3 +1985,41 @@ export interface ExternalConnectorQueryResult {
   status_code: number;
   data: unknown;
 }
+
+export interface WorkflowStepView {
+  id: string;
+  name: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "DEAD_LETTER";
+  attempt_count: number;
+  max_attempts: number;
+  available_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  last_error: string | null;
+  output: Record<string, unknown> | null;
+}
+
+export interface WorkflowRunView {
+  id: string;
+  business_unit_id: string;
+  workflow_type: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "DEAD_LETTER";
+  current_step: string | null;
+  context: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  steps: WorkflowStepView[];
+}
+
+export interface WorkflowRunList {
+  items: WorkflowRunView[];
+  limit: number;
+  offset: number;
+}
+
+export interface WorkflowReplayResponse {
+  accepted: boolean;
+  run: WorkflowRunView;
+}

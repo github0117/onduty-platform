@@ -151,6 +151,12 @@ def render_labeled_prometheus_metrics(
             "rag",
         ),
         (
+            "ticket_worker_rag_policy_claims",
+            "Policy claims in generated drafts.",
+            "policy_claim_count",
+            "rag",
+        ),
+        (
             "ticket_worker_rag_semantic_verified_claims",
             "Claims verified as semantically supported.",
             "semantic_verified_claim_count",
@@ -326,6 +332,93 @@ def render_labeled_prometheus_metrics(
         "ticket_worker_rag_query_rewrite_fallbacks_total "
         f"{query_rewrite_fallback_total()}"
     )
+    return "\n".join(lines) + "\n"
+
+
+WORKFLOW_RUN_STATUSES = ("PENDING", "RUNNING", "SUCCEEDED", "FAILED", "DEAD_LETTER")
+WORKFLOW_STEP_STATUSES = ("PENDING", "RUNNING", "SUCCEEDED", "DEAD_LETTER")
+
+
+def render_workflow_prometheus_metrics(
+    series: Sequence[tuple[Mapping[str, str], Mapping[str, object]]],
+) -> str:
+    """Render workflow gauges from the durable run/step tables.
+
+    These are gauges, not counters: they are rebuilt from the database on
+    every scrape so a restarted worker cannot reset the alert signal. Status
+    labels keep one line per state instead of a synthetic aggregate.
+    """
+    if not series:
+        raise ValueError("At least one metrics series is required")
+    lines: list[str] = []
+    lines.append(
+        "# HELP ticket_worker_workflow_runs "
+        "Workflow runs by current status."
+    )
+    lines.append("# TYPE ticket_worker_workflow_runs gauge")
+    for labels, summary in series:
+        for status_value in WORKFLOW_RUN_STATUSES:
+            key = f"runs_{status_value.lower()}"
+            lines.append(
+                "ticket_worker_workflow_runs"
+                f'{_render_labels({**labels, "status": status_value})} '
+                f"{_number(summary[key])}"
+            )
+    lines.append(
+        "# HELP ticket_worker_workflow_steps "
+        "Workflow steps by current status."
+    )
+    lines.append("# TYPE ticket_worker_workflow_steps gauge")
+    for labels, summary in series:
+        for status_value in WORKFLOW_STEP_STATUSES:
+            key = f"steps_{status_value.lower()}"
+            lines.append(
+                "ticket_worker_workflow_steps"
+                f'{_render_labels({**labels, "status": status_value})} '
+                f"{_number(summary[key])}"
+            )
+    gauge_specs = [
+        (
+            "ticket_worker_workflow_dead_letter_runs",
+            "Runs waiting for an operator replay.",
+            "runs_dead_letter",
+        ),
+        (
+            "ticket_worker_workflow_dead_letter_steps",
+            "Steps that exhausted their retries.",
+            "steps_dead_letter",
+        ),
+        (
+            "ticket_worker_workflow_steps_due",
+            "Pending steps whose next attempt is already due.",
+            "steps_due",
+        ),
+        (
+            "ticket_worker_workflow_steps_retrying",
+            "Pending steps that already failed at least once.",
+            "steps_retrying",
+        ),
+        (
+            "ticket_worker_workflow_backlog_age_seconds",
+            "Age of the oldest pending step.",
+            "backlog_age_seconds",
+        ),
+        (
+            "ticket_worker_workflow_step_attempts_total",
+            "Attempts consumed by stored steps.",
+            "step_attempts_total",
+        ),
+        (
+            "ticket_worker_workflow_average_step_attempts",
+            "Average attempts per stored step.",
+            "average_step_attempts",
+        ),
+    ]
+    for name, help_text, key in gauge_specs:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} gauge")
+        for labels, summary in series:
+            lines.append(f"{name}{_render_labels(labels)} {_number(summary[key])}")
     return "\n".join(lines) + "\n"
 
 

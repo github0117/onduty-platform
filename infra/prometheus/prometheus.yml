@@ -8,6 +8,9 @@ rule_files:
 scrape_configs:
   - job_name: ticket-digital-worker
     metrics_path: /metrics
+    # Prometheus 配置不支持环境变量展开，token 由容器启动脚本从
+    # METRICS_SCRAPE_TOKEN 写入该临时文件，与 API 侧保持单一来源。
+    bearer_token_file: /tmp/metrics_scrape_token
     static_configs:
       - targets:
           - host.docker.internal:8000
