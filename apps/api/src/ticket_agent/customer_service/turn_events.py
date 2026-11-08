@@ -8,6 +8,7 @@ edge appends one row to ``conversation_turn_events``.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -205,6 +206,7 @@ def reclaim_stuck_turns(
     limit: int,
     now: datetime | None = None,
     actor_id: str = "digital_employee.reclaimer",
+    business_unit_ids: Collection[str] | None = None,
 ) -> list[UUID]:
     """Recover turns whose worker died before finishing.
 
@@ -212,6 +214,10 @@ def reclaim_stuck_turns(
     dispatch attempt. A RUNNING turn with an expired lease was already counted
     when it started. Both go back to PENDING while attempts remain, then to
     FAILED_TERMINAL so the beat task cannot spin on a poisoned turn forever.
+
+    ``business_unit_ids`` scopes the sweep to the caller's tenants. The HTTP
+    entry point passes the operator's units; the Celery beat task leaves it as
+    ``None`` so maintenance still covers every tenant.
 
     Returns the ids that were put back in PENDING for re-dispatch.
     """
@@ -223,6 +229,7 @@ def reclaim_stuck_turns(
             limit=limit,
             now=now,
             actor_id=actor_id,
+            business_unit_ids=business_unit_ids,
         ),
     )
 
@@ -233,15 +240,24 @@ def _reclaim_turns_once(
     limit: int,
     now: datetime | None,
     actor_id: str,
+    business_unit_ids: Collection[str] | None,
 ) -> list[UUID]:
     settings = get_settings()
     cutoff = now or datetime.now(UTC)
     lease_seconds = settings.conversation_turn_lease_seconds
     max_attempts = settings.conversation_turn_max_attempts
+    statement = select(ConversationTurn)
+    if business_unit_ids is not None:
+        units = sorted({unit for unit in business_unit_ids if unit})
+        if not units:
+            return []
+        statement = statement.join(
+            CustomerConversation,
+            CustomerConversation.id == ConversationTurn.conversation_id,
+        ).where(CustomerConversation.business_unit_id.in_(units))
     stuck = list(
         session.scalars(
-            select(ConversationTurn)
-            .where(
+            statement.where(
                 ConversationTurn.status.in_(
                     [TurnStatus.PENDING.value, TurnStatus.RUNNING.value]
                 ),

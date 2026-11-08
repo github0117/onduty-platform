@@ -152,6 +152,11 @@ curl -i -H 'X-Actor-Id: beta-agent' \
 5. AgentRun/ToolCall/各指标接口的租户收敛；
 6. 列表缺省租户回落到自身业务单元。
 
+会话轮次回收的租户收敛由
+`test_conversation_turn_events.py::test_operator_reclaim_is_scoped_to_the_actor_business_unit`
+覆盖：A 租户主管触发回收不会改动 B 租户的过期轮次；Celery beat 仍保留全租户
+维护能力。
+
 ```bash
 cd apps/api
 uv run pytest tests/integration/test_tenant_resource_access.py -v
@@ -164,6 +169,17 @@ uv run pytest --cov=src/ticket_agent --cov-report=term
 uv run ruff check src tests
 uv run mypy src
 ```
+
+路由守卫静态卡点（防止新增接口漏加租户校验）：
+
+```bash
+uv run pytest tests/unit/test_tenant_guard_static_check.py -v
+```
+
+规则：每个路由处理函数必须直接或经包内函数链路调用
+`ensure_business_unit_access` / `resolve_business_unit`；仅访问系统级资源或
+由服务层完成校验的接口，登记在 `ALLOWED_UNGUARDED` 并写明原因。白名单中的
+路由改名或已补上守卫都会导致检查失败，以强制同步维护。
 
 ## 7. 已知边界与取舍
 

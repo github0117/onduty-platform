@@ -15,7 +15,7 @@ from ticket_agent.ecommerce.models import (
     EcommerceProductAsset,
 )
 from ticket_agent.knowledge.models import KnowledgeDocument, KnowledgeVersion
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.models import OutboxEvent, Ticket
 
 ALPHA_ADMIN = {
@@ -175,7 +175,7 @@ def test_tickets_reject_cross_tenant_reads_and_writes(
     assert beta_list.status_code == 200, beta_list.text
     assert ticket_id not in {item["id"] for item in beta_list.json()["items"]}
 
-    with SessionLocal() as session:
+    with system_session() as session:
         before_events = session.scalar(select(func.count()).select_from(OutboxEvent))
     _assert_denied(
         client.post(
@@ -184,7 +184,7 @@ def test_tickets_reject_cross_tenant_reads_and_writes(
             json={"ticket_ids": [ticket_id]},
         )
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         after_events = session.scalar(select(func.count()).select_from(OutboxEvent))
         stored = session.get(Ticket, UUID(ticket_id))
         assert stored is not None
@@ -335,7 +335,7 @@ def test_knowledge_rejects_cross_tenant_reads_and_writes(
         )
     )
 
-    with SessionLocal() as session:
+    with system_session() as session:
         stored_document = session.get(KnowledgeDocument, UUID(document_id))
         assert stored_document is not None
         assert stored_document.status == "DRAFT"
@@ -445,7 +445,7 @@ def test_customer_service_rejects_cross_tenant_conversation_access(
         headers=ALPHA_AGENT,
     )
     assert alpha_view.status_code == 200, alpha_view.text
-    with SessionLocal() as session:
+    with system_session() as session:
         stored = session.get(CustomerConversation, UUID(conversation_id))
         assert stored is not None
         assert stored.version == 1
@@ -560,7 +560,7 @@ def test_ecommerce_rejects_cross_tenant_resource_access(
         )
     )
 
-    with SessionLocal() as session:
+    with system_session() as session:
         before_jobs = session.scalar(select(func.count()).select_from(EcommerceListingBatchJob))
     _assert_denied(
         client.post(
@@ -569,7 +569,7 @@ def test_ecommerce_rejects_cross_tenant_resource_access(
             json={"product_ids": [product_id], "channel": "pinduoduo_sandbox"},
         )
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         after_jobs = session.scalar(select(func.count()).select_from(EcommerceListingBatchJob))
         stored_task = session.get(EcommerceListingTask, UUID(task_id))
         assert stored_task is not None

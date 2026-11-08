@@ -6,7 +6,7 @@ from ticket_agent.mcp_connectors.models import (
     McpActionIncident,
     McpToolApproval,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 ALPHA_ADMIN = {
     "X-Actor-Id": "alpha-admin",
@@ -241,7 +241,7 @@ def test_knowledge_and_mcp_resources_are_tenant_isolated(
     )
     assert foreign_binding_write.status_code == 403
 
-    with SessionLocal() as session:
+    with system_session() as session:
         approval = McpToolApproval(
             business_unit_id="bu_alpha",
             employee_id=UUID(employee_id),
@@ -303,7 +303,7 @@ def test_knowledge_and_mcp_resources_are_tenant_isolated(
     )
     assert foreign_incident.status_code == 403
 
-    with SessionLocal() as session:
+    with system_session() as session:
         assert session.get(McpToolApproval, approval_id).status == "PENDING"
         assert session.get(McpActionIncident, incident_id).status == "OPEN"
 
