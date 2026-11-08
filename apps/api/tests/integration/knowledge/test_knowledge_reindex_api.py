@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from ticket_agent.knowledge.models import KnowledgeChunk, KnowledgeVersion
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 ADMIN_HEADERS = {
     "X-Actor-Id": "admin-1",
@@ -56,7 +56,7 @@ def _create_published_version(client: TestClient) -> tuple[str, str]:
 
 
 def _mark_versions_stale(embedding_model: str) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         session.execute(
             update(KnowledgeVersion).values(embedding_model=embedding_model)
         )
@@ -106,7 +106,7 @@ def test_reindex_restores_search_after_model_change(client: TestClient) -> None:
     assert job.json()["processed_versions"] >= 1
     assert job.json()["failed_versions"] == 0
 
-    with SessionLocal() as session:
+    with system_session() as session:
         refreshed = session.get(KnowledgeVersion, UUID(version_id))
         assert refreshed is not None
         assert refreshed.embedding_model.startswith("local-hash-")
@@ -247,7 +247,7 @@ def test_reindex_remaps_evaluation_case_chunk_refs(client: TestClient) -> None:
     )
     assert new_chunk_ids != [old_chunk_id]
 
-    with SessionLocal() as session:
+    with system_session() as session:
         existing = {
             str(chunk_id)
             for chunk_id in session.scalars(

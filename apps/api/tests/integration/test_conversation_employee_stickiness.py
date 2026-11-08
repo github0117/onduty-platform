@@ -20,7 +20,7 @@ from ticket_agent.customer_service.models import (
     CustomerConversation,
 )
 from ticket_agent.digital_employees.models import DigitalEmployeeRouteDecision
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.settings import get_settings
 
 
@@ -175,7 +175,7 @@ def _logistics_and_refund_employees(
 
 
 def _decision_for(conversation_id: str) -> DigitalEmployeeRouteDecision | None:
-    with SessionLocal() as session:
+    with system_session() as session:
         return session.scalar(
             select(DigitalEmployeeRouteDecision)
             .where(
@@ -330,7 +330,7 @@ def test_manual_switch_locks_the_conversation_against_the_router(
     assert detail["employee_id"] == refund
     assert detail["employee_source"] == "MANUAL"
     assert detail["latest_handoff"]["kind"] == "OPERATOR_SWITCH"
-    with SessionLocal() as session:
+    with system_session() as session:
         auto = session.scalar(
             select(ConversationHandoff).where(
                 ConversationHandoff.kind == "AUTO_REROUTE"
@@ -370,7 +370,7 @@ def test_cooldown_and_switch_cap_bound_automatic_reroutes(
     _send(client, conversation_id, "我要退款")  # third switch is capped
     detail = _detail(client, conversation_id)
     assert detail["employee_id"] == logistics
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(
             CustomerConversation,
             UUID(conversation_id),

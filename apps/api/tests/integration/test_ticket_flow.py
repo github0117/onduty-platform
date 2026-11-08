@@ -7,7 +7,7 @@ from sqlalchemy import select
 from ticket_agent.integrations import sync as ticket_sync_module
 from ticket_agent.integrations.local import LocalTicketAdapter
 from ticket_agent.integrations.types import TicketIntegrationError, TicketSyncResult
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.models import AnswerDraft, Ticket
 from ticket_agent.tools.models import ToolCall
@@ -376,7 +376,7 @@ def test_batch_sync_retry_and_metrics_alerts(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = Ticket(
             business_unit_id="bu_demo",
             source_system="batch_test",
@@ -505,7 +505,7 @@ def test_ticket_loop_records_tool_calls(
         },
     )
 
-    with SessionLocal() as session:
+    with system_session() as session:
         calls = session.scalars(
             select(ToolCall).where(ToolCall.ticket_id == UUID(ticket_id))
         ).all()

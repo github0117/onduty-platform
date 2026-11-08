@@ -11,7 +11,7 @@ from ticket_agent.ecommerce.models import (
 )
 from ticket_agent.ecommerce.schemas import EcommerceListingCreate
 from ticket_agent.ecommerce.service import EcommerceService
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.redaction import redact_sensitive_text
 
@@ -20,17 +20,17 @@ def publish_ecommerce_listing_job(
     task_id: UUID,
     correlation_id: str,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         EcommerceService(session).publish(task_id, correlation_id)
 
 
 def fail_ecommerce_listing_job(task_id: UUID, error: Exception) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         EcommerceService(session).fail_publish(task_id, error)
 
 
 def render_ecommerce_video_job(job_id: UUID, correlation_id: str) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         job = session.scalar(
             select(EcommerceVideoRenderJob)
             .where(EcommerceVideoRenderJob.id == job_id)
@@ -150,7 +150,7 @@ def generate_ecommerce_listing_batch_job(
     job_id: UUID,
     correlation_id: str,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         job = session.scalar(
             select(EcommerceListingBatchJob)
             .where(EcommerceListingBatchJob.id == job_id)

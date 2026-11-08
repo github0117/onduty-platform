@@ -12,7 +12,7 @@ from ticket_agent.model_gateway.profile import (
     build_reranker_for_employee,
     resolve_model_profile,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import Settings
 from ticket_agent.tools.execution import ToolExecutionService
@@ -135,7 +135,7 @@ def test_employee_generation_inherits_global_openai_provider(
 
 def test_invalid_tool_payload_creates_failed_call() -> None:
     employee = _employee(["knowledge.search"])
-    with SessionLocal() as session:
+    with system_session() as session:
         service = ToolExecutionService(session)
         with pytest.raises(ApiProblem) as error:
             service.begin(

@@ -23,7 +23,8 @@ def _settings() -> Settings:
 
 
 def test_provider_disabled_by_default() -> None:
-    assert get_ocr_provider(Settings(app_env="test")) is None
+    # 显式给默认值，避免本机/CI 的 .env 注入 KNOWLEDGE_OCR_PROVIDER。
+    assert get_ocr_provider(Settings(app_env="test", knowledge_ocr_provider="none")) is None
 
 
 def test_dashscope_ocr_posts_image_and_returns_text() -> None:
@@ -148,6 +149,10 @@ def test_ocr_credentials_inherit_from_model_settings() -> None:
     settings = Settings(
         app_env="test",
         knowledge_ocr_provider="dashscope",
+        # 显式留空才会触发继承；否则本机 .env 的 OCR 配置会覆盖默认值。
+        knowledge_ocr_base_url="",
+        knowledge_ocr_api_key="",
+        knowledge_ocr_model_name="",
         model_base_url="https://model.example.test/v1",
         model_api_key="model-key",
         model_name="qwen-plus",

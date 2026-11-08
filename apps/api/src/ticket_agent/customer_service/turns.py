@@ -41,7 +41,7 @@ from ticket_agent.ecommerce.models import EcommerceCategoryProfile
 from ticket_agent.knowledge.gap_events import record_knowledge_gap
 from ticket_agent.model_gateway.profile import build_classifier_for_employee
 from ticket_agent.routing.policy import get_routing_policy
-from ticket_agent.shared.db import SessionLocal, is_deadlock_error
+from ticket_agent.shared.db import is_deadlock_error, system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
@@ -611,7 +611,7 @@ def _release_turn_lease(session: Session, turn_id: UUID) -> None:
 
 
 def process_conversation_turn(turn_id: UUID, correlation_id: str) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         orchestrator = ConversationTurnOrchestrator(session)
         current: UUID | None = turn_id
         deadlock_retries = 0
@@ -656,7 +656,7 @@ def process_conversation_turn_stream(
     emit: Callable[[dict[str, object]], None],
 ) -> None:
     """Run a turn and publish live stage/text events for SSE consumers."""
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, turn_id)
         if turn is None:
             emit(

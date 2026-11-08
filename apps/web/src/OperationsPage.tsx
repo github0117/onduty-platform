@@ -35,6 +35,9 @@ import {
   getToolMetrics,
   getWorkforceMetrics,
   listMcpConnectors,
+  listWorkflowDeadLetters,
+  listWorkflowRuns,
+  replayWorkflowRun,
   resetDemoData,
   retryCustomerConversationTurn,
 } from "./api";
@@ -45,6 +48,7 @@ import type {
   OperationalTurn,
   ToolCall,
   ToolMetricItem,
+  WorkflowRunView,
 } from "./types";
 import {
   draftStateLabels,
@@ -63,6 +67,35 @@ const toolStatusLabels: Record<string, string> = {
   FAILED: "失败",
   DENIED: "已拒绝",
   RUNNING: "执行中",
+};
+
+const workflowStatusLabels: Record<string, string> = {
+  PENDING: "待执行",
+  RUNNING: "执行中",
+  SUCCEEDED: "已完成",
+  FAILED: "失败",
+  DEAD_LETTER: "死信",
+};
+
+const workflowStatusColors: Record<string, string> = {
+  PENDING: "default",
+  RUNNING: "blue",
+  SUCCEEDED: "green",
+  FAILED: "red",
+  DEAD_LETTER: "volcano",
+};
+
+const workflowTypeLabels: Record<string, string> = {
+  ticket_sync: "工单外部同步",
+  ecommerce_publish: "商品发布",
+  knowledge_ingest: "知识入库",
+};
+
+const workflowStepLabels: Record<string, string> = {
+  sync_external: "外部同步",
+  notify: "通知请求人",
+  publish: "发布",
+  ingest: "入库",
 };
 
 const runStatusLabels: Record<string, string> = {
@@ -142,6 +175,35 @@ export default function OperationsPage() {
     enabled: canViewRuntime,
     refetchInterval: 10_000,
     refetchIntervalInBackground: false,
+  });
+  const canViewWorkflows = hasCapability("operations.view");
+  const canReplayWorkflows = hasCapability("operations.manage");
+  const workflowDeadLetters = useQuery({
+    queryKey: ["workflow-dead-letters"],
+    queryFn: () => listWorkflowDeadLetters(50),
+    enabled: canViewWorkflows,
+    refetchInterval: 8_000,
+    refetchIntervalInBackground: false,
+  });
+  const workflowRuns = useQuery({
+    queryKey: ["workflow-runs"],
+    queryFn: () => listWorkflowRuns(undefined, 50),
+    enabled: canViewWorkflows,
+    refetchInterval: 8_000,
+    refetchIntervalInBackground: false,
+  });
+  const replayWorkflow = useMutation({
+    mutationFn: (runId: string) => replayWorkflowRun(runId),
+    onSuccess: () => {
+      message.success("已重新排队，工作流会从失败步骤继续执行");
+      queryClient
+        .invalidateQueries({ queryKey: ["workflow-dead-letters"] })
+        .catch(() => undefined);
+      queryClient
+        .invalidateQueries({ queryKey: ["workflow-runs"] })
+        .catch(() => undefined);
+    },
+    onError: (error: Error) => message.error(error.message),
   });
   const retryTurn = useMutation({
     mutationFn: (turnId: string) => retryCustomerConversationTurn(turnId),
@@ -461,6 +523,89 @@ export default function OperationsPage() {
     },
   ];
 
+  const workflowColumns: ColumnsType<WorkflowRunView> = [
+    {
+      title: "类型",
+      dataIndex: "workflow_type",
+      width: 130,
+      render: (value: string) => workflowTypeLabels[value] ?? value,
+    },
+    {
+      title: "对象",
+      dataIndex: "aggregate_id",
+      width: 120,
+      render: (value: string) => <Text code>{String(value).slice(0, 8)}</Text>,
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 100,
+      render: (value: string) => (
+        <Tag color={workflowStatusColors[value] ?? "default"}>
+          {workflowStatusLabels[value] ?? value}
+        </Tag>
+      ),
+    },
+    {
+      title: "当前步骤",
+      dataIndex: "current_step",
+      width: 120,
+      render: (value: string | null) =>
+        value ? workflowStepLabels[value] ?? value : "-",
+    },
+    {
+      title: "步骤进度",
+      width: 220,
+      render: (_, run) => (
+        <Space wrap size={4}>
+          {run.steps.map((step) => (
+            <Tag key={step.id} color={workflowStatusColors[step.status] ?? "default"}>
+              {workflowStepLabels[step.name] ?? step.name} {step.attempt_count}/
+              {step.max_attempts}
+            </Tag>
+          ))}
+        </Space>
+      ),
+    },
+    {
+      title: "最近错误",
+      width: 280,
+      render: (_, run) => {
+        const failed = run.steps.find((step) => step.last_error);
+        return failed?.last_error ? (
+          <Text type="danger" ellipsis={{ tooltip: failed.last_error }}>
+            {failed.last_error}
+          </Text>
+        ) : (
+          "-"
+        );
+      },
+    },
+    {
+      title: "更新时间",
+      dataIndex: "updated_at",
+      width: 170,
+      render: (value: string) => time(value),
+    },
+    {
+      title: "操作",
+      width: 100,
+      render: (_, run) =>
+        canReplayWorkflows &&
+        (run.status === "FAILED" || run.status === "DEAD_LETTER") ? (
+          <Button
+            size="small"
+            loading={
+              replayWorkflow.isPending && replayWorkflow.variables === run.id
+            }
+            onClick={() => replayWorkflow.mutate(run.id)}
+          >
+            重放
+          </Button>
+        ) : null,
+    },
+  ];
+
   const errors = [
     tools,
     calls,
@@ -742,6 +887,61 @@ export default function OperationsPage() {
           </Card>
         </Col>
       </Row>
+
+      {canViewWorkflows && (
+        <Card
+          className="section-card"
+          title="工作流运行与死信"
+          extra={
+            <Space wrap>
+              <Tag>{workflowRuns.data?.items.length ?? 0} 条运行</Tag>
+              <Tag color="volcano">
+                {workflowDeadLetters.data?.items.length ?? 0} 条死信
+              </Tag>
+            </Space>
+          }
+        >
+          <Space direction="vertical" size="middle" className="page-stack">
+            {(workflowDeadLetters.data?.items.length ?? 0) > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message="存在死信工作流"
+                description="检查最近错误后重放；重放会把失败步骤恢复为待执行并记录审计。"
+              />
+            )}
+            {(workflowDeadLetters.isError || workflowRuns.isError) && (
+              <Alert
+                type="error"
+                showIcon
+                message="工作流数据加载失败"
+                description="请检查 operations.view 权限或后端服务状态。"
+              />
+            )}
+            <Table
+              rowKey="id"
+              size="small"
+              columns={workflowColumns}
+              dataSource={workflowDeadLetters.data?.items}
+              loading={workflowDeadLetters.isLoading}
+              pagination={{ pageSize: 8, showSizeChanger: false }}
+              scroll={{ x: 1300 }}
+              locale={{ emptyText: <Empty description="暂无死信工作流" /> }}
+            />
+            <Text type="secondary">最近运行</Text>
+            <Table
+              rowKey="id"
+              size="small"
+              columns={workflowColumns}
+              dataSource={workflowRuns.data?.items}
+              loading={workflowRuns.isLoading}
+              pagination={{ pageSize: 8, showSizeChanger: false }}
+              scroll={{ x: 1300 }}
+              locale={{ emptyText: <Empty description="暂无工作流运行" /> }}
+            />
+          </Space>
+        </Card>
+      )}
 
       <Card
         className="section-card"

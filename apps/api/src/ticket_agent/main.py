@@ -1,5 +1,4 @@
 import json
-import logging
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -53,6 +52,7 @@ from ticket_agent.model_gateway.usage import ModelUsageService
 from ticket_agent.observability.exporter import (
     authorize_metrics,
     render_labeled_prometheus_metrics,
+    render_workflow_prometheus_metrics,
 )
 from ticket_agent.shared.body_limit import enforce_request_body_limit
 from ticket_agent.shared.db import SessionLocal, engine, init_db
@@ -61,6 +61,8 @@ from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.schemas import HealthResponse
 from ticket_agent.tools.metrics import ToolMetricsService
 from ticket_agent.tools.router import router as tool_router
+from ticket_agent.workflows.metrics import WorkflowMetricsService
+from ticket_agent.workflows.router import router as workflow_router
 from ticket_agent.workforce.router import router as workforce_router
 
 
@@ -75,7 +77,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 settings = get_settings()
-logger = logging.getLogger(__name__)
 demo_reset_lock = Lock()
 DEMO_RESET_DB_LOCK_KEY = 84739021
 DEMO_RESET_CONFIRMATION = "reset-bu_demo"
@@ -213,7 +214,8 @@ def health_ready() -> HealthResponse:
         session.execute(text("SELECT 1"))
     issues = rag_readiness_issues(settings)
     if issues:
-        logger.warning("RAG readiness failed: %s", "; ".join(issues))
+        # Readiness, not liveness: a demo embedding configuration in
+        # production returns low-quality answers silently, so it must fail.
         raise HTTPException(
             status_code=503,
             detail={
@@ -539,6 +541,11 @@ app.include_router(
     prefix=settings.api_prefix,
     dependencies=tenant_dependencies,
 )
+app.include_router(
+    workflow_router,
+    prefix=settings.api_prefix,
+    dependencies=tenant_dependencies,
+)
 # Inbound webhooks authenticate with an HMAC signature over the raw body,
 # not with a user principal, so they stay outside tenant dependencies.
 app.include_router(
@@ -557,6 +564,7 @@ def prometheus_metrics(
         rag_service = RagMetricsService(session)
         tool_service = ToolMetricsService(session)
         model_service = ModelUsageService(session)
+        workflow_service = WorkflowMetricsService(session)
         business_units = sync_service.business_units() or [""]
         series = [
             (
@@ -571,8 +579,22 @@ def prometheus_metrics(
             )
             for business_unit in business_units
         ]
+        workflow_units = sorted(
+            set(business_units) | set(workflow_service.business_units())
+        ) or [""]
+        workflow_series = [
+            (
+                {
+                    "business_unit": business_unit or "all",
+                    "adapter": settings.ticket_integration_provider,
+                },
+                workflow_service.summary(business_unit_id=business_unit or None),
+            )
+            for business_unit in workflow_units
+        ]
     return PlainTextResponse(
-        render_labeled_prometheus_metrics(series),
+        render_labeled_prometheus_metrics(series)
+        + render_workflow_prometheus_metrics(workflow_series),
         media_type="text/plain; version=0.0.4",
     )
 

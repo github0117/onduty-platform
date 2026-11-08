@@ -1,0 +1,37 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: webhook
+  group_by: [alertname, business_unit]
+  group_wait: 30s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    # Critical alerts page sooner and repeat more often.
+    - matchers:
+        - severity="critical"
+      receiver: webhook
+      group_wait: 10s
+      repeat_interval: 1h
+    - matchers:
+        - severity="warning"
+      receiver: webhook
+
+receivers:
+  - name: webhook
+    webhook_configs:
+      # The URL is written by the container entrypoint from ALERT_WEBHOOK_URL
+      # so the endpoint never lands in the image or in this config file.
+      - url_file: /tmp/alert_webhook_url
+        send_resolved: true
+        # Keep every alert in the payload so downstream routing can decide.
+        max_alerts: 0
+
+inhibit_rules:
+  # A firing critical alert already covers its warning counterpart.
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal: [alertname, business_unit]

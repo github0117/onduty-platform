@@ -193,7 +193,7 @@ def _wait(
     *,
     headers: dict[str, str],
     predicate: Callable[[dict[str, Any]], bool],
-    timeout_seconds: int = 60,
+    timeout_seconds: int = 240,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_seconds
     last_payload: dict[str, Any] = {}

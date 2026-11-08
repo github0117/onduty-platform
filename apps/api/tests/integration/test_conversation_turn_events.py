@@ -15,7 +15,7 @@ from ticket_agent.customer_service.turn_events import (
     transition_turn,
 )
 from ticket_agent.customer_service.turns import process_conversation_turn
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.drafts import grounding_status_from_claims
@@ -47,7 +47,7 @@ def _small_talk_conversation(client: TestClient) -> tuple[str, str]:
 
 
 def _events(conversation_id: str, turn_id: str) -> list[dict[str, object]]:
-    with SessionLocal() as session:
+    with system_session() as session:
         return [
             {
                 "event_type": event.event_type,
@@ -76,7 +76,7 @@ def _force_stuck_turn(
     attempt_count: int = 1,
     lease_offset_seconds: int = -60,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         turn.status = status
@@ -177,7 +177,7 @@ def test_illegal_and_repeated_turn_transitions_are_rejected(
 ) -> None:
     conversation_id, turn_id = _small_talk_conversation(client)
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         with pytest.raises(ApiProblem) as illegal:
@@ -283,11 +283,11 @@ def test_reclaim_reschedules_expired_turn(client: TestClient) -> None:
     conversation_id, turn_id = _small_talk_conversation(client)
     _force_stuck_turn(turn_id)
 
-    with SessionLocal() as session:
+    with system_session() as session:
         reclaimed = reclaim_stuck_turns(session, limit=10)
 
     assert reclaimed == [UUID(turn_id)]
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         assert turn.status == "PENDING"
@@ -300,7 +300,7 @@ def test_reclaim_reschedules_expired_turn(client: TestClient) -> None:
     assert "TURN_RETRY_SCHEDULED" in event_types
 
     # A live lease is left alone.
-    with SessionLocal() as session:
+    with system_session() as session:
         assert reclaim_stuck_turns(session, limit=10) == []
 
 
@@ -309,10 +309,10 @@ def test_reclaim_stops_at_max_attempts(client: TestClient) -> None:
     max_attempts = get_settings().conversation_turn_max_attempts
     _force_stuck_turn(turn_id, attempt_count=max_attempts)
 
-    with SessionLocal() as session:
+    with system_session() as session:
         assert reclaim_stuck_turns(session, limit=10) == []
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         assert turn.status == "FAILED_TERMINAL"
@@ -344,3 +344,55 @@ def test_operator_endpoint_reclaims_stuck_turn(client: TestClient) -> None:
         headers=AGENT,
     )
     assert denied.status_code == 403
+
+
+def test_operator_reclaim_is_scoped_to_the_actor_business_unit(
+    client: TestClient,
+) -> None:
+    _, demo_turn_id = _small_talk_conversation(client)
+
+    other_headers = {**AGENT, "X-Business-Unit-Id": "bu_tenant_other"}
+    other_conversation = client.post(
+        "/api/v1/customer-service/conversations",
+        headers=other_headers,
+        json={
+            "business_unit_id": "bu_tenant_other",
+            "requester_ref": "other-tenant-buyer",
+            "channel": "enterprise_service",
+        },
+    )
+    assert other_conversation.status_code == 201, other_conversation.text
+    other_conversation_id = other_conversation.json()["id"]
+    other_message = client.post(
+        f"/api/v1/customer-service/conversations/{other_conversation_id}/messages",
+        headers=other_headers,
+        json={"content": "你好"},
+    )
+    assert other_message.status_code == 202, other_message.text
+    other_turn_id = other_message.json()["current_turn"]["id"]
+
+    _force_stuck_turn(demo_turn_id, status="PENDING", attempt_count=0)
+    _force_stuck_turn(other_turn_id, status="PENDING", attempt_count=0)
+
+    with system_session() as session:
+        other_turn = session.get(ConversationTurn, UUID(other_turn_id))
+        assert other_turn is not None
+        other_lease = other_turn.lease_expires_at
+
+    response = client.post(
+        "/api/v1/customer-service/turns/reclaim",
+        headers=SUPERVISOR,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"reclaimed": 1, "redispatched": 1}
+
+    with system_session() as session:
+        demo_turn = session.get(ConversationTurn, UUID(demo_turn_id))
+        foreign_turn = session.get(ConversationTurn, UUID(other_turn_id))
+        assert demo_turn is not None
+        assert foreign_turn is not None
+        assert demo_turn.attempt_count >= 1
+        assert foreign_turn.status == "PENDING"
+        assert foreign_turn.attempt_count == 0
+        assert foreign_turn.lease_expires_at == other_lease

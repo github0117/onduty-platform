@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from ticket_agent.customer_service.models import CustomerConversation
 from ticket_agent.model_gateway.models import ModelCall
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.models import AnswerDraft, Ticket
 
 BUSINESS_MANAGER = {
@@ -198,7 +198,7 @@ def _seed(session, now: datetime) -> None:
 
 def test_value_metrics_aggregate_adoption_and_cost(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         _seed(session, now)
         session.commit()
 

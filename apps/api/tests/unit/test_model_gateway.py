@@ -463,7 +463,13 @@ def test_openai_compatible_generate_draft_uses_known_citation() -> None:
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    result = OpenAICompatibleGateway(_settings(), client=client).generate_draft(
+    result = OpenAICompatibleGateway(
+        _settings(),
+        client=client,
+        # 语义校验有独立用例覆盖；这里不走进程级配置，
+        # 避免 CI 的 CLAIM_VERIFIER_ENFORCE=true 让脚本化草稿被拒。
+        use_configured_claim_verifier=False,
+    ).generate_draft(
         subject="如何配置通知",
         body="请指导配置团队通知。",
         category="product_howto",
@@ -521,7 +527,11 @@ def test_openai_compatible_streams_draft_text_deltas() -> None:
 
     deltas: list[str] = []
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    result = OpenAICompatibleGateway(_settings(), client=client).generate_draft(
+    result = OpenAICompatibleGateway(
+        _settings(),
+        client=client,
+        use_configured_claim_verifier=False,
+    ).generate_draft(
         subject="如何配置通知",
         body="请指导配置团队通知。",
         category="product_howto",
@@ -578,6 +588,7 @@ def test_employee_instructions_are_injected_as_lower_priority_block() -> None:
         _settings(),
         client=client,
         employee_instructions="你是一名耐心、简洁的售后客服。",
+        use_configured_claim_verifier=False,
     )
     snippets = [
         DraftSnippet(

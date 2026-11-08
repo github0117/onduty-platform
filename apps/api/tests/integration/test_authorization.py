@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from ticket_agent.digital_employees.models import DigitalEmployee
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 
 def _payload(
@@ -218,7 +218,7 @@ def test_employee_directory_and_management_have_separate_access(
 def test_workforce_metrics_do_not_expose_employee_roster(
     client: TestClient,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         active_count = session.scalar(
             select(func.count())
             .select_from(DigitalEmployee)

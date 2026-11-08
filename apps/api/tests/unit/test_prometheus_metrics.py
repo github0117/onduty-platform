@@ -29,6 +29,7 @@ def test_render_prometheus_metrics() -> None:
             "grounded_count": 7,
             "grounding_rate": 0.875,
             "policy_citation_coverage": 1.0,
+            "policy_claim_count": 0,
             "semantic_verified_claim_count": 12,
             "semantic_unsupported_claim_count": 0,
         },
@@ -37,6 +38,7 @@ def test_render_prometheus_metrics() -> None:
     assert "ticket_worker_sync_failure_rate 0.167" in rendered
     assert "ticket_worker_rag_grounding_rate 0.875" in rendered
     assert "ticket_worker_rag_semantic_unsupported_claims 0" in rendered
+    assert "ticket_worker_rag_policy_claims 0" in rendered
     assert (
         "# TYPE ticket_worker_rate_limit_rejections_total counter" in rendered
     )
@@ -104,6 +106,7 @@ def test_render_labeled_metrics_groups_by_business_unit() -> None:
         "grounded_count": 1,
         "grounding_rate": 0.5,
         "policy_citation_coverage": 1.0,
+        "policy_claim_count": 0,
         "semantic_verified_claim_count": 1,
         "semantic_unsupported_claim_count": 0,
     }

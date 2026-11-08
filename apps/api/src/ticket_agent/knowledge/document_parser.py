@@ -1,4 +1,3 @@
-import importlib.metadata
 import io
 import re
 import zipfile
@@ -8,15 +7,13 @@ from pathlib import Path
 from typing import Any, Literal
 from xml.etree import ElementTree
 
-from ticket_agent.knowledge.ocr import OCRProvider, OCRUnavailableError
 from ticket_agent.knowledge.text_cleaning import (
+    clean_pdf_pages,
     clean_text,
     normalize_whitespace,
-    quality_warnings,
-    strip_repeated_page_artifacts,
 )
 
-BlockKind = Literal["heading", "paragraph", "table", "list_item", "image_text"]
+BlockKind = Literal["heading", "paragraph", "table", "list_item"]
 
 _WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -43,16 +40,6 @@ _IGNORED_TAGS = {
 _HEADING_STYLE = re.compile(r"(?:heading|标题)\s*([1-6])", re.IGNORECASE)
 _MARKDOWN_HEADING = re.compile(r"^(#{1,6})\s+(.+)$")
 _MARKDOWN_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d{1,3}[.)])\s+(.+)$")
-_IMAGE_MEDIA_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
-}
-_IMAGE_SUFFIXES = frozenset(_IMAGE_MEDIA_TYPES)
 
 
 class DocumentParseError(ValueError):
@@ -66,8 +53,6 @@ class TextBlock:
     kind: BlockKind
     text: str
     level: int = 0
-    page: int | None = None
-    ocr: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,9 +70,6 @@ def parse_document(
     content_type: str,
     data: bytes,
     max_bytes: int,
-    ocr_provider: OCRProvider | None = None,
-    ocr_max_pages: int = 50,
-    ocr_min_text_chars: int = 30,
 ) -> ParsedDocument:
     if len(data) > max_bytes:
         raise DocumentParseError(
@@ -109,22 +91,16 @@ def parse_document(
         parser.close()
         blocks = parser.blocks
         return _parsed(blocks, [], parser_name="html-parser")
-    if suffix in {".docx"}:
+    if suffix == ".docx":
         blocks = _parse_docx_blocks(data)
         return _parsed(blocks, [], parser_name="docx-xml")
-    if suffix in _IMAGE_SUFFIXES:
-        return _parse_image(
-            data,
-            suffix=suffix,
-            content_type=content_type,
-            ocr_provider=ocr_provider,
-        )
     if suffix == ".pdf":
-        return _parse_pdf_document(
-            data,
-            ocr_provider=ocr_provider,
-            ocr_max_pages=ocr_max_pages,
-            ocr_min_text_chars=ocr_min_text_chars,
+        text = _parse_pdf(data)
+        return _parsed(
+            _paragraph_blocks(text),
+            [],
+            parser_name="pypdf",
+            parser_version=_pypdf_version(),
         )
 
     raise DocumentParseError(
@@ -156,21 +132,12 @@ def serialize_blocks(
     blocks: tuple[TextBlock, ...],
     warnings: tuple[str, ...],
 ) -> dict[str, Any]:
-    payload: list[dict[str, Any]] = []
-    for block in blocks:
-        item: dict[str, Any] = {
-            "kind": block.kind,
-            "text": block.text,
-            "level": block.level,
-        }
-        if block.page is not None:
-            item["page"] = block.page
-        if block.ocr:
-            item["ocr"] = True
-        payload.append(item)
     return {
         "version": 1,
-        "blocks": payload,
+        "blocks": [
+            {"kind": block.kind, "text": block.text, "level": block.level}
+            for block in blocks
+        ],
         "warnings": list(warnings),
     }
 
@@ -502,67 +469,7 @@ def _docx_table_rows(table: ElementTree.Element) -> list[list[str]]:
     return rows
 
 
-def _parse_image(
-    data: bytes,
-    *,
-    suffix: str,
-    content_type: str,
-    ocr_provider: OCRProvider | None,
-) -> ParsedDocument:
-    if ocr_provider is None:
-        raise DocumentParseError(
-            "OCR_NOT_CONFIGURED",
-            "Image documents require OCR; configure KNOWLEDGE_OCR_PROVIDER.",
-        )
-    media_type = (
-        content_type
-        if content_type.startswith("image/")
-        else _IMAGE_MEDIA_TYPES.get(suffix, "image/png")
-    )
-    try:
-        result = ocr_provider.extract_text(data=data, content_type=media_type)
-    except OCRUnavailableError as exc:
-        raise DocumentParseError(
-            "OCR_FAILED",
-            "Knowledge OCR failed for the image.",
-        ) from exc
-    cleaned, warnings = clean_text(result.text, merge_wrapped=True)
-    if not cleaned:
-        raise DocumentParseError("EMPTY_DOCUMENT", "Image contains no extractable text.")
-    blocks = [TextBlock(kind="image_text", text=cleaned, page=1, ocr=True)]
-    return _parsed(
-        blocks,
-        warnings,
-        parser_name=f"{ocr_provider.name}-ocr",
-        parser_version="1",
-    )
-
-
-def _parse_pdf_document(
-    data: bytes,
-    *,
-    ocr_provider: OCRProvider | None,
-    ocr_max_pages: int,
-    ocr_min_text_chars: int,
-) -> ParsedDocument:
-    if ocr_provider is None:
-        pages = _pdf_page_texts(data)
-        blocks, warnings = _page_blocks_from_texts(pages, ocr_pages=frozenset())
-        return _parsed(
-            blocks,
-            warnings,
-            parser_name="pypdf",
-            parser_version=_pypdf_version(),
-        )
-    return _parse_pdf_with_pdfium(
-        data,
-        ocr_provider=ocr_provider,
-        ocr_max_pages=ocr_max_pages,
-        ocr_min_text_chars=ocr_min_text_chars,
-    )
-
-
-def _pdf_page_texts(data: bytes) -> list[str]:
+def _parse_pdf(data: bytes) -> str:
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -573,115 +480,13 @@ def _pdf_page_texts(data: bytes) -> list[str]:
 
     try:
         reader = PdfReader(io.BytesIO(data))
-        return [page.extract_text() or "" for page in reader.pages]
+        pages = [page.extract_text() or "" for page in reader.pages]
     except Exception as exc:
         raise DocumentParseError("INVALID_PDF", "PDF document could not be parsed.") from exc
-
-
-_PDF_OCR_DPI = 200
-
-
-def _parse_pdf_with_pdfium(
-    data: bytes,
-    *,
-    ocr_provider: OCRProvider,
-    ocr_max_pages: int,
-    ocr_min_text_chars: int,
-) -> ParsedDocument:
-    # pypdfium2 bundles PDFium (BSD-3-Clause) and replaces PyMuPDF (AGPL).
-    try:
-        import pypdfium2 as pdfium
-    except ImportError as exc:
-        raise DocumentParseError(
-            "PDF_PARSER_UNAVAILABLE",
-            "Scanned PDF support requires the optional pypdfium2 package.",
-        ) from exc
-
-    try:
-        document = pdfium.PdfDocument(data)
-    except Exception as exc:
-        raise DocumentParseError("INVALID_PDF", "PDF document could not be parsed.") from exc
-
-    page_texts: list[str] = []
-    ocr_pages: set[int] = set()
-    warnings: list[str] = []
-    try:
-        for index in range(len(document)):
-            page = document[index]
-            try:
-                text_page = page.get_textpage()
-                try:
-                    text = text_page.get_text_range() or ""
-                finally:
-                    text_page.close()
-                if len(text.strip()) >= ocr_min_text_chars:
-                    page_texts.append(text)
-                    continue
-                if len(ocr_pages) >= ocr_max_pages:
-                    page_texts.append(text)
-                    continue
-                bitmap = page.render(scale=_PDF_OCR_DPI / 72)
-                pil_image = bitmap.to_pil()
-                buffer = io.BytesIO()
-                pil_image.save(buffer, format="PNG")
-                rendered = buffer.getvalue()
-                try:
-                    result = ocr_provider.extract_text(
-                        data=rendered,
-                        content_type="image/png",
-                    )
-                except OCRUnavailableError:
-                    warnings.append("OCR_FAILED")
-                    page_texts.append(text)
-                    continue
-                if result.text.strip():
-                    page_texts.append(result.text)
-                    ocr_pages.add(index + 1)
-                else:
-                    page_texts.append(text)
-            finally:
-                page.close()
-    finally:
-        document.close()
-
-    blocks, clean_warnings = _page_blocks_from_texts(page_texts, ocr_pages=ocr_pages)
-    all_warnings = list(dict.fromkeys([*warnings, *clean_warnings]))
-    if not blocks and "OCR_FAILED" in all_warnings:
-        raise DocumentParseError("OCR_FAILED", "Knowledge OCR failed for every page.")
-    parser_name = f"pdfium+{ocr_provider.name}" if ocr_pages else "pdfium"
-    return _parsed(
-        blocks,
-        all_warnings,
-        parser_name=parser_name,
-        parser_version=_pdfium_version(),
-    )
-
-
-def _page_blocks_from_texts(
-    pages: list[str],
-    *,
-    ocr_pages: frozenset[int] | set[int],
-) -> tuple[list[TextBlock], list[str]]:
-    normalized = [normalize_whitespace(page) for page in pages]
-    if len(normalized) >= 3:
-        normalized = strip_repeated_page_artifacts(normalized)
-    blocks: list[TextBlock] = []
-    for index, page_text in enumerate(normalized, start=1):
-        cleaned, _ = clean_text(page_text, merge_wrapped=True)
-        if not cleaned:
-            continue
-        for block in _paragraph_blocks(cleaned):
-            blocks.append(
-                TextBlock(
-                    kind=block.kind,
-                    text=block.text,
-                    level=block.level,
-                    page=index,
-                    ocr=index in ocr_pages,
-                )
-            )
-    joined = "\n\n".join(text for text in normalized if text.strip())
-    return blocks, quality_warnings(joined)
+    text, _warnings = clean_pdf_pages(pages)
+    if not text:
+        raise DocumentParseError("EMPTY_DOCUMENT", "PDF contains no extractable text.")
+    return text
 
 
 def _pypdf_version() -> str:
@@ -690,10 +495,3 @@ def _pypdf_version() -> str:
     except ImportError:
         return "unavailable"
     return str(pypdf.__version__)
-
-
-def _pdfium_version() -> str:
-    try:
-        return importlib.metadata.version("pypdfium2")
-    except importlib.metadata.PackageNotFoundError:
-        return "unavailable"

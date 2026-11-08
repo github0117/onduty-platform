@@ -31,6 +31,10 @@ celery_app.conf.update(
             "task": "ticket_agent.outbox.dispatch_pending",
             "schedule": 2.0,
         },
+        "dispatch-workflows-every-10-seconds": {
+            "task": "ticket_agent.workflow.dispatch_due",
+            "schedule": 10.0,
+        },
         "reclaim-offline-customer-agents-every-30-seconds": {
             "task": "ticket_agent.customer_service.reclaim_offline",
             "schedule": 30.0,

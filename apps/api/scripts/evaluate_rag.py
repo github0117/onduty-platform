@@ -17,7 +17,7 @@ from ticket_agent.knowledge.evaluation_service import (
     build_evaluation_cases,
 )
 from ticket_agent.knowledge.service import KnowledgeService
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 
 def main() -> None:
@@ -61,7 +61,7 @@ def main() -> None:
     if args.business_unit is None and args.dataset is None:
         parser.error("provide a JSONL dataset or --business-unit")
 
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeService(session)
         if args.business_unit is not None:
             entries, unresolved_passages = _cases_from_database(

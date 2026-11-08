@@ -10,7 +10,7 @@ from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.mcp_connectors.models import McpConnector, McpToolApproval
 from ticket_agent.mcp_connectors.runtime import McpToolRuntime
 from ticket_agent.model_gateway.types import ToolPlan
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.tools.models import ToolCall
 
@@ -68,7 +68,7 @@ def test_reply_suggestion_executes_bound_mcp_tool(
         },
     )
     assert connector.status_code == 201, connector.text
-    with SessionLocal() as session:
+    with system_session() as session:
         model = session.get(McpConnector, UUID(connector.json()["id"]))
         assert model is not None
         model.tools_json = [
@@ -149,7 +149,7 @@ def test_reply_suggestion_executes_bound_mcp_tool(
         json={"content": "订单 PDD-2002 到哪了？"},
     )
     assert message.status_code == 202, message.text
-    with SessionLocal() as session:
+    with system_session() as session:
         employee_model = session.get(
             DigitalEmployee,
             UUID(employee.json()["id"]),
@@ -167,7 +167,7 @@ def test_reply_suggestion_executes_bound_mcp_tool(
         ),
         headers=AGENT,
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         calls = list(
             session.scalars(
                 select(ToolCall).order_by(ToolCall.started_at)
@@ -227,7 +227,7 @@ def test_reply_suggestion_opens_approval_without_executing_write(
         },
     )
     assert connector.status_code == 201, connector.text
-    with SessionLocal() as session:
+    with system_session() as session:
         model = session.get(McpConnector, UUID(connector.json()["id"]))
         assert model is not None
         model.tools_json = [
@@ -300,7 +300,7 @@ def test_reply_suggestion_opens_approval_without_executing_write(
         json={"content": "订单 PDD-3003 申请退款 39.9 元"},
     )
     assert message.status_code == 202, message.text
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = session.get(
             Ticket,
             UUID(message.json()["current_ticket_id"]),
@@ -343,7 +343,7 @@ def test_reply_suggestion_opens_approval_without_executing_write(
     assert approval_id
     assert "审批通过并执行前" in payload["text"]
 
-    with SessionLocal() as session:
+    with system_session() as session:
         approval = session.get(McpToolApproval, UUID(approval_id))
         assert approval is not None
         assert approval.status == "PENDING"

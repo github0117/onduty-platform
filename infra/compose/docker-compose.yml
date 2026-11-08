@@ -1,11 +1,3 @@
-x-api-build: &api-build
-  context: ../../apps/api
-  dockerfile: Dockerfile
-  args:
-    # 默认国际源；国内本机可在 infra/compose/.env 或 shell 里覆盖为镜像。
-    PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
-    APT_MIRROR: ${APT_MIRROR:-}
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -38,7 +30,9 @@ services:
 
   migrate:
     image: ticket-agent-api:local
-    build: *api-build
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
     profiles: ["app"]
     env_file:
       - path: ../../.env
@@ -118,7 +112,7 @@ services:
       LOGISTICS_QUERY_BASE_URL: http://mock-business:8090/logistics/queries
       BUSINESS_SANDBOX_PROVIDER: http_json
       BUSINESS_SANDBOX_BASE_URL: http://mock-business:8090
-      METRICS_SCRAPE_TOKEN: local-metrics-token
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-local-metrics-token}
       # 外部连接密钥只从 .env 注入，镜像与仓库中保持为空。
       CONNECTOR_SECRETS_JSON: ${CONNECTOR_SECRETS_JSON:-}
       CONNECTOR_POLL_BATCH_SIZE: ${CONNECTOR_POLL_BATCH_SIZE:-20}
@@ -139,7 +133,9 @@ services:
 
   api:
     image: ticket-agent-api:local
-    build: *api-build
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
     profiles: ["app"]
     env_file:
       - path: ../../.env
@@ -267,7 +263,9 @@ services:
 
   worker:
     image: ticket-agent-api:local
-    build: *api-build
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
     profiles: ["app"]
     ports: []
     env_file:
@@ -295,7 +293,9 @@ services:
 
   beat:
     image: ticket-agent-api:local
-    build: *api-build
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
     profiles: ["app"]
     ports: []
     env_file:
@@ -328,9 +328,73 @@ services:
       - "9090:9090"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    environment:
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-local-metrics-token}
+    # Prometheus 配置文件不支持环境变量展开，启动时先把 token 落成 0600
+    # 临时文件，再由 prometheus.yml 的 bearer_token_file 读取。
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        printf '%s' "$$METRICS_SCRAPE_TOKEN" > /tmp/metrics_scrape_token;
+        chmod 600 /tmp/metrics_scrape_token;
+        exec /bin/prometheus
+        --config.file=/etc/prometheus/prometheus.yml
+        --storage.tsdb.path=/prometheus
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  alertmanager:
+    # 0.27.0 在 webhook 接收端返回非 2xx（如 relay 返回 502）时会 panic 退出，
+    # 升级到 0.28.1 后已验证同一场景只重试、不崩溃。
+    image: prom/alertmanager:v0.28.1
+    profiles: ["observability"]
+    ports:
+      - "9093:9093"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # 生产环境必须在 .env 中设置真实 webhook。留空时启动日志会显式
+      # WARN，并回落到本地验证地址，避免误以为告警已外发。
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_WEBHOOK_FALLBACK: http://host.docker.internal:9999/alerts
+    # 与 Prometheus metrics token 相同：URL 不写入镜像或配置文件，
+    # 启动时落成 0600 临时文件供 url_file 读取。
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        URL="$$ALERT_WEBHOOK_URL";
+        if [ -z "$$URL" ]; then
+        URL="$$ALERT_WEBHOOK_FALLBACK";
+        echo "WARN: ALERT_WEBHOOK_URL is not set; falling back to $$URL. Alerts will not leave this environment." >&2;
+        fi;
+        printf '%s' "$$URL" > /tmp/alert_webhook_url;
+        chmod 600 /tmp/alert_webhook_url;
+        exec /bin/alertmanager
+        --config.file=/etc/alertmanager/alertmanager.yml
+        --storage.path=/alertmanager
+    volumes:
+      - ../alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+
+  alert-relay:
+    image: python:3.12-alpine
+    profiles: ["feishu-alerts"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
+      FEISHU_WEBHOOK_SECRET: ${FEISHU_WEBHOOK_SECRET:-}
+    command: ["python", "-u", "/app/relay.py"]
+    volumes:
+      - ../alert-relay/relay.py:/app/relay.py:ro
+    # 不发布到宿主机，只在 compose 网络内供 Alertmanager 调用。
+    expose:
+      - "8080"
 
   grafana:
     image: grafana/grafana:11.3.0
@@ -349,4 +413,5 @@ volumes:
   ticket_agent_redis:
   ticket_agent_local_objects:
   ticket_agent_beat:
+  alertmanager_data:
 

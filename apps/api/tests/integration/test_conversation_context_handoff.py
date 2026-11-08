@@ -15,7 +15,7 @@ from ticket_agent.customer_service.models import (
 )
 from ticket_agent.customer_service.service import CustomerConversationService
 from ticket_agent.customer_service.turns import process_conversation_turn
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.models import Ticket
 
@@ -118,7 +118,7 @@ def test_repeated_client_message_id_is_a_replay(client: TestClient) -> None:
     assert first["replayed"] is False
     assert second["replayed"] is True
     assert second["current_turn"]["id"] == first["current_turn"]["id"]
-    with SessionLocal() as session:
+    with system_session() as session:
         turns = list(
             session.scalars(
                 select(ConversationTurn).where(
@@ -158,7 +158,7 @@ def test_turn_context_snapshot_records_memory_and_labels(
     turn_id = accepted["current_turn"]["id"]
     process_conversation_turn(UUID(turn_id), "context-test")
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         context = turn.context_json
@@ -200,7 +200,7 @@ def test_context_assembly_labels_the_employee_who_answered(
         requester_ref="label-buyer",
     )
     _send(client, conversation_id, "你好")
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         current = CustomerMessage(
@@ -231,7 +231,7 @@ def test_memory_v1_row_is_upgraded_when_it_is_read(
     client: TestClient,
 ) -> None:
     conversation_id = uuid4()
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(
             CustomerConversation(
                 id=conversation_id,
@@ -288,7 +288,7 @@ def test_memory_records_a_fact_with_its_source_turn(
         employee_id=employee_id,
         requester_ref="memory-fact-buyer",
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         message = CustomerMessage(
@@ -338,7 +338,7 @@ def test_second_turn_waits_for_the_first(client: TestClient) -> None:
     )
     # Queue two turns without dispatching them: both are PENDING with a live
     # lease, exactly as the API leaves them before the worker claims one.
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         lease = datetime.now(UTC) + timedelta(
@@ -373,7 +373,7 @@ def test_second_turn_waits_for_the_first(client: TestClient) -> None:
     # Dispatching the later turn first must not run it in parallel with the
     # earlier one that still holds a live lease.
     process_conversation_turn(turn_ids[1], "serial-out-of-order")
-    with SessionLocal() as session:
+    with system_session() as session:
         waiting = session.get(ConversationTurn, turn_ids[1])
         assert waiting is not None
         assert waiting.status == "PENDING"
@@ -381,7 +381,7 @@ def test_second_turn_waits_for_the_first(client: TestClient) -> None:
 
     # Running the earlier turn finishes it and drains the queue in order.
     process_conversation_turn(turn_ids[0], "serial-in-order")
-    with SessionLocal() as session:
+    with system_session() as session:
         turns = list(
             session.scalars(
                 select(ConversationTurn)
@@ -463,7 +463,7 @@ def test_supervisor_can_switch_employee_and_the_handoff_feeds_context(
     assert handoff["summary"]["last_answer"]["text"]
     handoff_id = handoff["id"]
 
-    with SessionLocal() as session:
+    with system_session() as session:
         stored = session.get(ConversationHandoff, UUID(handoff_id))
         assert stored is not None
         assert str(stored.to_employee_id) == target_employee
@@ -477,7 +477,7 @@ def test_supervisor_can_switch_employee_and_the_handoff_feeds_context(
     turn_id = accepted["current_turn"]["id"]
     process_conversation_turn(UUID(turn_id), "handoff-turn")
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         assert turn.context_json["handoff"]["id"] == handoff_id
@@ -506,7 +506,7 @@ def test_second_switch_of_the_same_turn_records_its_own_handoff(
         )
         assert response.status_code == 200, response.text
 
-    with SessionLocal() as session:
+    with system_session() as session:
         handoffs = list(
             session.scalars(
                 select(ConversationHandoff)
@@ -533,7 +533,7 @@ def test_handoff_is_idempotent_per_source_turn(client: TestClient) -> None:
     )
     _send(client, conversation_id, "你好")
 
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         from_turn = session.scalar(
@@ -599,7 +599,7 @@ def test_first_message_joins_the_ticket_created_at_the_same_instant(
 
     # Rewind to the exact window the racing request sees: the initial ticket
     # is committed but the conversation does not point at it yet.
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         conversation.current_ticket_id = None
@@ -629,7 +629,7 @@ def test_first_message_joins_the_ticket_created_at_the_same_instant(
     assert buyer_turns["订单 AB-2001 什么时候发货？"] == first["current_turn"]["id"]
     assert buyer_turns["顺便问一下，能开发票吗？"] == second["current_turn"]["id"]
 
-    with SessionLocal() as session:
+    with system_session() as session:
         initial_tickets = list(
             session.scalars(
                 select(Ticket).where(
@@ -656,7 +656,7 @@ def test_queued_turn_does_not_see_a_message_sent_after_it(
 
     # Queue two more turns the way the API leaves them before a worker claims
     # one: the buyer has already sent both when the first of them runs.
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         lease = datetime.now(UTC) + timedelta(
@@ -704,7 +704,7 @@ def test_queued_turn_does_not_see_a_message_sent_after_it(
 
     process_conversation_turn(turn_ids[0], "causal-test")
 
-    with SessionLocal() as session:
+    with system_session() as session:
         first_turn = session.get(ConversationTurn, turn_ids[0])
         second_turn = session.get(ConversationTurn, turn_ids[1])
         assert first_turn is not None
@@ -768,7 +768,7 @@ def test_manual_switch_must_stay_inside_the_entry_pool(
     assert rejected.status_code == 409, rejected.text
     assert rejected.json()["code"] == "HANDOFF_EMPLOYEE_OUTSIDE_ENTRY"
 
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         assert str(conversation.employee_id) == inside

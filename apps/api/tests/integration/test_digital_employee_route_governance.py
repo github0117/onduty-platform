@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 from ticket_agent.digital_employees.models import DigitalEmployee
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 ADMIN = {"X-Actor-Id": "route-governance-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "route-governance-agent", "X-Actor-Role": "agent"}
@@ -122,7 +122,7 @@ def _append_manifest_terms(
     employee_id: str,
     *terms: str,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         employee = session.get(DigitalEmployee, UUID(employee_id))
         assert employee is not None
         manifest = dict(employee.manifest_json)

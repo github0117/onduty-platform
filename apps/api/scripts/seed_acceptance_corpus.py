@@ -15,7 +15,7 @@ from ticket_agent.knowledge.models import (
     KnowledgeEvaluationCase,
     KnowledgeEvaluationRun,
 )
-from ticket_agent.shared.db import SessionLocal, init_db
+from ticket_agent.shared.db import init_db, system_session
 from ticket_agent.tickets.models import Ticket
 
 BUSINESS_UNIT = "bu_acceptance"
@@ -208,7 +208,7 @@ def _seed_knowledge(
 
 
 def _document_chunk_ids(document_id: str) -> list[str]:
-    with SessionLocal() as session:
+    with system_session() as session:
         document = session.get(KnowledgeDocument, UUID(document_id))
         if document is None or document.current_version_id is None:
             return []
@@ -328,7 +328,7 @@ def _seed_tickets(
     *,
     employee_id: UUID,
 ) -> int:
-    with SessionLocal() as session:
+    with system_session() as session:
         for item in items:
             external_id = str(item["id"])
             existing = session.scalar(
@@ -408,7 +408,7 @@ def _run_evaluation(
 
 
 def _reset_evaluations() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         session.execute(
             delete(KnowledgeEvaluationRun).where(
                 KnowledgeEvaluationRun.business_unit_id == BUSINESS_UNIT

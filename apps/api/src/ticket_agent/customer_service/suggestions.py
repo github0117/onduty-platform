@@ -1208,8 +1208,6 @@ def _citation_payload(hit: KnowledgeHit) -> dict[str, Any]:
         "space_id": str(hit.space_id) if hit.space_id else None,
         "title": hit.title,
         "version": hit.version,
-        "page_start": hit.page_start,
-        "page_end": hit.page_end,
     }
 
 

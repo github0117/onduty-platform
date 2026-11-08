@@ -14,7 +14,7 @@ from ticket_agent.customer_service.suggestions import (
 )
 from ticket_agent.digital_employees.models import DigitalEmployee
 from ticket_agent.outbox.service import dispatch_pending_events
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 ADMIN = {"X-Actor-Id": "admin-1", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "agent-1", "X-Actor-Role": "agent"}
@@ -241,7 +241,7 @@ def test_no_trigger_match_uses_general_not_first_binding(
     )
     assert bound.status_code == 200, bound.text
 
-    with SessionLocal() as session:
+    with system_session() as session:
         employee = session.get(DigitalEmployee, UUID(employee_id))
         assert employee is not None
         service = CustomerReplySuggestionService(session)
@@ -301,7 +301,7 @@ def test_missing_required_step_blocks_completed_turn(
     turn = detail.json()["current_turn"]
     assert turn["status"] == "NEEDS_HUMAN", detail.text
 
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ConversationTurn, UUID(turn["id"]))
         assert row is not None
         assert row.skill_code == "ecommerce-aftersales"
@@ -357,7 +357,7 @@ def test_missing_required_step_blocks_completed_turn(
         },
     )
     assert edited.status_code == 200, edited.text
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ConversationTurn, UUID(turn["id"]))
         assert row is not None
         assert row.skill_snapshot_json is not None

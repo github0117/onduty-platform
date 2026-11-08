@@ -12,7 +12,7 @@ from ticket_agent.mcp_connectors.models import (
     McpToolApproval,
 )
 from ticket_agent.mcp_connectors.runtime import McpToolRuntime
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.models import Ticket
 from ticket_agent.tools.models import ToolCall
 
@@ -58,7 +58,7 @@ def test_mcp_runtime_executes_read_and_blocks_write(
     assert connector_response.status_code == 201, connector_response.text
     connector_id = connector_response.json()["id"]
 
-    with SessionLocal() as session:
+    with system_session() as session:
         connector = session.get(McpConnector, UUID(connector_id))
         assert connector is not None
         connector.tools_json = [
@@ -236,7 +236,7 @@ def test_mcp_runtime_executes_read_and_blocks_write(
 
     monkeypatch.setattr(McpToolRuntime, "_call_remote", fake_remote)
 
-    with SessionLocal() as session:
+    with system_session() as session:
         employee = session.get(
             DigitalEmployee,
             UUID(employee_response.json()["id"]),

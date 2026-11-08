@@ -26,7 +26,7 @@ from ticket_agent.knowledge.service import (
     KnowledgeService,
     _chunk_successor_map,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import Settings
 
@@ -82,7 +82,7 @@ def _create_version(session: object, content: str) -> tuple[KnowledgeDocument, K
 
 
 def test_duplicate_job_creation_reuses_active_job() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeReindexService(
             session,
             embedding_provider=NamedLocalProvider("bge-m3"),
@@ -104,7 +104,7 @@ def test_duplicate_job_creation_reuses_active_job() -> None:
 
 
 def test_run_job_rebuilds_versions_for_new_embedding_model() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         _document, version = _create_version(session, "签收后七天内可以申请退款。")
         version.embedding_model = "legacy-model-256"
         session.commit()
@@ -136,7 +136,7 @@ def test_run_job_rebuilds_versions_for_new_embedding_model() -> None:
 
 
 def test_second_run_skips_already_current_versions() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         _create_version(session, "发票在确认收货后开具。")
         provider = NamedLocalProvider("bge-m3")
         service = KnowledgeReindexService(session, embedding_provider=provider)
@@ -161,7 +161,7 @@ def test_second_run_skips_already_current_versions() -> None:
 
 
 def test_reindex_with_v2_chunking_writes_section_metadata() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         _document, version = _create_version(session, "退款政策\n\n签收后七天内可以申请退款。")
         version.content_blocks_json = {
             "version": 1,
@@ -196,7 +196,7 @@ def test_reindex_with_v2_chunking_writes_section_metadata() -> None:
 
 
 def test_failed_versions_retry_then_dead_letter() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         _document, version = _create_version(session, "跨境订单不支持无理由退款。")
         original_model = version.embedding_model
         service = KnowledgeReindexService(session, embedding_provider=FailingProvider())
@@ -224,7 +224,7 @@ def test_failed_versions_retry_then_dead_letter() -> None:
 
 
 def test_embedding_failure_aborts_version_creation() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeService(session, embedding_provider=FailingProvider())
         document = service.create_document(
             KnowledgeDocumentCreate(
@@ -272,7 +272,7 @@ def test_embedding_fallback_records_local_model_and_flag() -> None:
         settings,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeService(session, embedding_provider=provider)
         document = service.create_document(
             KnowledgeDocumentCreate(
@@ -330,7 +330,7 @@ def test_reindex_remaps_evaluation_chunk_refs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level("INFO", logger="ticket_agent.knowledge.service")
-    with SessionLocal() as session:
+    with system_session() as session:
         _document, version = _create_version(session, "签收后七天内可以申请退款。")
         old_ids = [
             str(chunk.id)
@@ -376,7 +376,7 @@ def test_reindex_remaps_evaluation_chunk_refs(
 
 def test_reindex_does_not_touch_evaluation_cases_of_other_business_units() -> None:
     other_unit = "bu_reindex_other"
-    with SessionLocal() as session:
+    with system_session() as session:
         _document, version = _create_version(session, "发票在确认收货后开具。")
         old_ids = [
             str(chunk.id)
@@ -408,7 +408,7 @@ def test_reindex_does_not_touch_evaluation_cases_of_other_business_units() -> No
 
 
 def test_stale_evaluation_chunk_refs_counts_missing_chunks() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         _document, version = _create_version(session, "跨境订单不支持无理由退款。")
         live_id = str(
             session.query(KnowledgeChunk)
@@ -459,7 +459,7 @@ def test_chunk_successor_map_ignores_short_boilerplate_overlap() -> None:
 
 
 def test_unmatched_evaluation_refs_are_kept_and_counted_as_stale() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         _document, version = _create_version(
             session,
             "签收后七天内可以申请退款，跨境订单不支持无理由退款，退款将在三个工作日内原路退回。",
@@ -503,7 +503,7 @@ def test_holdout_refs_only_follow_exact_text_moves() -> None:
     paragraph = "签收后七天内可以申请退款，跨境订单不支持无理由退款，退款将在三个工作日内原路退回。"
     old_id = uuid4()
     new_id = uuid4()
-    with SessionLocal() as session:
+    with system_session() as session:
         _create_evaluation_case(
             session,
             business_unit_id="bu_reindex_holdout",

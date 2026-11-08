@@ -6,13 +6,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from ticket_agent.outbox import service as outbox_service
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.models import OutboxEvent, Ticket
 
 
 def _create_ticket_and_event() -> tuple[str, str]:
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = Ticket(
             business_unit_id="bu_demo",
             source_system="outbox_test",
@@ -54,7 +54,7 @@ def test_outbox_retries_and_then_dispatches(monkeypatch: pytest.MonkeyPatch) -> 
     first = outbox_service.dispatch_outbox_event(UUID(event_id))
 
     assert first.dispatched is False
-    with SessionLocal() as session:
+    with system_session() as session:
         event = session.get(OutboxEvent, UUID(event_id))
         assert event is not None
         assert event.status == "PENDING"
@@ -67,7 +67,7 @@ def test_outbox_retries_and_then_dispatches(monkeypatch: pytest.MonkeyPatch) -> 
     results = outbox_service.dispatch_pending_events()
 
     assert any(result.event_id == UUID(event_id) and result.dispatched for result in results)
-    with SessionLocal() as session:
+    with system_session() as session:
         event = session.get(OutboxEvent, UUID(event_id))
         ticket = session.get(Ticket, UUID(ticket_id))
         assert event is not None
@@ -100,7 +100,7 @@ def test_created_ticket_marks_outbox_event_sent(client: TestClient) -> None:
     )
     assert response.status_code == 202
 
-    with SessionLocal() as session:
+    with system_session() as session:
         event = session.scalar(select(OutboxEvent))
         assert event is not None
         assert event.status == "SENT"

@@ -9,7 +9,7 @@ from ticket_agent.mcp_connectors.approvals import (
     _fingerprint,
 )
 from ticket_agent.mcp_connectors.models import McpToolApproval
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 
 def _approval(
@@ -60,11 +60,11 @@ def _request_kwargs(
 
 def test_active_fingerprint_is_unique() -> None:
     fingerprint = "a" * 64
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(_approval(fingerprint))
         session.commit()
 
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(_approval(fingerprint))
         with pytest.raises(IntegrityError):
             session.commit()
@@ -73,11 +73,11 @@ def test_active_fingerprint_is_unique() -> None:
 
 def test_rejected_fingerprint_does_not_block_new_request() -> None:
     fingerprint = "b" * 64
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(_approval(fingerprint, status="REJECTED"))
         session.commit()
 
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(_approval(fingerprint))
         session.commit()
         count = session.scalar(
@@ -100,7 +100,7 @@ def test_request_returns_winner_when_insert_races(
         ticket_id=None,
         arguments={"order_id": "O-1"},
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         winner = _approval(
             fingerprint,
             employee_id=employee_id,
@@ -134,7 +134,7 @@ def test_request_returns_winner_when_insert_races(
         stale_first_lookup,
     )
 
-    with SessionLocal() as session:
+    with system_session() as session:
         approval, reused = McpToolApprovalService(session).request(
             **_request_kwargs(  # type: ignore[arg-type]
                 employee_id=employee_id,

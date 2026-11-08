@@ -24,7 +24,7 @@ from ticket_agent.knowledge.service import (
     KnowledgeService,
     _prune_context_hits,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 CONTENT = (
     "退款政策说明：签收后七天内可以申请退款，退款原路退回。"
@@ -100,7 +100,7 @@ def _run(session: object, business_unit_id: str) -> object:
 
 
 def test_passage_case_resolves_to_chunk_and_passes() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         document, _version = _published_document(
             session, business_unit_id="bu_passage_unit"
         )
@@ -121,7 +121,7 @@ def test_passage_case_resolves_to_chunk_and_passes() -> None:
 
 
 def test_passage_case_survives_reindex_with_new_chunk_ids() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         document, version = _published_document(
             session, business_unit_id="bu_passage_reindex"
         )
@@ -167,7 +167,7 @@ def test_passage_case_survives_reindex_with_new_chunk_ids() -> None:
 
 
 def test_unresolved_passage_fails_the_run_loudly() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         document, _version = _published_document(
             session, business_unit_id="bu_passage_missing"
         )

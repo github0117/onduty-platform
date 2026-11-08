@@ -349,6 +349,13 @@ class KnowledgeReindexService:
             return True
         if version.embedding_model != job.target_embedding_model:
             return False
+        # A v2 target cannot apply to a version without structured blocks:
+        # chunking falls back to v1, so that is the achievable target here.
+        target_chunking = job.target_chunking_version
+        if target_chunking == "v2" and not (version.content_blocks_json or {}).get(
+            "blocks"
+        ):
+            target_chunking = "v1"
         metadata_rows: list[dict[str, object] | None] = list(
             self.session.scalars(
                 select(KnowledgeChunk.metadata_json).where(
@@ -359,7 +366,7 @@ class KnowledgeReindexService:
         if not metadata_rows:
             return False
         return all(
-            (metadata or {}).get("chunking_version") == job.target_chunking_version
+            (metadata or {}).get("chunking_version") == target_chunking
             and (metadata or {}).get("lexical_version") == LEXICAL_TOKENIZER_VERSION
             for metadata in metadata_rows
         )

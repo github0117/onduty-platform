@@ -28,7 +28,7 @@ from ticket_agent.customer_service.turns import (
     ConversationTurnOrchestrator,
     process_conversation_turn,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets.domain import WorkflowState
@@ -122,7 +122,7 @@ def _force_turn_status(
     attempt_count: int = 1,
     lease_offset_seconds: int = 60,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         turn.status = status
@@ -139,7 +139,7 @@ def _force_ticket_completed(ticket_id: str) -> None:
     The ticket state machine is still exercised afterwards: the buyer's next
     message and the human reply go through the real service endpoints.
     """
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = session.get(Ticket, UUID(ticket_id))
         assert ticket is not None
         ticket.workflow_state = WorkflowState.COMPLETED
@@ -150,7 +150,7 @@ def _force_ticket_completed(ticket_id: str) -> None:
 
 
 def _turn_events(turn_id: str) -> list[ConversationTurnEvent]:
-    with SessionLocal() as session:
+    with system_session() as session:
         return list(
             session.scalars(
                 select(ConversationTurnEvent)
@@ -161,7 +161,7 @@ def _turn_events(turn_id: str) -> list[ConversationTurnEvent]:
 
 
 def _conversation_messages(conversation_id: str) -> list[CustomerMessage]:
-    with SessionLocal() as session:
+    with system_session() as session:
         return list(
             session.scalars(
                 select(CustomerMessage)
@@ -178,7 +178,7 @@ def _queue_pending_turn(
     content: str,
 ) -> str:
     """Queue a turn exactly as the API leaves it before a worker claims it."""
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         sequence = (
@@ -392,7 +392,7 @@ def test_retry_requeues_a_retryable_turn(
     )
     conversation_id, turn_id = _small_talk_turn(client)
     _force_turn_status(turn_id, "FAILED_RETRYABLE", attempt_count=2)
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         turn.error_code = "TURN_PROCESSING_FAILED"
@@ -412,7 +412,7 @@ def test_retry_requeues_a_retryable_turn(
     assert body["attempt_count"] == 2
     assert dispatched == [UUID(turn_id)]
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(turn_id))
         assert turn is not None
         assert turn.status == "PENDING"
@@ -622,7 +622,7 @@ def test_takeover_cancels_queued_turn_before_any_answer(
     )
     assert takeover.status_code == 200, takeover.text
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(queued_turn))
         assert turn is not None
         assert turn.status == "CANCELLED"
@@ -645,7 +645,7 @@ def test_takeover_cancels_queued_turn_before_any_answer(
     # A late dispatch must not resurrect the cancelled turn or write an
     # assistant message the human would talk over.
     process_conversation_turn(UUID(queued_turn), "late-dispatch")
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(queued_turn))
         assert turn is not None
         assert turn.status == "CANCELLED"
@@ -665,7 +665,7 @@ def test_complete_turn_refuses_a_cancelled_turn(client: TestClient) -> None:
         employee_id=employee_id,
         content="订单 AB-9002 的物流呢",
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         message = CustomerMessage(
@@ -716,7 +716,7 @@ def test_ticket_body_is_the_current_question_only(client: TestClient) -> None:
     )
     # A legacy conversation may already carry messages before its first ticket
     # is created. The ticket created by the next message must not copy them.
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, UUID(conversation_id))
         assert conversation is not None
         session.add(
@@ -734,7 +734,7 @@ def test_ticket_body_is_the_current_question_only(client: TestClient) -> None:
     ticket_id = accepted["current_ticket_id"]
     assert ticket_id is not None
 
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = session.get(Ticket, UUID(str(ticket_id)))
         assert ticket is not None
         assert ticket.body == "当前问题：能改地址吗？"
@@ -999,7 +999,7 @@ def test_human_takeover_owns_the_conversation_until_released(
     assert back_view["current_turn"]["status"] == "COMPLETED"
     assert back_view["messages"][-1]["role"] == "ASSISTANT"
 
-    with SessionLocal() as session:
+    with system_session() as session:
         message = session.scalar(
             select(CustomerMessage)
             .where(CustomerMessage.turn_id == UUID(back_turn))
@@ -1160,7 +1160,7 @@ def test_takeover_retries_after_a_deadlock(
     assert takeover.status_code == 200, takeover.text
     assert len(calls) == 2
     assert takeover.json()["assigned_agent_id"] == "agent-1"
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(queued_turn))
         assert turn is not None
         assert turn.status == "CANCELLED"
@@ -1248,7 +1248,7 @@ def test_dispatch_retries_a_turn_whose_transaction_deadlocked(
     process_conversation_turn(UUID(queued_turn), "deadlock-retry")
 
     assert len(calls) == 2
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.get(ConversationTurn, UUID(queued_turn))
         assert turn is not None
         assert turn.status in {
