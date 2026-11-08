@@ -1,16 +1,13 @@
-import io
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from reportlab.pdfgen import canvas
 from sqlalchemy import select
 
 from ticket_agent.ecommerce.models import EcommerceProduct
 from ticket_agent.knowledge.local_embedding import LocalEmbeddingProvider
 from ticket_agent.knowledge.models import KnowledgeChunk, KnowledgeVersion
-from ticket_agent.knowledge.ocr import OCRResult
 from ticket_agent.knowledge.query_rewrite import (
     QueryRewriteError,
     query_rewrite_fallback_total,
@@ -18,7 +15,7 @@ from ticket_agent.knowledge.query_rewrite import (
     reset_query_rewrite_metrics,
 )
 from ticket_agent.knowledge.service import KnowledgeService
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.workers.celery_app import celery_app
 from ticket_agent.workers.tasks import ingest_knowledge_version_task
@@ -356,7 +353,7 @@ def test_create_knowledge_version_from_markdown_file(client: TestClient) -> None
     assert version["source_filename"] == "guide.md"
     assert version["parser_name"] == "markdown"
     assert version["chunk_count"] > 0
-    with SessionLocal() as session:
+    with system_session() as session:
         stored = session.get(KnowledgeVersion, UUID(version["id"]))
         assert stored is not None
         blocks = (stored.content_blocks_json or {}).get("blocks", [])
@@ -399,7 +396,7 @@ def test_async_upload_stores_source_and_ingests_inline(
 
 def test_knowledge_ingestion_celery_task_executes(client: TestClient) -> None:
     document_id = UUID(_create_document(client))
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeService(session)
         version, _ = service.create_async_upload(
             document_id,
@@ -422,7 +419,7 @@ def test_knowledge_ingestion_celery_task_executes(client: TestClient) -> None:
     finally:
         celery_app.conf.task_always_eager = previous_mode
 
-    with SessionLocal() as session:
+    with system_session() as session:
         version = KnowledgeService(session).get_version(document_id, version_id)
         assert version.status == "DRAFT"
         assert version.parser_name == "markdown"
@@ -801,7 +798,7 @@ def test_product_creation_creates_and_incrementally_updates_knowledge_card(
     assert unchanged.status_code == 200, unchanged.text
     assert unchanged.json()["unchanged"] == 1
 
-    with SessionLocal() as session:
+    with system_session() as session:
         stored = session.get(EcommerceProduct, UUID(product_id))
         assert stored is not None
         stored.attributes_json = {
@@ -1550,7 +1547,7 @@ def test_structured_chunking_metadata_when_v2_enabled(
     monkeypatch.setenv("KNOWLEDGE_CHUNKING_VERSION", "v2")
     get_settings.cache_clear()
     try:
-        with SessionLocal() as session:
+        with system_session() as session:
             version = KnowledgeService(session).create_version_from_file(
                 UUID(document_id),
                 version_label="v2-chunks",
@@ -1580,111 +1577,6 @@ def test_structured_chunking_metadata_when_v2_enabled(
     assert paragraph_chunk.metadata_json["chunking_version"] == "v2"
     table_chunk = next(chunk for chunk in chunks if "仅退款" in chunk.content)
     assert table_chunk.metadata_json["block_kinds"] == ["table"]
-
-
-def _pdf_bytes(texts: list[str | None]) -> bytes:
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer)
-    for text in texts:
-        if text:
-            pdf.drawString(72, 720, text)
-        pdf.showPage()
-    pdf.save()
-    return buffer.getvalue()
-
-
-def _pdf_chunks(version_id: UUID) -> list[KnowledgeChunk]:
-    with SessionLocal() as session:
-        return list(
-            session.execute(
-                select(KnowledgeChunk).where(
-                    KnowledgeChunk.knowledge_version_id == version_id
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-
-def test_pdf_version_chunks_record_page_range(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    document_id = _create_document(client, title="退款政策扫描件")
-    monkeypatch.setenv("KNOWLEDGE_CHUNKING_VERSION", "v2")
-    get_settings.cache_clear()
-    try:
-        with SessionLocal() as session:
-            version = KnowledgeService(session).create_version_from_file(
-                UUID(document_id),
-                version_label="pdf-pages",
-                filename="policy.pdf",
-                content_type="application/pdf",
-                data=_pdf_bytes(
-                    [
-                        "Page one describes the refund workflow in detail.",
-                        "Page two lists the evidence required for a claim.",
-                    ]
-                ),
-            )
-            chunks = _pdf_chunks(version.id)
-            blocks_payload = version.content_blocks_json
-    finally:
-        get_settings.cache_clear()
-
-    assert chunks
-    assert all(chunk.metadata_json["chunking_version"] == "v2" for chunk in chunks)
-    assert all(chunk.metadata_json["page_start"] == 1 for chunk in chunks)
-    assert max(chunk.metadata_json["page_end"] for chunk in chunks) == 2
-    assert blocks_payload is not None
-    assert {block["page"] for block in blocks_payload["blocks"]} == {1, 2}
-
-
-class _FakeImageOCR:
-    name = "fake"
-
-    def extract_text(self, *, data: bytes, content_type: str) -> OCRResult:
-        del data, content_type
-        return OCRResult(
-            text="扫描条款：签收后七天内可以申请退款。",
-            provider=self.name,
-            model_name="fake-model",
-        )
-
-
-def test_image_version_uses_ocr_and_records_page(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    document_id = _create_document(client, title="退款条款截图")
-    monkeypatch.setenv("KNOWLEDGE_CHUNKING_VERSION", "v2")
-    monkeypatch.setattr(
-        "ticket_agent.knowledge.service.get_ocr_provider",
-        lambda settings: _FakeImageOCR(),
-    )
-    get_settings.cache_clear()
-    try:
-        with SessionLocal() as session:
-            version = KnowledgeService(session).create_version_from_file(
-                UUID(document_id),
-                version_label="image-ocr",
-                filename="scan.png",
-                content_type="image/png",
-                data=b"\x89PNG\r\n",
-            )
-            chunks = _pdf_chunks(version.id)
-            blocks_payload = version.content_blocks_json
-    finally:
-        get_settings.cache_clear()
-
-    assert blocks_payload is not None
-    block = blocks_payload["blocks"][0]
-    assert block["kind"] == "image_text"
-    assert block["page"] == 1
-    assert block["ocr"] is True
-    assert len(chunks) == 1
-    assert chunks[0].metadata_json["page_start"] == 1
-    assert chunks[0].metadata_json["page_end"] == 1
 
 
 class _RecordingEmbedding(LocalEmbeddingProvider):
@@ -1737,7 +1629,7 @@ def test_search_resolves_follow_up_query_with_history(
     _published_refund_document(client)
     embedding = _RecordingEmbedding()
 
-    with SessionLocal() as session:
+    with system_session() as session:
         hits = KnowledgeService(
             session,
             embedding_provider=embedding,
@@ -1764,7 +1656,7 @@ def test_search_keeps_single_query_when_context_resolution_disabled(
     monkeypatch.setenv("KNOWLEDGE_QUERY_CONTEXT_ENABLED", "false")
     get_settings.cache_clear()
     try:
-        with SessionLocal() as session:
+        with system_session() as session:
             KnowledgeService(
                 session,
                 embedding_provider=embedding,
@@ -1790,7 +1682,7 @@ def test_search_expands_low_score_query_and_records_rewrite(
     get_settings.cache_clear()
     reset_query_rewrite_metrics()
     try:
-        with SessionLocal() as session:
+        with system_session() as session:
             hits = KnowledgeService(
                 session,
                 embedding_provider=embedding,
@@ -1815,7 +1707,7 @@ def test_search_keeps_local_result_when_rewriter_fails(
     get_settings.cache_clear()
     reset_query_rewrite_metrics()
     try:
-        with SessionLocal() as session:
+        with system_session() as session:
             hits = KnowledgeService(
                 session,
                 embedding_provider=LocalEmbeddingProvider(256),
@@ -1835,7 +1727,7 @@ def test_search_skips_rewrite_when_score_is_confident(
     _published_refund_document(client)
     rewriter = _StubRewriter(["不应调用"])
 
-    with SessionLocal() as session:
+    with system_session() as session:
         KnowledgeService(
             session,
             embedding_provider=LocalEmbeddingProvider(256),

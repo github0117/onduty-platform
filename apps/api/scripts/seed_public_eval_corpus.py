@@ -21,7 +21,7 @@ from ticket_agent.knowledge.models import (
     KnowledgeDocument,
     KnowledgeEvaluationCase,
 )
-from ticket_agent.shared.db import SessionLocal, init_db
+from ticket_agent.shared.db import init_db, system_session
 
 BUSINESS_UNIT = "bu_public_eval"
 SPACE_CODE = "public_hr_eval"
@@ -226,7 +226,7 @@ def _publish_if_needed(
 
 
 def _document_chunk_ids(document_id: str) -> list[str]:
-    with SessionLocal() as session:
+    with system_session() as session:
         document = session.get(KnowledgeDocument, UUID(document_id))
         if document is None or document.current_version_id is None:
             return []
@@ -271,7 +271,7 @@ def _existing_cases(
 
 
 def _reset_public_space(space_id: str) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         session.execute(
             delete(KnowledgeEvaluationCase).where(
                 KnowledgeEvaluationCase.business_unit_id == BUSINESS_UNIT,

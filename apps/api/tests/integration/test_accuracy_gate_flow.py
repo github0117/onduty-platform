@@ -18,7 +18,7 @@ from ticket_agent.knowledge.models import (
 )
 from ticket_agent.knowledge.repair_service import KnowledgeRepairService
 from ticket_agent.outbox.service import dispatch_pending_events
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.drafts import DraftResult
 
 ADMIN = {"X-Actor-Id": "admin-1", "X-Actor-Role": "admin"}
@@ -144,7 +144,7 @@ def test_policy_claim_without_citation_is_persisted_and_blocks_completion(
     assert gate["reasons"] == ["POLICY_CLAIM_WITHOUT_CITATION"]
     assert gate["checks"]["uncited_policy_claim_count"] == 1
 
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ConversationTurn, UUID(str(turn["id"])))
         assert row is not None
         assert row.gate_json is not None
@@ -211,7 +211,7 @@ def test_repeated_no_knowledge_question_opens_one_repair_task(
     client: TestClient,
 ) -> None:
     query = "门禁卡补办需要几天？"
-    with SessionLocal() as session:
+    with system_session() as session:
         first = record_knowledge_gap(
             session,
             business_unit_id="bu_demo",
@@ -296,7 +296,7 @@ def test_repeated_no_knowledge_question_opens_one_repair_task(
 def test_knowledge_gaps_are_scoped_per_business_unit(
     client: TestClient,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         for _ in range(2):
             record_knowledge_gap(
                 session,

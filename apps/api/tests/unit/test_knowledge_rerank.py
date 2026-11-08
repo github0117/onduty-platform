@@ -21,7 +21,7 @@ from ticket_agent.knowledge.schemas import (
     KnowledgeVersionCreate,
 )
 from ticket_agent.knowledge.service import KnowledgeService
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import Settings
 
@@ -281,7 +281,7 @@ class ExplodingReranker:
 
 
 def test_search_maps_reranker_failure_to_service_unavailable() -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeService(
             session,
             embedding_provider=LocalEmbeddingProvider(256),

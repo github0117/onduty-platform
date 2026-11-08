@@ -44,12 +44,6 @@
   改写，最近运行会展示平均上下文字符数/估算 token 和未解析段落原因；
   真实 embedding 与远端 rerank 已做协议和公开集 A/B，远端 rerank 默认仍关闭；
   无依据或校验不通过时转人工，不编造答案。
-- **知识库文件与 OCR**：支持 `txt/md/html/docx/pdf/png/jpg/jpeg/webp/bmp/tif/tiff`。
-  PDF 逐页解析并记录页码；`KNOWLEDGE_OCR_PROVIDER=dashscope` 时，图片直接 OCR，
-  扫描 PDF 的纯文字页不 OCR、低文字页渲染后 OCR（`MAX_PAGES` 控制页数上限）。
-  未配置 OCR 时图片上传返回 `OCR_NOT_CONFIGURED`，纯扫描 PDF 返回
-  `EMPTY_DOCUMENT`，不会静默入库空内容。页码随 block 与 chunk metadata
-  （`page_start/page_end`）写入检索命中，回答引用可直接展示来源页。
 - **MCP 工具治理**：只读工具自动执行；写工具走确定性策略、独立审批、
   幂等执行、事故对账与补偿审批。
 - **外部连接中心**：邮件渠道（IMAP 收信 / SMTP 回信）与只读 HTTP JSON 业务系统
@@ -58,7 +52,9 @@
 - **客服工作台**：SSE 流式回复、自动派单、人工接管、风险分级、SLA、
   回复建议、反馈修复和审计。
 - **多租户与可靠性**：资源级租户校验、统一 403、幂等键、工单状态机白名单、
-  限流和请求体上限。
+  限流和请求体上限；Outbox 事件可走持久化工作流引擎（运行/步骤两级状态、
+  租约回收、指数退避、死信与重放），`/metrics` 输出积压与死信指标，
+  `infra/prometheus/alerts.yml` 提供死信、积压、重试风暴告警。
 - **服务端 RBAC**：角色到能力只由后端维护，`GET /api/v1/me` 下发能力快照；
   菜单、路由和按钮按同一清单渲染，越权页面显示 403，只读角色不出现写操作入口。
 - **会话运行时**：买家消息生成带状态机的轮次（`PENDING → RUNNING →
@@ -138,9 +134,8 @@ Top 10”合并修复任务、负反馈聚类与未处理的抽检失败，给�
 
 ```bash
 make test          # 后端测试
-make lint          # 后端 Ruff + 前端 TypeScript/ESLint
-make typecheck     # 后端 mypy
-make test-unit     # 前端 Vitest 单元测试
+make lint          # Ruff
+make typecheck     # mypy + TypeScript
 make build         # Vite production build
 make e2e-web       # Playwright 浏览器回归
 
@@ -158,14 +153,15 @@ make acceptance-final
 当前基线：
 
 ```text
-后端: 653 passed, 2 skipped（PostgreSQL 专项按 TEST_POSTGRES_URL 启用）
+后端: 708 passed, 3 skipped（跳过项为需真实外部依赖的用例）
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
-Ruff / mypy: passed（206 个源文件）
+Ruff / mypy: passed（216 个源文件）
 TypeScript / Vite: passed
 Playwright: 174 passed, 2 skipped（5.4 分钟）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
-PostgreSQL migration: e1a7c4d90b62 (head)
+PostgreSQL migration: b5e2a8d9c641 (head)
+工作流并发: 真实 PostgreSQL 两 worker 抢同一步骤，仅 1 个 claim 成功
 会话运行时压测: 20 次接管 + 10 次交接 + 3 次强制死锁，全通过
 模拟业务系统: passed（成功、幂等、HTTP 500 故障）
 ```

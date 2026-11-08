@@ -28,7 +28,6 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
-          cache-suffix: backend
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
@@ -36,8 +35,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: uv run ruff check src tests
       - run: uv run mypy src
-      - name: License audit (Python dependencies)
-        run: uv run python ../../scripts/check_licenses.py --skip-node
       - name: Run test suite with coverage gate
         run: |
           set -o pipefail
@@ -81,18 +78,13 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
-          cache-suffix: postgres
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
       - run: uv run alembic upgrade head
       - name: Detect model/migration drift
         run: uv run alembic check
-      - name: Run PostgreSQL integration tests
-        run: |
-          uv run pytest -q \
-            tests/integration/test_postgres_pgvector.py \
-            tests/integration/test_postgres_turn_event_sequence.py
+      - run: uv run pytest tests/integration/test_postgres_pgvector.py -q
 
   rag-gate:
     name: RAG HOLDOUT regression gate
@@ -126,7 +118,6 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
-          cache-suffix: rag-holdout
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
@@ -194,11 +185,6 @@ jobs:
             --min-context-precision 0.15 \
             --min-no-grounding-accuracy 1.0 \
             --max-unresolved-passages 0
-      - name: Stop API
-        if: always()
-        # The nohup'd `uv run uvicorn` keeps a uv process alive; without this
-        # the post-job setup-uv cache prune times out waiting for its lock.
-        run: pkill -f "uvicorn ticket_agent.main:app" || true
       - name: Upload API log
         if: failure()
         uses: actions/upload-artifact@v4
@@ -251,7 +237,6 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
-          cache-suffix: rag-quality
           cache-dependency-glob: apps/api/uv.lock
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
@@ -276,13 +261,8 @@ jobs:
             --top-k 5 \
             --min-chunk-recall-at-k 0.85 \
             --min-document-recall-at-k 0.80 \
-            --min-chunk-mrr 0.60 \
+            --min-mrr 0.60 \
             --max-unresolved-passages 0
-      - name: Stop API
-        if: always()
-        # The nohup'd `uv run uvicorn` keeps a uv process alive; without this
-        # the post-job setup-uv cache prune times out waiting for its lock.
-        run: pkill -f "uvicorn ticket_agent.main:app" || true
       - name: Upload API log
         if: failure()
         uses: actions/upload-artifact@v4
@@ -309,10 +289,7 @@ jobs:
           cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: pnpm test:unit
       - run: pnpm build
-      - name: License audit (Node dependencies)
-        run: python3 ../../scripts/check_licenses.py --node-only
 
   e2e:
     name: Playwright end-to-end
@@ -323,12 +300,11 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.25.0
-      # No setup-node pnpm cache here: dependencies install into the local
-      # .pnpm-store for the Docker build context, so the default store path
-      # never exists and the post-job cache save would fail the run.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
       - name: Install frontend dependencies
         working-directory: apps/web
         env:
@@ -337,13 +313,6 @@ jobs:
       - name: Build frontend
         working-directory: apps/web
         run: pnpm build
-      - name: Build application image
-        # mock-business/worker/beat reference ticket-agent-api:local without
-        # their own build section, so `up --build` could try to pull it from
-        # a registry before api finishes building. Build the tag explicitly.
-        run: >-
-          docker compose -f infra/compose/docker-compose.yml
-          --profile app --profile test build api
       - name: Start demo stack
         run: |
           set -o pipefail

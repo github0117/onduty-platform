@@ -16,7 +16,7 @@ from ticket_agent.customer_service.suggestions import (
     CustomerReplySuggestionService,
 )
 from ticket_agent.digital_employees.models import DigitalEmployeeRouteDecision
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.drafts import DraftResult
 from ticket_agent.tickets.models import Ticket
 
@@ -55,7 +55,7 @@ def test_small_talk_uses_deterministic_turn_without_ticket(
     assert payload["current_turn"]["status"] == "COMPLETED"
     assert payload["current_turn"]["intent"] == "small_talk"
     assert payload["current_turn"]["response_model"] == "small-talk-v1"
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.scalar(
             select(ConversationTurn).where(
                 ConversationTurn.conversation_id == UUID(conversation_id)
@@ -116,7 +116,7 @@ def test_conversation_reuses_one_ticket_across_normal_turns(
     assert first.status_code == 202
     assert second.status_code == 202
     assert first.json()["current_ticket_id"] == second.json()["current_ticket_id"]
-    with SessionLocal() as session:
+    with system_session() as session:
         turns = list(
             session.scalars(
                 select(ConversationTurn)
@@ -141,7 +141,7 @@ def test_conversation_reuses_one_ticket_across_normal_turns(
 def test_takeover_capacity_is_isolated_by_business_unit(
     client: TestClient,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add_all(
             [
                 CustomerConversation(
@@ -448,7 +448,7 @@ def test_reply_suggestion_does_not_append_duplicate_assistant_message(
     )
     assert accepted.status_code == 202, accepted.text
     ticket_id = UUID(accepted.json()["current_ticket_id"])
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = session.get(Ticket, ticket_id)
         assert ticket is not None
         ticket.needs_human = False
@@ -559,7 +559,7 @@ def test_auto_assignment_matches_skill_risk_and_load(
         "aftersales-buyer",
         "订单商品破损，我要申请退款退货。",
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         presales = session.get(Ticket, UUID(presales_ticket))
         aftersales = session.get(Ticket, UUID(aftersales_ticket))
         assert presales is not None and aftersales is not None
@@ -969,7 +969,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
         if item["conversation_id"] == pending_conversation_id
     )
     assert assigned_pending["agent_id"] == "agent-1"
-    with SessionLocal() as session:
+    with system_session() as session:
         presence_record = session.scalar(
             select(AgentPresence).where(AgentPresence.agent_id == "agent-1")
         )
@@ -995,7 +995,7 @@ def test_conversation_persists_buyer_and_assistant_messages(
         headers=AGENT,
         json={"content": "请再确认一下尺码。"},
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         last_message = session.scalar(
             select(CustomerMessage)
             .where(CustomerMessage.conversation_id == UUID(conversation_id))
@@ -1356,7 +1356,7 @@ def test_completed_conversation_reroutes_new_question_and_keeps_history(
         "投诉已登记，退款申请已提交财务复核。",
         "人工处理已完成，会话已交还数字员工。后续问题将继续由数字员工接待。",
     ]
-    with SessionLocal() as session:
+    with system_session() as session:
         decisions = list(
             session.scalars(
                 select(DigitalEmployeeRouteDecision).where(

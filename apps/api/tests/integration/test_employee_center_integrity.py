@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from ticket_agent.digital_employees.models import (
     DigitalEmployeeManagedTemplate,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 ADMIN = {"X-Actor-Id": "center-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "center-agent", "X-Actor-Role": "agent"}
@@ -295,7 +295,7 @@ def test_skill_change_moves_bound_active_employee_back_to_trial(
 def test_template_publish_is_blocked_when_required_resources_are_missing(
     client: TestClient,
 ) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         template = DigitalEmployeeManagedTemplate(
             business_unit_id="bu_demo",
             code=f"invalid_{uuid4().hex[:8]}",
@@ -344,7 +344,7 @@ def test_published_template_clone_fails_when_required_knowledge_is_disabled(
         "/api/v1/skills?business_unit_id=bu_demo",
         headers=AGENT,
     ).raise_for_status()
-    with SessionLocal() as session:
+    with system_session() as session:
         template = DigitalEmployeeManagedTemplate(
             business_unit_id="bu_demo",
             code=f"drift_{uuid4().hex[:8]}",

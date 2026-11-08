@@ -8,7 +8,7 @@ from ticket_agent.knowledge.tokenizer import (
     build_tsquery,
     tokenize,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 
 def _candidate(chunk_id: object) -> RetrievalCandidate:
@@ -102,7 +102,7 @@ def test_rrf_fuse_dedupes_and_truncates() -> None:
 
 
 def test_sqlite_session_degrades_hybrid_setting_to_dense(monkeypatch) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeService(session)
         monkeypatch.setattr(service.settings, "knowledge_retrieval_mode", "hybrid")
 

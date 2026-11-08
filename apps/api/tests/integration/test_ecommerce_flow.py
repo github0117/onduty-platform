@@ -15,7 +15,7 @@ from ticket_agent.ecommerce.models import (
     EcommerceVideoRenderJob,
 )
 from ticket_agent.outbox.service import dispatch_pending_events
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 
 ADMIN = {"X-Actor-Id": "ecommerce-admin", "X-Actor-Role": "admin"}
 AGENT = {"X-Actor-Id": "ecommerce-agent", "X-Actor-Role": "supervisor"}
@@ -29,7 +29,7 @@ TINY_PNG = (
 
 
 def _create_operation_owner_employees() -> dict[str, str]:
-    with SessionLocal() as session:
+    with system_session() as session:
         listing = DigitalEmployee(
             employee_key="test_ecommerce_listing_operator",
             name="测试商品上架数字员工",
@@ -634,7 +634,7 @@ def test_grounded_low_risk_presales_is_auto_approved(
         "generate_reply → local/local-keyword-v1",
     ]
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.scalar(
             select(ConversationTurn)
             .where(ConversationTurn.ticket_id == UUID(ticket_id))
@@ -859,7 +859,7 @@ def test_ecommerce_video_render_job_closed_loop(client: TestClient) -> None:
     )
     assert not_retryable.status_code == 409
 
-    with SessionLocal() as session:
+    with system_session() as session:
         stored_job = session.get(EcommerceVideoRenderJob, UUID(job_id))
         assert stored_job is not None
         stored_job.status = "FAILED"
@@ -911,7 +911,7 @@ def test_video_render_blocks_storyboards_with_visual_issues(
     )
     assert storyboard.status_code == 201, storyboard.text
 
-    with SessionLocal() as session:
+    with system_session() as session:
         asset = session.get(
             EcommerceProductAsset,
             UUID(storyboard.json()["items"][0]["id"]),
@@ -1507,7 +1507,7 @@ def test_ecommerce_asset_archive_and_publish_retry(
         headers=AGENT,
         json={"product_id": product["id"], "channel": "local_shop"},
     ).json()
-    with SessionLocal() as session:
+    with system_session() as session:
         task = session.get(EcommerceListingTask, UUID(listing["id"]))
         assert task is not None
         task.status = "FAILED"

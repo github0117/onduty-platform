@@ -33,7 +33,7 @@ from ticket_agent.customer_service.models import (
 from ticket_agent.customer_service.suggestions import (
     CustomerReplySuggestionService,
 )
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.domain import TicketStatus, WorkflowState
 from ticket_agent.tickets.drafts import DraftResult
 from ticket_agent.tickets.models import Ticket
@@ -386,7 +386,7 @@ def test_webhook_signature_dedup_and_object_chain(
     ticket_id = messages["inbound"][0]["ticket_id"]
     assert ticket_id is not None
 
-    with SessionLocal() as session:
+    with system_session() as session:
         conversation = session.get(CustomerConversation, conversation_id)
         assert conversation is not None
         assert str(conversation.external_connector_id) == connector["id"]
@@ -410,7 +410,7 @@ def test_webhook_signature_dedup_and_object_chain(
     duplicate = _webhook(client, str(connector["id"]), _payload())
     assert duplicate.status_code == 202
     assert duplicate.json()["id"] == inbound_id
-    with SessionLocal() as session:
+    with system_session() as session:
         inbound_count = session.scalar(
             select(func.count()).select_from(ExternalInboundMessage)
         )
@@ -442,7 +442,7 @@ def test_unbound_disabled_and_retry_path(
     )
     assert unbound.status_code == 422
     assert unbound.json()["code"] == "CONNECTOR_NOT_BOUND"
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.scalar(
             select(ExternalInboundMessage).where(
                 ExternalInboundMessage.external_message_id
@@ -467,7 +467,7 @@ def test_unbound_disabled_and_retry_path(
     )
     assert rejected.status_code == 409
     assert rejected.json()["code"] == "CONNECTOR_DISABLED"
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.scalar(
             select(ExternalInboundMessage).where(
                 ExternalInboundMessage.external_message_id
@@ -547,7 +547,7 @@ def test_small_talk_auto_reply_and_outbound_delivery(
         lambda connector: _FakeOutbound(),
     )
     deliver_outbound_message(outbound_id)
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ExternalOutboundMessage, outbound_id)
         assert row is not None
         assert row.status == "SENT"
@@ -568,7 +568,7 @@ def test_small_talk_auto_reply_and_outbound_delivery(
         ),
     )
     assert duplicate.status_code == 202
-    with SessionLocal() as session:
+    with system_session() as session:
         outbound_count = session.scalar(
             select(func.count()).select_from(ExternalOutboundMessage)
         )
@@ -639,7 +639,7 @@ def test_auto_reply_requires_auto_send_gate(
     assert messages["inbound"][0]["status"] == "PROCESSED"
     assert messages["outbound"] == []
 
-    with SessionLocal() as session:
+    with system_session() as session:
         turn = session.scalar(
             select(ConversationTurn).order_by(
                 ConversationTurn.sequence.desc()
@@ -672,7 +672,7 @@ def test_manual_reply_bridges_to_outbound(
     ).json()
     inbound = messages["inbound"][0]
     conversation_id = UUID(inbound["conversation_id"])
-    with SessionLocal() as session:
+    with system_session() as session:
         ticket = session.get(Ticket, UUID(str(inbound["ticket_id"])))
         assert ticket is not None
         ticket.workflow_state = WorkflowState.NEEDS_HUMAN
@@ -704,7 +704,7 @@ def test_manual_reply_bridges_to_outbound(
         headers=AUDITOR,
     ).json()["outbound"]
     assert len(outbound) == 1
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.get(ExternalOutboundMessage, UUID(outbound[0]["id"]))
         assert row is not None
         assert row.content == "已为您核实订单，今天发出。"
@@ -812,7 +812,7 @@ def test_concurrent_webhook_delivery_creates_one_row(
         results = list(pool.map(_ingest, range(5)))
 
     assert sum(results) == 1
-    with SessionLocal() as session:
+    with system_session() as session:
         rows = session.scalar(
             select(func.count()).select_from(ExternalInboundMessage)
         )
@@ -879,7 +879,7 @@ def test_email_polling_deduplicates_and_survives_adapter_failure(
     )
     assert poll_email_connectors_job() == 0
 
-    with SessionLocal() as session:
+    with system_session() as session:
         row = session.scalar(
             select(ExternalInboundMessage).where(
                 ExternalInboundMessage.external_message_id

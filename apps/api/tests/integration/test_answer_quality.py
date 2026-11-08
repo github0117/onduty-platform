@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ticket_agent.knowledge.models import KnowledgeFeedback, KnowledgeRepairTask
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.tickets.models import AnswerDraft, AnswerQualityEvaluation, Ticket
 
 OPERATOR = {
@@ -67,7 +67,7 @@ def _adopted_draft(
 
 def test_samples_exclude_reviewed_pending_and_old_drafts(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         oldest = _adopted_draft(session, created_at=now - timedelta(days=2), text="旧草稿")
         _adopted_draft(
             session,
@@ -111,7 +111,7 @@ def test_samples_exclude_reviewed_pending_and_old_drafts(client: TestClient) -> 
 
 def test_record_upsert_summary_and_queue_progress(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         _adopted_draft(session, created_at=now - timedelta(days=10))
         _adopted_draft(session)
         _adopted_draft(session)
@@ -197,7 +197,7 @@ def test_record_upsert_summary_and_queue_progress(client: TestClient) -> None:
 
 
 def test_record_rejects_invalid_drafts_and_windows(client: TestClient) -> None:
-    with SessionLocal() as session:
+    with system_session() as session:
         pending = _adopted_draft(session, status="NEEDS_REVIEW")
         other_unit = _adopted_draft(session, business_unit_id="bu_other")
         session.commit()
@@ -281,7 +281,7 @@ def test_record_rejects_invalid_drafts_and_windows(client: TestClient) -> None:
 
 def test_permissions_split_read_and_write(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         draft = _adopted_draft(session, created_at=now)
         session.commit()
         draft_id = str(draft.id)
@@ -325,7 +325,7 @@ def test_permissions_split_read_and_write(client: TestClient) -> None:
 
 def test_existing_evaluation_is_reused_not_duplicated(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         draft = _adopted_draft(session, created_at=now)
         session.add(
             AnswerQualityEvaluation(
@@ -347,7 +347,7 @@ def test_existing_evaluation_is_reused_not_duplicated(client: TestClient) -> Non
     assert response.status_code == 200
     assert response.json()["evaluator_ref"] == "knowledge-operator-quality"
 
-    with SessionLocal() as session:
+    with system_session() as session:
         count = (
             session.query(AnswerQualityEvaluation)
             .filter(AnswerQualityEvaluation.draft_id == draft.id)
@@ -387,7 +387,7 @@ def _record(
 
 def test_issues_only_list_failed_checks_in_window(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         passed = _adopted_draft(session, created_at=now, subject="通过抽检工单")
         failed = _adopted_draft(
             session, created_at=now - timedelta(days=1), subject="错误抽检工单"
@@ -464,7 +464,7 @@ def test_issues_only_list_failed_checks_in_window(client: TestClient) -> None:
 
 def test_failed_spot_check_opens_one_repair_task(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         incorrect = _adopted_draft(session, created_at=now, subject="错误答案工单")
         hallucinated = _adopted_draft(session, created_at=now, subject="幻觉答案工单")
         passed = _adopted_draft(session, created_at=now, subject="正确答案工单")
@@ -551,7 +551,7 @@ def test_failed_spot_check_opens_one_repair_task(client: TestClient) -> None:
 
 def test_gaps_merge_repair_feedback_and_spot_checks(client: TestClient) -> None:
     now = datetime.now(UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         open_task = KnowledgeRepairTask(
             business_unit_id="bu_demo",
             status="OPEN",

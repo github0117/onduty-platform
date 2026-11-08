@@ -13,8 +13,6 @@ class RetrievalCandidate:
     content: str
     vector_score: float
     space_id: UUID | None = None
-    page_start: int | None = None
-    page_end: int | None = None
 
 
 @dataclass(frozen=True)

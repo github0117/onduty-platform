@@ -36,7 +36,6 @@ from ticket_agent.knowledge.models import (
     KnowledgeSpace,
     KnowledgeVersion,
 )
-from ticket_agent.knowledge.ocr import get_ocr_provider
 from ticket_agent.knowledge.query_rewrite import (
     QueryRewriteError,
     QueryRewriteProvider,
@@ -93,8 +92,6 @@ class KnowledgeHit:
     content: str
     score: float
     space_id: UUID | None = None
-    page_start: int | None = None
-    page_end: int | None = None
 
 
 class KnowledgeService:
@@ -111,7 +108,6 @@ class KnowledgeService:
         self._uses_default_embedding_provider = embedding_provider is None
         self.embedding_provider = embedding_provider or get_embedding_provider()
         self.reranker = reranker or get_reranker()
-        self.ocr_provider = get_ocr_provider(self.settings)
         self._query_rewriter = query_rewriter
         self._query_rewriter_resolved = query_rewriter is not None
 
@@ -571,9 +567,6 @@ class KnowledgeService:
                 content_type=content_type,
                 data=data,
                 max_bytes=self.settings.knowledge_max_file_bytes,
-                ocr_provider=self.ocr_provider,
-                ocr_max_pages=self.settings.knowledge_ocr_max_pages,
-                ocr_min_text_chars=self.settings.knowledge_ocr_min_text_chars,
             )
         except DocumentParseError as exc:
             raise ApiProblem(
@@ -685,6 +678,7 @@ class KnowledgeService:
             payload_json={
                 "version_id": str(version.id),
                 "document_id": str(document.id),
+                "business_unit_id": document.business_unit_id,
                 "correlation_id": correlation_id,
             },
         )
@@ -727,9 +721,6 @@ class KnowledgeService:
                 content_type=version.source_mime_type or "application/octet-stream",
                 data=data,
                 max_bytes=self.settings.knowledge_max_file_bytes,
-                ocr_provider=self.ocr_provider,
-                ocr_max_pages=self.settings.knowledge_ocr_max_pages,
-                ocr_min_text_chars=self.settings.knowledge_ocr_min_text_chars,
             )
         except (ObjectStorageError, DocumentParseError) as exc:
             self._fail_ingestion(version, str(exc))
@@ -979,8 +970,6 @@ class KnowledgeService:
                     version=candidate.version,
                     content=candidate.content,
                     score=ranked_candidate.final_score,
-                    page_start=candidate.page_start,
-                    page_end=candidate.page_end,
                 )
             )
         if self.settings.knowledge_context_prune_enabled:
@@ -1762,9 +1751,6 @@ class KnowledgeService:
                 metadata["section_path"] = list(draft.section_path)
             if draft.block_kinds:
                 metadata["block_kinds"] = list(draft.block_kinds)
-            if draft.page_start is not None:
-                metadata["page_start"] = draft.page_start
-                metadata["page_end"] = draft.page_end or draft.page_start
             self.session.add(
                 KnowledgeChunk(
                     knowledge_version_id=version.id,
@@ -1979,14 +1965,7 @@ def _retrieval_candidate(
         version=version.version_label,
         content=chunk.content,
         vector_score=vector_score,
-        page_start=_metadata_int(chunk.metadata_json, "page_start"),
-        page_end=_metadata_int(chunk.metadata_json, "page_end"),
     )
-
-
-def _metadata_int(metadata: dict[str, Any] | None, key: str) -> int | None:
-    value = (metadata or {}).get(key)
-    return value if isinstance(value, int) else None
 
 
 def _as_utc(value: datetime) -> datetime:

@@ -19,7 +19,7 @@ from ticket_agent.model_gateway import usage as usage_module
 from ticket_agent.model_gateway.models import ModelCall
 from ticket_agent.model_gateway.types import ModelGatewayError
 from ticket_agent.model_gateway.usage import ModelUsageGuard, ModelUsageService
-from ticket_agent.shared.db import SessionLocal
+from ticket_agent.shared.db import system_session
 from ticket_agent.shared.settings import Settings
 
 
@@ -52,7 +52,7 @@ def test_model_usage_records_tokens_and_cost(monkeypatch: pytest.MonkeyPatch) ->
         ),
     )
     employee = _employee()
-    with SessionLocal() as session:
+    with system_session() as session:
         guard = ModelUsageGuard(
             session,
             employee=employee,
@@ -78,7 +78,7 @@ def test_model_usage_records_tokens_and_cost(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_model_budget_denial_is_recorded() -> None:
     employee = _employee({"monthly_calls": 0})
-    with SessionLocal() as session:
+    with system_session() as session:
         guard = ModelUsageGuard(
             session,
             employee=employee,
@@ -97,7 +97,7 @@ def test_model_budget_denial_is_recorded() -> None:
 
 def test_daily_model_budget_denial_is_recorded() -> None:
     employee = _employee({"daily_calls": 0})
-    with SessionLocal() as session:
+    with system_session() as session:
         guard = ModelUsageGuard(
             session,
             employee=employee,
@@ -117,7 +117,7 @@ def test_daily_model_budget_denial_is_recorded() -> None:
 def test_daily_budget_status_forecasts_limit_breach() -> None:
     employee = _employee({"daily_calls": 10, "weekly_cost": 2})
     now = datetime(2026, 10, 23, 1, 0, tzinfo=UTC)
-    with SessionLocal() as session:
+    with system_session() as session:
         session.add(
             ModelCall(
                 employee_id=employee.id,
@@ -181,7 +181,7 @@ def test_claim_judge_usage_is_recorded() -> None:
         claim_verifier_model_name="judge",
         claim_verifier_fallback_to_local=False,
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         guard = ModelUsageGuard(
             session,
             employee=employee,
@@ -230,7 +230,7 @@ def test_external_rerank_usage_is_recorded() -> None:
         rerank_model_name="reranker",
         rerank_fallback_to_local=False,
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         guard = ModelUsageGuard(
             session,
             employee=employee,
@@ -282,7 +282,7 @@ def test_system_embedding_usage_is_recorded_for_business_unit() -> None:
         embedding_dimensions=3,
         embedding_fallback_to_local=False,
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         guard = ModelUsageGuard(
             session,
             employee=None,
@@ -344,7 +344,7 @@ def test_knowledge_ingestion_uses_system_embedding_scope(
         "get_embedding_provider",
         provider_factory,
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         service = KnowledgeService(session)
         document = service.create_document(
             KnowledgeDocumentCreate(
@@ -384,7 +384,7 @@ def test_embedding_budget_denial_falls_back_to_local() -> None:
         embedding_dimensions=8,
         embedding_fallback_to_local=True,
     )
-    with SessionLocal() as session:
+    with system_session() as session:
         guard = ModelUsageGuard(
             session,
             employee=employee,
