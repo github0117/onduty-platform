@@ -379,3 +379,94 @@ def test_business_unit_of_run_is_preserved(client: TestClient) -> None:
         run = session.get(WorkflowRun, run_id)
         assert run is not None
         assert run.business_unit_id == "bu_demo"
+
+
+def _sync_run_for(ticket_id: UUID, correlation_id: str) -> UUID:
+    with system_session() as session:
+        run_id, _ = ensure_ticket_sync_run(
+            session,
+            ticket_id=ticket_id,
+            correlation_id=correlation_id,
+        )
+        session.commit()
+    return run_id
+
+
+def test_ticket_workflow_runs_visible_without_operations_view(
+    client: TestClient,
+) -> None:
+    ticket_id = create_ticket(client, external_ticket_id="WF-VIEW-1")
+    run_id = _sync_run_for(ticket_id, "corr-view")
+
+    response = client.get(
+        f"/api/v1/tickets/{ticket_id}/workflow-runs",
+        headers=AGENT,
+    )
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [str(run_id)]
+    assert items[0]["workflow_type"] == "ticket_sync"
+    assert items[0]["aggregate_id"] == str(ticket_id)
+    assert [step["name"] for step in items[0]["steps"]] == [
+        "sync_external",
+        "notify",
+    ]
+
+
+def test_ticket_workflow_runs_requester_sees_own_ticket(
+    client: TestClient,
+) -> None:
+    ticket_id = create_ticket(client, external_ticket_id="WF-VIEW-2")
+    _sync_run_for(ticket_id, "corr-own")
+
+    response = client.get(
+        f"/api/v1/tickets/{ticket_id}/workflow-runs",
+        headers={"X-Actor-Id": "customer_wf", "X-Actor-Role": "requester"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["items"]) == 1
+
+
+def test_ticket_workflow_runs_requester_cannot_see_others(
+    client: TestClient,
+) -> None:
+    ticket_id = create_ticket(client, external_ticket_id="WF-VIEW-3")
+    _sync_run_for(ticket_id, "corr-other")
+
+    response = client.get(
+        f"/api/v1/tickets/{ticket_id}/workflow-runs",
+        headers={"X-Actor-Id": "someone_else", "X-Actor-Role": "requester"},
+    )
+    assert response.status_code == 403, response.text
+
+
+def test_ticket_workflow_runs_cross_tenant_denied(client: TestClient) -> None:
+    ticket_id = create_ticket(client, external_ticket_id="WF-VIEW-4")
+    _sync_run_for(ticket_id, "corr-tenant")
+
+    response = client.get(
+        f"/api/v1/tickets/{ticket_id}/workflow-runs",
+        headers={**AGENT, "X-Business-Unit-Id": "bu_other"},
+    )
+    assert response.status_code == 403, response.text
+
+
+def test_ticket_workflow_runs_missing_ticket(client: TestClient) -> None:
+    response = client.get(
+        f"/api/v1/tickets/{uuid4()}/workflow-runs",
+        headers=AGENT,
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_ticket_workflow_runs_empty_for_ticket_without_runs(
+    client: TestClient,
+) -> None:
+    ticket_id = create_ticket(client, external_ticket_id="WF-VIEW-5")
+
+    response = client.get(
+        f"/api/v1/tickets/{ticket_id}/workflow-runs",
+        headers=AGENT,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []

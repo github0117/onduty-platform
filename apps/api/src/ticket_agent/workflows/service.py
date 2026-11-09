@@ -580,6 +580,32 @@ def list_runs(
     )
 
 
+def list_runs_for_aggregate(
+    session: Session,
+    *,
+    business_unit_id: str,
+    aggregate_type: str,
+    aggregate_id: UUID | str,
+    limit: int = 20,
+) -> list[WorkflowRun]:
+    """Read-only listing for one business aggregate (e.g. a ticket).
+
+    Used by surfaces that show workflow progress to actors who can view the
+    aggregate itself but hold no ``operations.view`` capability.
+    """
+    statement = (
+        select(WorkflowRun)
+        .where(
+            WorkflowRun.business_unit_id == business_unit_id,
+            WorkflowRun.aggregate_type == aggregate_type,
+            WorkflowRun.aggregate_id == str(aggregate_id),
+        )
+        .order_by(WorkflowRun.created_at.desc())
+        .limit(limit)
+    )
+    return list(session.scalars(statement).all())
+
+
 def list_attention_runs(
     session: Session,
     *,

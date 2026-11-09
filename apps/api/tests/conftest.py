@@ -20,6 +20,15 @@ os.environ["ECOMMERCE_IMAGE_PROVIDER"] = "local"
 os.environ["ECOMMERCE_VISUAL_AUDIT_PROVIDER"] = "none"
 os.environ["ECOMMERCE_TTS_PROVIDER"] = "none"
 os.environ["ECOMMERCE_SUBTITLE_BURN_IN"] = "false"
+# 本机 .env 可能为联调配置了真实 MODEL_* / QUERY_REWRITE_*，测试必须隔离为
+# 本地确定性模型；环境变量优先级高于 env_file，可统一中和。
+os.environ["MODEL_PROVIDER"] = "local"
+os.environ["MODEL_BASE_URL"] = ""
+os.environ["MODEL_NAME"] = ""
+os.environ["MODEL_API_KEY"] = ""
+os.environ["QUERY_REWRITE_BASE_URL"] = ""
+os.environ["QUERY_REWRITE_API_KEY"] = ""
+os.environ["QUERY_REWRITE_MODEL_NAME"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 

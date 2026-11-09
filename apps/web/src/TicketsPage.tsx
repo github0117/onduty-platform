@@ -26,12 +26,13 @@ import {
   createDemoTicket,
   getTicket,
   listDigitalEmployees,
+  listTicketWorkflowRuns,
   listTickets,
   retryTicketSync,
   reviewTicket,
   takeOverTicket,
 } from "./api";
-import type { TicketListItem } from "./types";
+import type { TicketListItem, WorkflowRunView } from "./types";
 import { useAuth } from "./auth";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 import { message } from "./feedback";
@@ -77,6 +78,143 @@ function stateColor(state: string): string {
   if (state === "TAKEN_OVER") return "purple";
   if (state === "COMPLETED") return "green";
   return "default";
+}
+
+const workflowRunStatusLabels: Record<string, string> = {
+  pending: "待执行",
+  running: "运行中",
+  waiting_approval: "等待审批",
+  succeeded: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+const workflowRunStatusColors: Record<string, string> = {
+  pending: "default",
+  running: "processing",
+  waiting_approval: "warning",
+  succeeded: "success",
+  failed: "error",
+  cancelled: "default",
+};
+
+const workflowStepStatusLabels: Record<string, string> = {
+  pending: "待执行",
+  running: "运行中",
+  waiting_retry: "等待重试",
+  waiting_approval: "等待审批",
+  succeeded: "成功",
+  failed: "失败",
+  dead_letter: "死信",
+  cancelled: "已取消",
+};
+
+const workflowStepStatusColors: Record<string, string> = {
+  pending: "default",
+  running: "processing",
+  waiting_retry: "warning",
+  waiting_approval: "warning",
+  succeeded: "success",
+  failed: "error",
+  dead_letter: "error",
+  cancelled: "default",
+};
+
+const workflowTypeLabels: Record<string, string> = {
+  ticket_sync: "工单同步",
+};
+
+const workflowStepLabels: Record<string, string> = {
+  sync_external: "外部同步",
+  notify: "通知",
+};
+
+function time(value: string): string {
+  return new Date(value).toLocaleString();
+}
+
+function TicketWorkflowProgress({ ticketId }: { ticketId: string }) {
+  const runsQuery = useQuery({
+    queryKey: ["ticket-workflow-runs", ticketId],
+    queryFn: () => listTicketWorkflowRuns(ticketId),
+    enabled: Boolean(ticketId),
+  });
+  const runs: WorkflowRunView[] = runsQuery.data?.items ?? [];
+  return (
+    <Card size="small" title="工作流进度">
+      {runsQuery.isLoading ? (
+        <Spin size="small" />
+      ) : runsQuery.isError ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="工作流进度加载失败"
+          description="稍后重新打开抽屉或刷新页面。"
+        />
+      ) : runs.length === 0 ? (
+        <Text type="secondary">暂无工作流运行记录</Text>
+      ) : (
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          {runs.map((run) => (
+            <div key={run.id}>
+              <Space wrap size="small">
+                <Text strong>
+                  {workflowTypeLabels[run.workflow_type] ?? run.workflow_type}
+                </Text>
+                <Tag
+                  color={workflowRunStatusColors[run.status] ?? "default"}
+                >
+                  {workflowRunStatusLabels[run.status] ?? run.status}
+                </Tag>
+                {run.current_step ? (
+                  <Text type="secondary">
+                    当前步骤：
+                    {workflowStepLabels[run.current_step] ?? run.current_step}
+                  </Text>
+                ) : null}
+                <Text type="secondary">
+                  更新于 {time(run.updated_at)}
+                </Text>
+              </Space>
+              <div style={{ marginTop: 8 }}>
+                {run.steps.map((step, index) => (
+                  <Space
+                    key={step.id}
+                    wrap
+                    size="small"
+                    style={{ marginRight: 16 }}
+                  >
+                    <Text>
+                      {index + 1}.{" "}
+                      {workflowStepLabels[step.name] ?? step.name}
+                    </Text>
+                    <Tag
+                      color={
+                        workflowStepStatusColors[step.status] ?? "default"
+                      }
+                    >
+                      {workflowStepStatusLabels[step.status] ?? step.status}
+                    </Tag>
+                    <Text type="secondary">
+                      尝试 {step.attempt_count}/{step.max_attempts}
+                    </Text>
+                    {step.finished_at ? (
+                      <Text type="secondary">
+                        {time(step.finished_at)}
+                      </Text>
+                    ) : null}
+                    {step.last_error ? (
+                      <Text type="danger">{step.last_error}</Text>
+                    ) : null}
+                  </Space>
+                ))}
+              </div>
+            </div>
+          ))}
+        </Space>
+      )}
+    </Card>
+  );
 }
 
 function DraftReviewDrawer({
@@ -205,6 +343,8 @@ function DraftReviewDrawer({
               ))}
             </Space>
           </Card>
+
+          {ticketId ? <TicketWorkflowProgress ticketId={ticketId} /> : null}
 
           {ticket.draft ? (
             <Card
