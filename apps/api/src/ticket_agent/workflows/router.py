@@ -8,9 +8,12 @@ from sqlalchemy.orm import Session
 from ticket_agent.api.dependencies import Actor, DbSession, correlation_id
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
+    ensure_ticket_view,
     resolve_business_unit,
 )
 from ticket_agent.identity.policy import require_capability
+from ticket_agent.shared.errors import ApiProblem
+from ticket_agent.tickets.models import Ticket
 from ticket_agent.workflows.models import WorkflowRun, WorkflowStep
 from ticket_agent.workflows.schemas import (
     WorkflowReplayResponse,
@@ -23,10 +26,40 @@ from ticket_agent.workflows.service import (
     list_attention_runs,
     list_run_steps,
     list_runs,
+    list_runs_for_aggregate,
     replay_run,
 )
 
 router = APIRouter()
+
+
+@router.get("/tickets/{ticket_id}/workflow-runs", response_model=WorkflowRunList)
+def list_ticket_workflow_runs(
+    ticket_id: UUID,
+    db: DbSession,
+    principal: Actor,
+) -> WorkflowRunList:
+    # Read-only progress for one ticket. Access follows the ticket itself
+    # (ticket detail guard), so agents and the requester see their own
+    # workflow progress without the operations.view capability.
+    ticket = db.get(Ticket, ticket_id)
+    if ticket is None:
+        raise ApiProblem(
+            status_code=404,
+            code="RESOURCE_NOT_FOUND",
+            title="Ticket not found",
+            detail=f"Ticket {ticket_id} does not exist.",
+        )
+    ensure_business_unit_access(principal, ticket.business_unit_id)
+    ensure_ticket_view(principal, ticket.requester_ref)
+    runs = list_runs_for_aggregate(
+        db,
+        business_unit_id=ticket.business_unit_id,
+        aggregate_type="ticket",
+        aggregate_id=ticket_id,
+        limit=20,
+    )
+    return WorkflowRunList(items=_run_list(db, runs), limit=20, offset=0)
 
 
 @router.get("/workflows/runs", response_model=WorkflowRunList)

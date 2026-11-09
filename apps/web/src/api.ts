@@ -318,6 +318,14 @@ export function getTicket(id: string): Promise<TicketDetail> {
   return request<TicketDetail>(`/api/v1/tickets/${id}`);
 }
 
+export function listTicketWorkflowRuns(
+  ticketId: string,
+): Promise<WorkflowRunList> {
+  return request<WorkflowRunList>(
+    `/api/v1/tickets/${encodeURIComponent(ticketId)}/workflow-runs`,
+  );
+}
+
 export interface CreateDemoTicketInput {
   subject: string;
   body: string;
