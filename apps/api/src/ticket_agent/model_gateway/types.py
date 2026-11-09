@@ -177,3 +177,12 @@ class TicketModelGateway(Protocol):
         skill_instructions: str | None = None,
     ) -> WorkforceStepResponse: ...
 
+    def summarize_conversation(
+        self,
+        *,
+        previous_summary: str,
+        turns: list[tuple[str, str]],
+        max_chars: int,
+        timeout_seconds: float = 8.0,
+    ) -> str: ...
+

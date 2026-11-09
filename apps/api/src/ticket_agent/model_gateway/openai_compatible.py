@@ -90,6 +90,54 @@ class OpenAICompatibleGateway:
             model=self.settings.model_name,
         )
 
+    def summarize_conversation(
+        self,
+        *,
+        previous_summary: str,
+        turns: list[tuple[str, str]],
+        max_chars: int,
+        timeout_seconds: float = 8.0,
+    ) -> str:
+        if not self.settings.model_base_url or not self.settings.model_name:
+            raise ModelGatewayError("MODEL_BASE_URL and MODEL_NAME are required")
+        transcript = "\n".join(
+            f"{role}：{content.strip()}"
+            for role, content in turns
+            if content.strip()
+        )
+        system = (
+            "你是客服会话摘要器。把历史摘要和最近轮次合并成一段简体中文摘要，"
+            f"不超过 {max_chars} 字。必须保留订单号、金额、已承诺事项、"
+            "未完成事项和待确认问题；不要编造未出现的事实。"
+            "只输出摘要正文，全部使用简体中文，不要输出 JSON、markdown、"
+            "英文单词或解释。"
+        )
+        user = (
+            f"历史摘要：\n{previous_summary.strip() or '（无）'}\n\n"
+            f"最近轮次：\n{transcript or '（无）'}"
+        )
+        # Plain text instead of strict json_schema: DashScope qwen-plus can
+        # emit whitespace until the token limit when structured output meets a
+        # longer prompt, which turns an 8 second budget into a timeout.
+        raw = self._call_chat(
+            system=system,
+            user=user,
+            purpose="memory_summary",
+            timeout_seconds=timeout_seconds,
+            max_retries=0,
+        )
+        summary = raw.strip()
+        if summary.startswith("{"):
+            try:
+                parsed = json.loads(summary)
+            except ValueError:
+                pass
+            else:
+                summary = str(parsed.get("summary", "")).strip()
+        if not summary:
+            raise ModelGatewayError("Model returned an empty memory summary")
+        return summary[:max_chars]
+
     def generate_draft(
         self,
         *,
@@ -602,10 +650,12 @@ class OpenAICompatibleGateway:
         *,
         system: str,
         user: str,
-        schema: dict[str, Any],
-        schema_name: str,
+        schema: dict[str, Any] | None = None,
+        schema_name: str | None = None,
         purpose: str,
         on_text_delta: Callable[[str], None] | None = None,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> str:
         if not self.settings.model_base_url or not self.settings.model_name:
             raise ModelGatewayError("MODEL_BASE_URL and MODEL_NAME are required")
@@ -614,14 +664,6 @@ class OpenAICompatibleGateway:
             "model": self.settings.model_name,
             "temperature": 0,
             "max_tokens": self.settings.model_max_output_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_name,
-                    "strict": True,
-                    "schema": schema,
-                },
-            },
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -633,6 +675,19 @@ class OpenAICompatibleGateway:
         endpoint = (
             f"{self.settings.model_base_url.rstrip('/')}/chat/completions"
         )
+        if schema is not None:
+            # Only request structured output when the caller needs JSON. Some
+            # providers (DashScope qwen-plus) degrade into whitespace until the
+            # token limit when a strict json_schema is combined with a long
+            # prompt, so the summary path asks for plain text instead.
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name or "response",
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
 
         if on_text_delta is not None:
             try:
@@ -655,6 +710,8 @@ class OpenAICompatibleGateway:
             payload=payload,
             headers=headers,
             purpose=purpose,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
         )
 
     def _call_chat_buffered(
@@ -664,6 +721,8 @@ class OpenAICompatibleGateway:
         payload: dict[str, Any],
         headers: dict[str, str],
         purpose: str,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> str:
         started_monotonic = (
             self._usage_guard.start(purpose=purpose)
@@ -671,13 +730,17 @@ class OpenAICompatibleGateway:
             else None
         )
         last_error: Exception | None = None
+        retries = (
+            self.settings.model_max_retries if max_retries is None else max_retries
+        )
         try:
-            for attempt in range(self.settings.model_max_retries + 1):
+            for attempt in range(retries + 1):
                 try:
                     response = self._client.post(
                         endpoint,
                         headers=headers,
                         json=payload,
+                        timeout=timeout_seconds,
                     )
                     if response.status_code == 429 or response.status_code >= 500:
                         raise ModelGatewayError(
@@ -701,7 +764,7 @@ class OpenAICompatibleGateway:
                     last_error = exc
                     if not exc.retryable:
                         raise
-                if attempt < self.settings.model_max_retries:
+                if attempt < retries:
                     time.sleep(min(4.0, 0.25 * (2**attempt)))
 
             raise ModelGatewayError(

@@ -103,6 +103,25 @@ class LocalModelGateway:
     def name(self) -> str:
         return "local-keyword-v1"
 
+    def summarize_conversation(
+        self,
+        *,
+        previous_summary: str,
+        turns: list[tuple[str, str]],
+        max_chars: int,
+        timeout_seconds: float = 8.0,
+    ) -> str:
+        del timeout_seconds
+        lines: list[str] = []
+        if previous_summary.strip():
+            lines.append(previous_summary.strip())
+        for role, content in turns:
+            text = content.strip()
+            if text:
+                lines.append(f"{role}：{text}")
+        joined = "\n".join(lines)
+        return joined[-max_chars:] if len(joined) > max_chars else joined
+
     def classify(self, *, subject: str, body: str) -> GatewayResponse:
         text = f"{subject}\n{body}".lower()
         category, secondary, confidence = self._category(text)
