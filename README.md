@@ -25,6 +25,8 @@
 | <img src="docs/assets/screenshots/customer-service-enterprise.png" alt="企业服务台 Agent" width="480"> | <img src="docs/assets/screenshots/employee-routing.png" alt="业务入口与员工池" width="480"> |
 | **知识库** | **电商上架审核** |
 | <img src="docs/assets/screenshots/knowledge.png" alt="知识库" width="480"> | <img src="docs/assets/screenshots/ecommerce.png" alt="电商上架审核" width="480"> |
+| **运行与审计** | **轮次回放** |
+| <img src="docs/assets/screenshots/operations.png" alt="运行与审计" width="480"> | <img src="docs/assets/screenshots/turn-replay.png" alt="轮次回放" width="480"> |
 
 ## 核心能力
 
