@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     model_max_output_tokens: int = 800
     model_fallback_to_local: bool = True
     model_data_redaction_enabled: bool = True
+    memory_summary_enabled: bool = True
+    memory_summary_turn_threshold: int = 6
+    memory_summary_char_threshold: int = 3000
+    memory_summary_max_chars: int = 400
+    memory_summary_timeout_seconds: float = 8.0
     model_input_cost_per_1k_tokens: float = 0.0
     model_output_cost_per_1k_tokens: float = 0.0
     embedding_provider: Literal["local", "openai_compatible"] = "local"

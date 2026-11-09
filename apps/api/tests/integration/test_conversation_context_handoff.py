@@ -186,7 +186,10 @@ def test_turn_context_snapshot_records_memory_and_labels(
     # Memory was written back in the v2 shape by the answered first turn.
     assert memory is not None
     assert memory.schema_version == 2
-    assert memory.summarized_through_sequence == 1
+    # ``summarized_through_sequence`` only advances when the LLM rolling
+    # summary fires (6 turns / 3000 chars), so one deterministic turn leaves it
+    # at zero and keeps the original turn available for the next window.
+    assert memory.summarized_through_sequence == 0
     assert memory.version >= 2
 
 
@@ -322,7 +325,9 @@ def test_memory_records_a_fact_with_its_source_turn(
 
     assert memory is not None
     assert memory.schema_version == 2
-    assert memory.summarized_through_sequence == 1
+    # A single turn is below the rolling-summary threshold, so the cursor stays
+    # at zero until a real LLM summary covers the window.
+    assert memory.summarized_through_sequence == 0
     fact = memory.slots_json["facts"]["order_id"]
     assert fact["value"] == "AB-4242"
     assert fact["status"] == "confirmed"

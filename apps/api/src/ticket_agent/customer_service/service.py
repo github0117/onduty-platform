@@ -93,6 +93,7 @@ from ticket_agent.digital_employees.router_service import (
 )
 from ticket_agent.identity.models import Principal
 from ticket_agent.knowledge.models import KnowledgeGapOccurrence
+from ticket_agent.model_gateway.factory import get_model_gateway
 from ticket_agent.shared.db import run_with_deadlock_retry
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
@@ -3024,6 +3025,20 @@ class CustomerConversationService:
             f"客服：{assistant_content.strip()[:800]}"
         )
         summary = f"{previous_summary}\n{line}".strip()[-4000:]
+        summarized_through = (
+            memory.summarized_through_sequence if memory is not None else 0
+        )
+        summary, summarized_through = self._maybe_summarize_memory(
+            conversation_id=conversation_id,
+            summarized_through=summarized_through,
+            turn_sequence=turn_sequence,
+            previous_summary=previous_summary,
+            fallback_summary=summary,
+            current_turns=[
+                ("买家", user_content),
+                ("客服", assistant_content),
+            ],
+        )
         source_turn_id = str(turn_id) if turn_id is not None else None
         updated_at = datetime.now(UTC).isoformat()
         facts: dict[str, dict[str, object]] = {}
@@ -3068,7 +3083,96 @@ class CustomerConversationService:
             open_actions=slots.open_actions,
             commitments=slots.commitments,
             pending_questions=slots.pending_questions,
+            summarized_through_sequence=summarized_through,
         )
+
+    def _maybe_summarize_memory(
+        self,
+        *,
+        conversation_id: UUID,
+        summarized_through: int,
+        turn_sequence: int,
+        previous_summary: str,
+        fallback_summary: str,
+        current_turns: Sequence[tuple[str, str]],
+    ) -> tuple[str, int]:
+        settings = get_settings()
+        if not settings.memory_summary_enabled:
+            return fallback_summary, summarized_through
+
+        turns = list(
+            self._unsummarized_turns(
+                conversation_id=conversation_id,
+                summarized_through=summarized_through,
+                turn_sequence=turn_sequence,
+            )
+        )
+        turns.extend(current_turns)
+        total_chars = sum(len(content) for _, content in turns)
+        turn_count = (
+            turn_sequence - summarized_through
+            if summarized_through
+            else turn_sequence
+        )
+        if (
+            turn_count < settings.memory_summary_turn_threshold
+            and total_chars < settings.memory_summary_char_threshold
+        ):
+            return fallback_summary, summarized_through
+
+        try:
+            summary = get_model_gateway().summarize_conversation(
+                previous_summary=previous_summary,
+                turns=turns,
+                max_chars=settings.memory_summary_max_chars,
+                timeout_seconds=settings.memory_summary_timeout_seconds,
+            )
+        except Exception as exc:  # summary must never block the reply
+            logger.warning(
+                "memory summary failed; keeping truncated summary: %s",
+                type(exc).__name__,
+            )
+            return fallback_summary, summarized_through
+
+        summary = summary.strip()
+        if not summary:
+            return fallback_summary, summarized_through
+        return summary, turn_sequence
+
+    def _unsummarized_turns(
+        self,
+        *,
+        conversation_id: UUID,
+        summarized_through: int,
+        turn_sequence: int,
+    ) -> Sequence[tuple[str, str]]:
+        prior_turns = self.session.scalars(
+            select(ConversationTurn)
+            .where(
+                ConversationTurn.conversation_id == conversation_id,
+                ConversationTurn.sequence > summarized_through,
+                ConversationTurn.sequence < turn_sequence,
+            )
+            .order_by(ConversationTurn.sequence)
+            .limit(30)
+        ).all()
+        turns: list[tuple[str, str]] = []
+        for prior in prior_turns:
+            user_message = (
+                self.session.get(CustomerMessage, prior.user_message_id)
+                if prior.user_message_id is not None
+                else None
+            )
+            assistant_message = (
+                self.session.get(CustomerMessage, prior.assistant_message_id)
+                if prior.assistant_message_id is not None
+                else None
+            )
+            if user_message is not None:
+                turns.append(("买家", user_message.content))
+            if assistant_message is not None:
+                turns.append(("客服", assistant_message.content))
+        return turns
 
     def _next_sequence(self, conversation_id: UUID) -> int:
         current = self.session.scalar(

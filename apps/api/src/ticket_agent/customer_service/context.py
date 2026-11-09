@@ -305,6 +305,7 @@ def record_memory_turn(
     open_actions: list[dict[str, object]] | None = None,
     commitments: list[dict[str, object]] | None = None,
     pending_questions: list[str] | None = None,
+    summarized_through_sequence: int | None = None,
 ) -> MemorySnapshot:
     """Append one answered turn to memory in the v2 shape.
 
@@ -369,7 +370,11 @@ def record_memory_turn(
     memory.summary = next_snapshot.summary
     memory.slots_json = _slots_payload(next_snapshot)
     memory.last_turn_sequence = turn_sequence
-    memory.summarized_through_sequence = turn_sequence
+    memory.summarized_through_sequence = (
+        turn_sequence
+        if summarized_through_sequence is None
+        else summarized_through_sequence
+    )
     memory.schema_version = MEMORY_SCHEMA_VERSION
     memory.version = next_snapshot.version
     session.flush()

@@ -109,11 +109,15 @@ def test_dashscope_ocr_rejects_non_image_payload() -> None:
 
 
 def test_dashscope_ocr_requires_endpoint_and_model() -> None:
+    # OCR falls back to MODEL_* when its own endpoint is empty, so a local
+    # .env with a real model must be neutralised for this case.
     settings = Settings(
         app_env="test",
         knowledge_ocr_provider="dashscope",
         knowledge_ocr_base_url="",
         knowledge_ocr_model_name="",
+        model_base_url="",
+        model_name="",
     )
     with pytest.raises(OCRUnavailableError):
         DashScopeChatOCR(settings).extract_text(data=b"png", content_type="image/png")
