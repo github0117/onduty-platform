@@ -167,7 +167,7 @@ make observability-feishu-up
 当前基线：
 
 ```text
-后端: 721 passed, 3 skipped（配置 TEST_POSTGRES_URL 时 724 passed）
+后端: 741 passed, 3 skipped（PG 专项用例需配置 TEST_POSTGRES_URL）
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
 Ruff / mypy: passed（216 个源文件）
