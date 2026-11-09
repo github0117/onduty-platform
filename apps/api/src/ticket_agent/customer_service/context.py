@@ -9,6 +9,7 @@ snapshotted onto the turn and inspected later.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -301,12 +302,17 @@ def record_memory_turn(
     turn_sequence: int,
     summary: str,
     facts: dict[str, dict[str, object]] | None = None,
+    open_actions: list[dict[str, object]] | None = None,
+    commitments: list[dict[str, object]] | None = None,
+    pending_questions: list[str] | None = None,
 ) -> MemorySnapshot:
     """Append one answered turn to memory in the v2 shape.
 
     ``summary`` is the whole rolling summary; ``facts`` are structured values
     the turn confirmed (order id, address, ...). Each fact keeps the turn that
     established it so a later turn can explain where a value came from.
+    ``open_actions``, ``commitments`` and ``pending_questions`` replace the
+    stored slots when provided; ``None`` keeps the previous value.
     """
     memory = session.get(ConversationMemory, conversation_id)
     if memory is None:
@@ -341,9 +347,21 @@ def record_memory_turn(
         schema_version=MEMORY_SCHEMA_VERSION,
         summary=summary,
         facts=merged_facts,
-        open_actions=snapshot.open_actions,
-        commitments=snapshot.commitments,
-        pending_questions=snapshot.pending_questions,
+        open_actions=(
+            snapshot.open_actions
+            if open_actions is None
+            else open_actions
+        ),
+        commitments=(
+            snapshot.commitments
+            if commitments is None
+            else commitments
+        ),
+        pending_questions=(
+            snapshot.pending_questions
+            if pending_questions is None
+            else pending_questions
+        ),
         version=snapshot.version + 1,
         last_turn_sequence=turn_sequence,
         upgraded_from_v1=False,
@@ -356,6 +374,192 @@ def record_memory_turn(
     memory.version = next_snapshot.version
     session.flush()
     return next_snapshot
+
+
+MAX_OPEN_ACTIONS = 5
+MAX_COMMITMENTS = 5
+MAX_PENDING_QUESTIONS = 3
+
+_MAX_SLOT_TEXT = 200
+_MAX_QUESTION_TEXT = 120
+
+_COMMITMENT_MARKERS = (
+    "已为您",
+    "已提交",
+    "已安排",
+    "已反馈",
+    "已记录",
+    "已转",
+    "预计",
+    "将在",
+    "会在",
+    "稍后",
+    "马上",
+    "尽快",
+    "工作日",
+    "小时内",
+    "为您跟进",
+    "帮您跟进",
+)
+_ACTION_MARKERS = (
+    "转人工",
+    "等待人工",
+    "等待审批",
+    "待审批",
+    "等待审核",
+    "待审核",
+    "需人工",
+    "需要人工",
+    "处理中",
+    "正在处理",
+    "待确认",
+    "等待您",
+    "等待回复",
+    "待补充",
+    "需补充",
+    "等待物流",
+    "等待供应商",
+    "跟进中",
+)
+_SENTENCE_SPLIT_RE = re.compile(r"[。！!\n；;]+")
+_QUESTION_RE = re.compile(r"([^\n？?。！!]{2,120})[？?]")
+_SLOT_KEY_RE = re.compile(r"[^\w]+")
+
+
+@dataclass(frozen=True)
+class DerivedSlots:
+    open_actions: list[dict[str, object]]
+    commitments: list[dict[str, object]]
+    pending_questions: list[str]
+
+
+def derive_memory_slots(
+    *,
+    previous: MemorySnapshot | None,
+    assistant_content: str,
+    turn_sequence: int,
+    source_turn_id: str | None,
+    updated_at: str,
+    ticket_status: str | None = None,
+) -> DerivedSlots:
+    """Derive the structured memory slots from the answer of one turn.
+
+    The rules are deterministic on purpose: no model call, no hidden state.
+    - ``commitments`` keep the newest entries and survive across turns.
+    - ``open_actions`` are dropped once the ticket reaches a terminal status.
+    - ``pending_questions`` only reflect the latest answer, because a new
+      buyer message means the previous questions were answered or replaced.
+    """
+    completed = str(ticket_status or "").upper() in {"RESOLVED", "CLOSED"}
+    previous_actions = previous.open_actions if previous is not None else []
+    previous_commitments = previous.commitments if previous is not None else []
+
+    commitments = _merge_slots(
+        previous_commitments,
+        _collect_entries(
+            assistant_content,
+            markers=_COMMITMENT_MARKERS,
+            field="text",
+            turn_sequence=turn_sequence,
+            source_turn_id=source_turn_id,
+            updated_at=updated_at,
+        ),
+        key="text",
+        limit=MAX_COMMITMENTS,
+    )
+    open_actions = (
+        []
+        if completed
+        else _merge_slots(
+            previous_actions,
+            _collect_entries(
+                assistant_content,
+                markers=_ACTION_MARKERS,
+                field="summary",
+                turn_sequence=turn_sequence,
+                source_turn_id=source_turn_id,
+                updated_at=updated_at,
+            ),
+            key="summary",
+            limit=MAX_OPEN_ACTIONS,
+        )
+    )
+    pending_questions = [] if completed else _collect_questions(
+        assistant_content
+    )
+    return DerivedSlots(
+        open_actions=open_actions,
+        commitments=commitments,
+        pending_questions=pending_questions,
+    )
+
+
+def _collect_entries(
+    content: str,
+    *,
+    markers: tuple[str, ...],
+    field: str,
+    turn_sequence: int,
+    source_turn_id: str | None,
+    updated_at: str,
+) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    for sentence in _SENTENCE_SPLIT_RE.split(content):
+        text = sentence.strip()
+        if not text or "？" in text or "?" in text:
+            continue
+        if not any(marker in text for marker in markers):
+            continue
+        entry: dict[str, object] = {
+            field: text[:_MAX_SLOT_TEXT],
+            "status": "open",
+            "turn_sequence": turn_sequence,
+            "source_turn_id": source_turn_id,
+            "updated_at": updated_at,
+        }
+        if field == "summary":
+            entry["owner"] = "employee"
+        entries.append(entry)
+    return entries
+
+
+def _collect_questions(content: str) -> list[str]:
+    questions: list[str] = []
+    seen: set[str] = set()
+    for match in _QUESTION_RE.finditer(content):
+        text = match.group(1).strip()
+        if not text:
+            continue
+        key = _slot_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        questions.append(text[:_MAX_QUESTION_TEXT])
+        if len(questions) >= MAX_PENDING_QUESTIONS:
+            break
+    return questions
+
+
+def _merge_slots(
+    previous: list[dict[str, object]],
+    entries: list[dict[str, object]],
+    *,
+    key: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    merged = [dict(item) for item in previous]
+    seen = {_slot_key(str(item.get(key, ""))) for item in merged}
+    for entry in entries:
+        marker = _slot_key(str(entry[key]))
+        if not marker or marker in seen:
+            continue
+        merged.append(entry)
+        seen.add(marker)
+    return merged[-limit:]
+
+
+def _slot_key(text: str) -> str:
+    return _SLOT_KEY_RE.sub("", text).casefold()
 
 
 def _employee_labels(

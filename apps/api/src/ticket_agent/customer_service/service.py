@@ -20,6 +20,8 @@ from ticket_agent.classification.conversation_signals import (
 from ticket_agent.customer_service.context import (
     MemorySnapshot,
     assemble_context,
+    derive_memory_slots,
+    load_memory,
     record_memory_turn,
 )
 from ticket_agent.customer_service.domain import (
@@ -1637,12 +1639,22 @@ class CustomerConversationService:
             },
         )
         turn.lease_expires_at = None
+        small_talk_ticket = (
+            self.session.get(Ticket, conversation.current_ticket_id)
+            if conversation.current_ticket_id is not None
+            else None
+        )
         self._update_memory(
             conversation.id,
             turn.sequence,
             payload.content,
             small_talk_reply,
             turn_id=turn.id,
+            ticket_status=(
+                str(small_talk_ticket.status)
+                if small_talk_ticket is not None
+                else None
+            ),
         )
         conversation.status = "ACTIVE"
         conversation.version += 1
@@ -2978,12 +2990,18 @@ class CustomerConversationService:
             CustomerMessage,
             turn.user_message_id,
         )
+        ticket = (
+            self.session.get(Ticket, turn.ticket_id)
+            if turn.ticket_id is not None
+            else None
+        )
         self._update_memory(
             turn.conversation_id,
             turn.sequence,
             user_message.content if user_message else "",
             assistant_message.content,
             turn_id=turn.id,
+            ticket_status=str(ticket.status) if ticket is not None else None,
         )
         self.session.commit()
         return turn
@@ -2996,9 +3014,11 @@ class CustomerConversationService:
         assistant_content: str,
         *,
         turn_id: UUID | None = None,
+        ticket_status: str | None = None,
     ) -> None:
         memory = self.session.get(ConversationMemory, conversation_id)
         previous_summary = memory.summary if memory is not None else ""
+        snapshot = load_memory(self.session, conversation_id)
         line = (
             f"第 {turn_sequence} 轮 用户：{user_content.strip()[:500]} "
             f"客服：{assistant_content.strip()[:800]}"
@@ -3031,12 +3051,23 @@ class CustomerConversationService:
                 "source_turn_id": source_turn_id,
                 "updated_at": updated_at,
             }
+        slots = derive_memory_slots(
+            previous=snapshot,
+            assistant_content=assistant_content,
+            turn_sequence=turn_sequence,
+            source_turn_id=source_turn_id,
+            updated_at=updated_at,
+            ticket_status=ticket_status,
+        )
         record_memory_turn(
             self.session,
             conversation_id=conversation_id,
             turn_sequence=turn_sequence,
             summary=summary,
             facts=facts,
+            open_actions=slots.open_actions,
+            commitments=slots.commitments,
+            pending_questions=slots.pending_questions,
         )
 
     def _next_sequence(self, conversation_id: UUID) -> int:
