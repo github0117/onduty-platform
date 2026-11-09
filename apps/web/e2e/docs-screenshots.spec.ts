@@ -17,6 +17,7 @@ const pages = [
   { path: "/knowledge/documents", name: "knowledge" },
   { path: "/ecommerce/listings", name: "ecommerce" },
   { path: "/employees/roster", name: "employees" },
+  { path: "/operations", name: "operations" },
 ];
 
 async function prepare(page: Page, path: string): Promise<void> {
@@ -73,5 +74,18 @@ test("capture curated documentation screenshots", async ({ page }) => {
   await page.waitForTimeout(1500);
   await page.screenshot({
     path: resolve(screenshotDir, "employee-routing.png"),
+  });
+
+  // 轮次回放抽屉：回到工作台打开一条会话，再点“运行回放”。
+  await page.goto("/customer-service/workbench");
+  await page.waitForLoadState("networkidle").catch(() => undefined);
+  await prepare(page, "/customer-service/workbench");
+  await page
+    .getByRole("button", { name: "运行回放", exact: true })
+    .first()
+    .click();
+  await page.waitForTimeout(1500);
+  await page.screenshot({
+    path: resolve(screenshotDir, "turn-replay.png"),
   });
 });
