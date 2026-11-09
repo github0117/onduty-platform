@@ -389,6 +389,7 @@ services:
     environment:
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
       FEISHU_WEBHOOK_SECRET: ${FEISHU_WEBHOOK_SECRET:-}
+      FEISHU_MESSAGE_FORMAT: ${FEISHU_MESSAGE_FORMAT:-card}
     command: ["python", "-u", "/app/relay.py"]
     volumes:
       - ../alert-relay/relay.py:/app/relay.py:ro

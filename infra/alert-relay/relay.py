@@ -1,12 +1,13 @@
 """Alertmanager -> Feishu custom bot relay.
 
 Alertmanager posts its native webhook payload here; this service converts it
-into the Feishu text-message shape (and optional signature) and forwards it
-to FEISHU_WEBHOOK_URL.
+into a Feishu interactive card (default) or plain text message, and forwards
+it to FEISHU_WEBHOOK_URL with the optional signature.
 
 Environment:
   FEISHU_WEBHOOK_URL      Feishu custom bot webhook URL (required to start).
   FEISHU_WEBHOOK_SECRET   Optional signing secret; enables timestamp+sign.
+  FEISHU_MESSAGE_FORMAT   "card" (default) or "text".
   ALERT_RELAY_PORT        Listen port, default 8080.
 """
 
@@ -28,11 +29,21 @@ from urllib.parse import urlparse
 
 MAX_BODY_BYTES = 1_000_000
 MAX_TEXT_CHARS = 4_000
+MAX_CARD_ALERTS = 8
+MAX_CARD_FIELD_CHARS = 300
 REQUEST_TIMEOUT_SECONDS = 5.0
 
 FEISHU_WEBHOOK_URL = os.environ.get("FEISHU_WEBHOOK_URL", "")
 FEISHU_WEBHOOK_SECRET = os.environ.get("FEISHU_WEBHOOK_SECRET", "")
+FEISHU_MESSAGE_FORMAT = os.environ.get("FEISHU_MESSAGE_FORMAT", "card")
 LISTEN_PORT = int(os.environ.get("ALERT_RELAY_PORT", "8080"))
+
+# Feishu card header colors: red / orange / green / blue / grey.
+SEVERITY_COLORS = {
+    "critical": "red",
+    "warning": "orange",
+    "info": "blue",
+}
 
 LOGGER = logging.getLogger("alert-relay")
 
@@ -83,15 +94,137 @@ def format_alert_text(payload: dict[str, Any]) -> str:
     return text
 
 
+def _truncate(value: str, limit: int = MAX_CARD_FIELD_CHARS) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def card_header_color(status: str, alerts: list[dict[str, Any]]) -> str:
+    """Resolved is always green; otherwise the most severe level wins."""
+    if status == "resolved":
+        return "green"
+    severities = {
+        str((alert.get("labels") or {}).get("severity", "")).lower() for alert in alerts
+    }
+    for severity in ("critical", "warning", "info"):
+        if severity in severities:
+            return SEVERITY_COLORS[severity]
+    return "grey"
+
+
+def build_feishu_card(payload: dict[str, Any]) -> dict[str, Any]:
+    status = str(payload.get("status", "unknown")).lower()
+    alerts = list(payload.get("alerts") or [])
+    groups = payload.get("groupLabels") or {}
+
+    prefix = {"firing": "告警触发", "resolved": "告警恢复"}.get(status, status)
+    title = f"{prefix} · {len(alerts)} 条"
+    business_unit = groups.get("business_unit")
+    if business_unit:
+        title += f" · {business_unit}"
+
+    elements: list[dict[str, Any]] = []
+    if groups.get("alertname"):
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"**告警规则**：{groups['alertname']}",
+                },
+            }
+        )
+
+    for alert in alerts[:MAX_CARD_ALERTS]:
+        labels = alert.get("labels") or {}
+        annotations = alert.get("annotations") or {}
+        name = labels.get("alertname", "unknown")
+        severity = labels.get("severity", "unknown")
+        alert_unit = labels.get("business_unit")
+
+        meta = [f"级别：**{severity}**"]
+        if alert_unit:
+            meta.append(f"业务线：**{alert_unit}**")
+        lines = [f"**{name}**", "　".join(meta)]
+        summary = annotations.get("summary")
+        if summary:
+            lines.append(_truncate(str(summary)))
+        elements.append(
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}
+        )
+
+        description = annotations.get("description")
+        if description:
+            elements.append(
+                {
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "plain_text", "content": _truncate(str(description))}
+                    ],
+                }
+            )
+        starts_at = alert.get("startsAt")
+        if starts_at:
+            elements.append(
+                {
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "plain_text", "content": f"开始时间：{starts_at}"}
+                    ],
+                }
+            )
+        elements.append({"tag": "hr"})
+
+    if len(alerts) > MAX_CARD_ALERTS:
+        hidden = len(alerts) - MAX_CARD_ALERTS
+        elements.append(
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": f"另有 {hidden} 条告警未展示，请到 Alertmanager 查看。",
+                    }
+                ],
+            }
+        )
+
+    elements.append(
+        {
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": "OnDuty 数字员工平台 · Prometheus Alertmanager",
+                }
+            ],
+        }
+    )
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": card_header_color(status, alerts),
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
+    }
+
+
 def build_feishu_payload(
     payload: dict[str, Any],
     secret: str,
     timestamp: int | None = None,
+    message_format: str | None = None,
 ) -> dict[str, Any]:
-    body: dict[str, Any] = {
-        "msg_type": "text",
-        "content": {"text": format_alert_text(payload)},
-    }
+    fmt = (message_format or FEISHU_MESSAGE_FORMAT or "card").strip().lower()
+    if fmt == "text":
+        body: dict[str, Any] = {
+            "msg_type": "text",
+            "content": {"text": format_alert_text(payload)},
+        }
+    else:
+        body = {"msg_type": "interactive", "card": build_feishu_card(payload)}
+
     if secret:
         ts = timestamp if timestamp is not None else int(time.time())
         body["timestamp"] = str(ts)

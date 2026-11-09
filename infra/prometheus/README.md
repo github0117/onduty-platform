@@ -69,6 +69,11 @@ make observability-feishu-test
 # result: ok ({"code":0}) 表示 webhook 与签名都被接受
 ```
 
+自检与正式告警默认发送 `interactive` 卡片：标题按状态配色
+（critical 红、warning 橙、resolved 绿），正文包含告警规则、级别、业务线、
+摘要、描述和开始时间；单条最多展开 8 个告警。需要回退纯文本时在 `.env`
+设置 `FEISHU_MESSAGE_FORMAT=text`。
+
 5. 自检通过后再拉起完整链路：
 
 ```bash

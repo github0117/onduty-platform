@@ -59,8 +59,16 @@ def main() -> int:
 
     relay = load_relay()
     body = relay.build_feishu_payload(SAMPLE_PAYLOAD, secret)
-    print("message:")
-    print(body["content"]["text"])
+    print(f"format: {body['msg_type']}")
+    if body["msg_type"] == "interactive":
+        card = body["card"]
+        header = card["header"]
+        print(f"title: {header['title']['content']} (color={header['template']})")
+        for element in card["elements"]:
+            text = element.get("text") or {}
+            print(f"- <{element['tag']}> {text.get('content', '')}".rstrip())
+    else:
+        print(body["content"]["text"])
     print(f"signature: {'enabled' if secret else 'disabled'}")
 
     ok, detail = relay.post_to_feishu(url, body)

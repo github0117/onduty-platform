@@ -159,6 +159,7 @@ make observability-up
 
 # 飞书群机器人告警：先自检单条消息，再拉起完整链路
 # .env 设置 FEISHU_WEBHOOK_URL（启用签名时再填 FEISHU_WEBHOOK_SECRET）
+# 默认发彩色卡片；设置 FEISHU_MESSAGE_FORMAT=text 可回退纯文本
 make observability-feishu-test
 make observability-feishu-up
 ```

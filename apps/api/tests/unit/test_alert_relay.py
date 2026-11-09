@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -57,14 +58,69 @@ def test_feishu_signature_matches_documented_algorithm() -> None:
 
 
 def test_payload_signs_only_when_secret_is_configured() -> None:
-    unsigned = relay.build_feishu_payload(PAYLOAD, "", timestamp=1731056400)
+    unsigned = relay.build_feishu_payload(PAYLOAD, "", timestamp=1731056400, message_format="text")
     assert unsigned["msg_type"] == "text"
     assert "sign" not in unsigned
     assert "timestamp" not in unsigned
 
-    signed = relay.build_feishu_payload(PAYLOAD, "test-secret", timestamp=1731056400)
+    signed = relay.build_feishu_payload(
+        PAYLOAD, "test-secret", timestamp=1731056400, message_format="text"
+    )
     assert signed["timestamp"] == "1731056400"
     assert signed["sign"] == relay.feishu_signature(1731056400, "test-secret")
+
+
+def test_default_payload_is_an_interactive_card() -> None:
+    body = relay.build_feishu_payload(PAYLOAD, "", message_format="card")
+    assert body["msg_type"] == "interactive"
+    card = body["card"]
+    assert card["header"]["template"] == "red"
+    assert card["header"]["title"]["content"] == "告警触发 · 1 条 · bu_demo"
+
+    joined = json.dumps(card, ensure_ascii=False)
+    assert "TicketSemanticUnsupportedClaims" in joined
+    assert "critical" in joined
+    assert "881 unsupported claims" in joined
+
+
+def test_card_header_color_follows_status_and_severity() -> None:
+    critical = {"status": "firing", "alerts": [{"labels": {"severity": "critical"}}]}
+    warning = {"status": "firing", "alerts": [{"labels": {"severity": "warning"}}]}
+    resolved = {"status": "resolved", "alerts": [{"labels": {"severity": "critical"}}]}
+    unknown = {"status": "firing", "alerts": [{"labels": {"severity": "page"}}]}
+
+    assert relay.build_feishu_card(critical)["header"]["template"] == "red"
+    assert relay.build_feishu_card(warning)["header"]["template"] == "orange"
+    assert relay.build_feishu_card(resolved)["header"]["template"] == "green"
+    assert relay.build_feishu_card(unknown)["header"]["template"] == "grey"
+
+
+def test_card_limits_rendered_alerts_and_notes_the_rest() -> None:
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {"labels": {"alertname": f"Alert{i}", "severity": "warning"}} for i in range(12)
+        ],
+    }
+    card = relay.build_feishu_card(payload)
+    joined = json.dumps(card, ensure_ascii=False)
+    assert joined.count('"tag": "hr"') == relay.MAX_CARD_ALERTS
+    assert "另有 4 条告警未展示" in joined
+
+
+def test_card_truncates_long_description() -> None:
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "labels": {"alertname": "NoisyAlert"},
+                "annotations": {"description": "y" * (relay.MAX_CARD_FIELD_CHARS + 50)},
+            }
+        ],
+    }
+    card = relay.build_feishu_card(payload)
+    notes = [e for e in card["elements"] if e["tag"] == "note"]
+    assert any(len(n["elements"][0]["content"]) == relay.MAX_CARD_FIELD_CHARS for n in notes)
 
 
 def test_long_text_is_truncated() -> None:
