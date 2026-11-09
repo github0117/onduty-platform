@@ -170,6 +170,16 @@ uv run pytest tests/integration/test_conversation_turn_events.py -v
   `DEFAULT_HISTORY_MAX_MESSAGES`，当前是代码常量，不通过环境变量调整），且只取
   `sequence` 小于当前消息的条目，排队期间后发的消息不会混进上一轮。
 - 会话记忆读取时自动把 v1 行升级为 v2 并回写；v2 的 `facts` 带 `source_turn_id`。
+- 滚动摘要默认开启：未摘要轮数达到 `MEMORY_SUMMARY_TURN_THRESHOLD`（默认 6）或
+  未摘要原文超过 `MEMORY_SUMMARY_CHAR_THRESHOLD`（默认 3000 字符）时，同步调用
+  `MODEL_*` 生成不超过 `MEMORY_SUMMARY_MAX_CHARS`（默认 400）字的摘要，超时
+  `MEMORY_SUMMARY_TIMEOUT_SECONDS`（默认 8 秒）且不重试；失败保留确定性截断
+  摘要、游标不推进，不影响买家回复。`summarized_through_sequence` 记录摘要已
+  覆盖到的轮次。`MODEL_PROVIDER=local` 时走确定性截断；配置
+  `MODEL_PROVIDER=openai_compatible`、`MODEL_BASE_URL`、`MODEL_NAME` 与
+  `MODEL_API_KEY` 后才调用真实模型。摘要请求使用纯文本模式（不发送
+  `response_format`），避免 qwen-plus 在长 prompt 下因结构化输出持续吐空白而
+  超时。
 - 同一会话的轮次串行执行，后到的轮次保持 `PENDING` 并持有有效租约，避免被回收器
   误判为卡死；完成方结束时会接力派发下一轮（单次最多 10 轮）。首条消息建单使用
   `TicketService.create(commit=False)`，会话行锁不会被内部提交打断；若仍与并发
