@@ -18,7 +18,7 @@ concurrency:
 jobs:
   backend:
     name: Backend lint, types and tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: apps/api
@@ -51,7 +51,7 @@ jobs:
 
   postgres:
     name: Postgres and pgvector regression
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: apps/api
@@ -88,7 +88,7 @@ jobs:
 
   rag-gate:
     name: RAG HOLDOUT regression gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: apps/api
@@ -201,7 +201,7 @@ jobs:
     # configuring EMBEDDING_API_KEY (and EMBEDDING_BASE_URL if not DashScope).
     name: RAG semantic quality baseline
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_quality_gate }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: apps/api
@@ -273,7 +273,7 @@ jobs:
 
   frontend:
     name: Frontend type-check and build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: apps/web
@@ -293,7 +293,7 @@ jobs:
 
   e2e:
     name: Playwright end-to-end
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
