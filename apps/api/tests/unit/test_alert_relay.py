@@ -80,3 +80,29 @@ def test_long_text_is_truncated() -> None:
     text = relay.format_alert_text(payload)
     assert len(text) <= relay.MAX_TEXT_CHARS
     assert text.endswith("...")
+
+
+def _load_selftest():
+    spec = importlib.util.spec_from_file_location(
+        "alert_relay_selftest", ROOT / "infra/alert-relay/selftest.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_selftest_requires_webhook_url(monkeypatch) -> None:
+    selftest = _load_selftest()
+    monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
+    assert selftest.main() == 2
+
+
+def test_selftest_reports_feishu_rejection(monkeypatch, capsys) -> None:
+    selftest = _load_selftest()
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "http://127.0.0.1:9/hook")
+    monkeypatch.setattr(selftest, "load_relay", lambda: relay)
+    monkeypatch.setattr(relay, "post_to_feishu", lambda url, body: (False, "feishu code=19021"))
+    assert selftest.main() == 1
+    assert "failed" in capsys.readouterr().err
+

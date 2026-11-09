@@ -21,7 +21,7 @@ LOAD_TEST_CONCURRENCY ?= 50
 LOAD_TEST_DURATION ?= 60
 LOAD_TEST_ARGS ?=
 
-.PHONY: install test smoke load-test infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint typecheck format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke preflight migrate-check db-backup db-restore observability-up observability-down e2e-web e2e-web-docker
+.PHONY: install test smoke load-test infra-acceptance mock-acceptance business-sandbox-acceptance acceptance-corpus acceptance-seed acceptance-final seed-demo lint typecheck format api web build worker beat rag-eval claim-eval compose-up compose-down stack-up stack-down stack-smoke preflight migrate-check db-backup db-restore observability-up observability-down observability-feishu-up observability-feishu-down observability-feishu-test e2e-web e2e-web-docker
 
 install:
 	cd apps/api && uv sync --all-groups
@@ -143,5 +143,10 @@ observability-feishu-up:
 
 observability-feishu-down:
 	docker compose -f infra/compose/docker-compose.yml --profile observability --profile feishu-alerts stop prometheus alertmanager alert-relay grafana
+
+observability-feishu-test:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	test -n "$$FEISHU_WEBHOOK_URL" || { echo "FEISHU_WEBHOOK_URL is required in .env"; exit 1; }; \
+	python3 infra/alert-relay/selftest.py
 
 

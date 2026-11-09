@@ -47,6 +47,44 @@ curl -s -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" \
 `.env` 未设置 `METRICS_SCRAPE_TOKEN` 时，API 与 Prometheus 共用 compose
 默认值 `local-metrics-token`；生产必须改为独立强随机值。
 
+## 飞书群机器人接入
+
+链路是 `Prometheus → Alertmanager → alert-relay → 飞书群自定义机器人`。
+接入步骤：
+
+1. 在目标飞书群 → 设置 → 群机器人 → 添加机器人 → 自定义机器人，复制
+   webhook 地址（形如 `https://open.feishu.cn/open-apis/bot/v2/hook/<token>`）。
+2. 如需签名校验，在机器人安全设置里勾选“签名校验”，复制密钥。
+3. 写入本机 `.env`（不要提交到仓库或贴进聊天）：
+
+```bash
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/<token>
+FEISHU_WEBHOOK_SECRET=<签名密钥>   # 未开启签名校验则留空
+```
+
+4. 先做单条自检，确认机器人真的能收到消息：
+
+```bash
+make observability-feishu-test
+# result: ok ({"code":0}) 表示 webhook 与签名都被接受
+```
+
+5. 自检通过后再拉起完整链路：
+
+```bash
+make observability-feishu-up
+```
+
+常见失败：
+
+- `FEISHU_WEBHOOK_URL is required in .env`：第 3 步未写入或 `.env` 路径不对。
+- `feishu code=19021`：签名不匹配，通常是 `FEISHU_WEBHOOK_SECRET` 与机器人
+  后台不一致，或机器人开启了签名校验但本地没配。
+- `feishu code=19024` 等：机器人被移出群、webhook 已失效，需要重新添加。
+- relay 返回 502：飞书侧失败，Alertmanager 会按退避重试，不会丢告警。
+
+生产环境还应把 `FEISHU_WEBHOOK_URL` 作为密钥管理，不写进镜像或提交记录。
+
 未设置 `ALERT_WEBHOOK_URL` 时启动日志会打印 WARN，并回落到
 `host.docker.internal:9999/alerts`，仅用于本机验证；生产环境必须设置
 真实接收端，否则告警不会离开当前环境。

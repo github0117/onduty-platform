@@ -157,8 +157,9 @@ make observability-up
 # 告警 webhook 由 .env 的 ALERT_WEBHOOK_URL 指定；未设置时启动日志会
 # 打印 WARN 并回落到 host.docker.internal:9999/alerts，生产必须配置真实端。
 
-# 飞书群自定义机器人告警（Prometheus → Alertmanager → alert-relay → 飞书）
+# 飞书群机器人告警：先自检单条消息，再拉起完整链路
 # .env 设置 FEISHU_WEBHOOK_URL（启用签名时再填 FEISHU_WEBHOOK_SECRET）
+make observability-feishu-test
 make observability-feishu-up
 ```
 
