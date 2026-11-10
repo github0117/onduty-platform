@@ -1,3 +1,5 @@
+import type { WorkflowRunView, WorkflowStepView } from "./types";
+
 export const workflowStateLabels: Record<string, string> = {
   RECEIVED: "已接收",
   CLASSIFYING: "正在分类",
@@ -169,6 +171,89 @@ export const eventTypeLabels: Record<string, string> = {
   workflow: "流程节点",
   human: "人工处理",
 };
+
+/**
+ * 工作流运行与步骤状态词表。
+ *
+ * 键按后端枚举做穷尽声明，少写或多写枚举都会在编译期报错；页面拿到的状态
+ * 是普通 string 时用下方的查找函数读取，避免各处重复实现回退逻辑。
+ */
+export const workflowRunStatusLabels: Record<
+  WorkflowRunView["status"],
+  string
+> = {
+  PENDING: "待执行",
+  RUNNING: "运行中",
+  SUCCEEDED: "已完成",
+  FAILED: "失败",
+  DEAD_LETTER: "死信",
+};
+
+export const workflowRunStatusColors: Record<
+  WorkflowRunView["status"],
+  string
+> = {
+  PENDING: "default",
+  RUNNING: "processing",
+  SUCCEEDED: "success",
+  FAILED: "error",
+  DEAD_LETTER: "volcano",
+};
+
+export const workflowStepStatusLabels: Record<
+  WorkflowStepView["status"],
+  string
+> = {
+  PENDING: "待执行",
+  RUNNING: "运行中",
+  SUCCEEDED: "成功",
+  FAILED: "失败",
+  DEAD_LETTER: "死信",
+};
+
+export const workflowStepStatusColors: Record<
+  WorkflowStepView["status"],
+  string
+> = {
+  PENDING: "default",
+  RUNNING: "processing",
+  SUCCEEDED: "success",
+  FAILED: "error",
+  DEAD_LETTER: "volcano",
+};
+
+export const workflowTypeLabels: Record<string, string> = {
+  ticket_sync: "工单外部同步",
+  ecommerce_publish: "商品发布",
+  knowledge_ingest: "知识入库",
+};
+
+export const workflowStepLabels: Record<string, string> = {
+  sync_external: "外部同步",
+  notify: "通知请求人",
+  publish: "发布",
+  ingest: "入库",
+};
+
+export function workflowRunStatusLabel(status: string): string {
+  return workflowRunStatusLabels[status as WorkflowRunView["status"]] ?? status;
+}
+
+export function workflowRunStatusColor(status: string): string {
+  return workflowRunStatusColors[status as WorkflowRunView["status"]] ?? "default";
+}
+
+export function workflowStepStatusLabel(status: string): string {
+  return (
+    workflowStepStatusLabels[status as WorkflowStepView["status"]] ?? status
+  );
+}
+
+export function workflowStepStatusColor(status: string): string {
+  return (
+    workflowStepStatusColors[status as WorkflowStepView["status"]] ?? "default"
+  );
+}
 
 export const turnStatusLabels: Record<string, string> = {
   PENDING: "排队中",

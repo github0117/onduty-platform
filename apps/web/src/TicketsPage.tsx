@@ -32,11 +32,7 @@ import {
   reviewTicket,
   takeOverTicket,
 } from "./api";
-import type {
-  TicketListItem,
-  WorkflowRunView,
-  WorkflowStepView,
-} from "./types";
+import type { TicketListItem, WorkflowRunView } from "./types";
 import { useAuth } from "./auth";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 import { message } from "./feedback";
@@ -44,7 +40,13 @@ import {
   draftStateLabels,
   queueLabels,
   syncStateLabels,
+  workflowRunStatusColor,
+  workflowRunStatusLabel,
   workflowStateLabels,
+  workflowStepLabels,
+  workflowStepStatusColor,
+  workflowStepStatusLabel,
+  workflowTypeLabels,
 } from "./statusLabels";
 
 const { Title, Paragraph, Text } = Typography;
@@ -84,47 +86,6 @@ function stateColor(state: string): string {
   return "default";
 }
 
-const workflowRunStatusLabels: Record<WorkflowRunView["status"], string> = {
-  PENDING: "待执行",
-  RUNNING: "运行中",
-  SUCCEEDED: "已完成",
-  FAILED: "失败",
-  DEAD_LETTER: "死信",
-};
-
-const workflowRunStatusColors: Record<WorkflowRunView["status"], string> = {
-  PENDING: "default",
-  RUNNING: "processing",
-  SUCCEEDED: "success",
-  FAILED: "error",
-  DEAD_LETTER: "error",
-};
-
-const workflowStepStatusLabels: Record<WorkflowStepView["status"], string> = {
-  PENDING: "待执行",
-  RUNNING: "运行中",
-  SUCCEEDED: "成功",
-  FAILED: "失败",
-  DEAD_LETTER: "死信",
-};
-
-const workflowStepStatusColors: Record<WorkflowStepView["status"], string> = {
-  PENDING: "default",
-  RUNNING: "processing",
-  SUCCEEDED: "success",
-  FAILED: "error",
-  DEAD_LETTER: "error",
-};
-
-const workflowTypeLabels: Record<string, string> = {
-  ticket_sync: "工单同步",
-};
-
-const workflowStepLabels: Record<string, string> = {
-  sync_external: "外部同步",
-  notify: "通知",
-};
-
 function time(value: string): string {
   return new Date(value).toLocaleString();
 }
@@ -157,8 +118,8 @@ function TicketWorkflowProgress({ ticketId }: { ticketId: string }) {
                 <Text strong>
                   {workflowTypeLabels[run.workflow_type] ?? run.workflow_type}
                 </Text>
-                <Tag color={workflowRunStatusColors[run.status]}>
-                  {workflowRunStatusLabels[run.status]}
+                <Tag color={workflowRunStatusColor(run.status)}>
+                  {workflowRunStatusLabel(run.status)}
                 </Tag>
                 {run.current_step ? (
                   <Text type="secondary">
@@ -182,8 +143,8 @@ function TicketWorkflowProgress({ ticketId }: { ticketId: string }) {
                       {index + 1}.{" "}
                       {workflowStepLabels[step.name] ?? step.name}
                     </Text>
-                    <Tag color={workflowStepStatusColors[step.status]}>
-                      {workflowStepStatusLabels[step.status]}
+                    <Tag color={workflowStepStatusColor(step.status)}>
+                      {workflowStepStatusLabel(step.status)}
                     </Tag>
                     <Text type="secondary">
                       尝试 {step.attempt_count}/{step.max_attempts}

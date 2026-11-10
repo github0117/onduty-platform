@@ -149,8 +149,9 @@ test("工单详情内嵌只读工作流进度", async ({ page, request }) => {
   // 状态枚举由后端以大写返回，必须映射为中文而不是回退成原始值。
   await expect(card.getByText("已完成", { exact: true })).toBeVisible();
   await expect(card.getByText("成功", { exact: true })).toBeVisible();
-  await expect(card.getByText("工单同步")).toBeVisible();
-  await expect(card.getByText("外部同步")).toBeVisible();
+  await expect(card.getByText("工单外部同步", { exact: true })).toBeVisible();
+  // 步骤名带序号前缀，需精确匹配，避免与运行类型里的「外部同步」混淆。
+  await expect(card.getByText(/^1\. 外部同步$/)).toBeVisible();
   await expect(card.getByText("尝试 1/5")).toBeVisible();
   await expect(card.getByRole("button", { name: /重放/ })).toHaveCount(0);
 });
