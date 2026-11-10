@@ -32,7 +32,11 @@ import {
   reviewTicket,
   takeOverTicket,
 } from "./api";
-import type { TicketListItem, WorkflowRunView } from "./types";
+import type {
+  TicketListItem,
+  WorkflowRunView,
+  WorkflowStepView,
+} from "./types";
 import { useAuth } from "./auth";
 import ReadOnlyBanner from "./ReadOnlyBanner";
 import { message } from "./feedback";
@@ -80,44 +84,36 @@ function stateColor(state: string): string {
   return "default";
 }
 
-const workflowRunStatusLabels: Record<string, string> = {
-  pending: "待执行",
-  running: "运行中",
-  waiting_approval: "等待审批",
-  succeeded: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
+const workflowRunStatusLabels: Record<WorkflowRunView["status"], string> = {
+  PENDING: "待执行",
+  RUNNING: "运行中",
+  SUCCEEDED: "已完成",
+  FAILED: "失败",
+  DEAD_LETTER: "死信",
 };
 
-const workflowRunStatusColors: Record<string, string> = {
-  pending: "default",
-  running: "processing",
-  waiting_approval: "warning",
-  succeeded: "success",
-  failed: "error",
-  cancelled: "default",
+const workflowRunStatusColors: Record<WorkflowRunView["status"], string> = {
+  PENDING: "default",
+  RUNNING: "processing",
+  SUCCEEDED: "success",
+  FAILED: "error",
+  DEAD_LETTER: "error",
 };
 
-const workflowStepStatusLabels: Record<string, string> = {
-  pending: "待执行",
-  running: "运行中",
-  waiting_retry: "等待重试",
-  waiting_approval: "等待审批",
-  succeeded: "成功",
-  failed: "失败",
-  dead_letter: "死信",
-  cancelled: "已取消",
+const workflowStepStatusLabels: Record<WorkflowStepView["status"], string> = {
+  PENDING: "待执行",
+  RUNNING: "运行中",
+  SUCCEEDED: "成功",
+  FAILED: "失败",
+  DEAD_LETTER: "死信",
 };
 
-const workflowStepStatusColors: Record<string, string> = {
-  pending: "default",
-  running: "processing",
-  waiting_retry: "warning",
-  waiting_approval: "warning",
-  succeeded: "success",
-  failed: "error",
-  dead_letter: "error",
-  cancelled: "default",
+const workflowStepStatusColors: Record<WorkflowStepView["status"], string> = {
+  PENDING: "default",
+  RUNNING: "processing",
+  SUCCEEDED: "success",
+  FAILED: "error",
+  DEAD_LETTER: "error",
 };
 
 const workflowTypeLabels: Record<string, string> = {
@@ -161,10 +157,8 @@ function TicketWorkflowProgress({ ticketId }: { ticketId: string }) {
                 <Text strong>
                   {workflowTypeLabels[run.workflow_type] ?? run.workflow_type}
                 </Text>
-                <Tag
-                  color={workflowRunStatusColors[run.status] ?? "default"}
-                >
-                  {workflowRunStatusLabels[run.status] ?? run.status}
+                <Tag color={workflowRunStatusColors[run.status]}>
+                  {workflowRunStatusLabels[run.status]}
                 </Tag>
                 {run.current_step ? (
                   <Text type="secondary">
@@ -188,12 +182,8 @@ function TicketWorkflowProgress({ ticketId }: { ticketId: string }) {
                       {index + 1}.{" "}
                       {workflowStepLabels[step.name] ?? step.name}
                     </Text>
-                    <Tag
-                      color={
-                        workflowStepStatusColors[step.status] ?? "default"
-                      }
-                    >
-                      {workflowStepStatusLabels[step.status] ?? step.status}
+                    <Tag color={workflowStepStatusColors[step.status]}>
+                      {workflowStepStatusLabels[step.status]}
                     </Tag>
                     <Text type="secondary">
                       尝试 {step.attempt_count}/{step.max_attempts}
@@ -239,6 +229,11 @@ function DraftReviewDrawer({
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["tickets"] });
     await queryClient.invalidateQueries({ queryKey: ["ticket", ticketId] });
+    if (ticketId) {
+      await queryClient.invalidateQueries({
+        queryKey: ["ticket-workflow-runs", ticketId],
+      });
+    }
     onClose();
   };
 
