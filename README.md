@@ -161,12 +161,12 @@ make observability-up
 当前基线：
 
 ```text
-后端: 741 passed, 3 skipped（PG 专项用例需配置 TEST_POSTGRES_URL）
+后端: 747 passed, 3 skipped（PG 专项用例需配置 TEST_POSTGRES_URL）
 Python 覆盖率: 88%（CI 门槛 85%）
 路由评测: TUNING 36/36；HOLDOUT 16/18（88.9%，含失败分析）
 Ruff / mypy: passed（216 个源文件）
 TypeScript / Vite: passed
-Playwright: 174 passed, 2 skipped（5.4 分钟）
+Playwright: 175 passed, 2 skipped（4.0 分钟）
 只读并发: 50/100 并发，P95 460.89 / 850.71 ms
 PostgreSQL migration: b5e2a8d9c641 (head)
 工作流并发: 真实 PostgreSQL 两 worker 抢同一步骤，仅 1 个 claim 成功
