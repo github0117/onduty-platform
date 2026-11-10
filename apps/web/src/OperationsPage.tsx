@@ -58,6 +58,11 @@ import {
   groundingStatusLabels,
   localizedLabel,
   turnStatusLabels,
+  workflowRunStatusColor,
+  workflowRunStatusLabel,
+  workflowStepLabels,
+  workflowStepStatusColor,
+  workflowTypeLabels,
 } from "./statusLabels";
 
 const { Paragraph, Text, Title } = Typography;
@@ -67,35 +72,6 @@ const toolStatusLabels: Record<string, string> = {
   FAILED: "失败",
   DENIED: "已拒绝",
   RUNNING: "执行中",
-};
-
-const workflowStatusLabels: Record<string, string> = {
-  PENDING: "待执行",
-  RUNNING: "执行中",
-  SUCCEEDED: "已完成",
-  FAILED: "失败",
-  DEAD_LETTER: "死信",
-};
-
-const workflowStatusColors: Record<string, string> = {
-  PENDING: "default",
-  RUNNING: "blue",
-  SUCCEEDED: "green",
-  FAILED: "red",
-  DEAD_LETTER: "volcano",
-};
-
-const workflowTypeLabels: Record<string, string> = {
-  ticket_sync: "工单外部同步",
-  ecommerce_publish: "商品发布",
-  knowledge_ingest: "知识入库",
-};
-
-const workflowStepLabels: Record<string, string> = {
-  sync_external: "外部同步",
-  notify: "通知请求人",
-  publish: "发布",
-  ingest: "入库",
 };
 
 const runStatusLabels: Record<string, string> = {
@@ -541,8 +517,8 @@ export default function OperationsPage() {
       dataIndex: "status",
       width: 100,
       render: (value: string) => (
-        <Tag color={workflowStatusColors[value] ?? "default"}>
-          {workflowStatusLabels[value] ?? value}
+        <Tag color={workflowRunStatusColor(value)}>
+          {workflowRunStatusLabel(value)}
         </Tag>
       ),
     },
@@ -559,7 +535,7 @@ export default function OperationsPage() {
       render: (_, run) => (
         <Space wrap size={4}>
           {run.steps.map((step) => (
-            <Tag key={step.id} color={workflowStatusColors[step.status] ?? "default"}>
+            <Tag key={step.id} color={workflowStepStatusColor(step.status)}>
               {workflowStepLabels[step.name] ?? step.name} {step.attempt_count}/
               {step.max_attempts}
             </Tag>
