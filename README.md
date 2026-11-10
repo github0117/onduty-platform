@@ -90,9 +90,6 @@ flowchart LR
   Worker --> Biz["业务系统 / MCP 工具"]
   Beat["Celery Beat"] --> Redis
   Prom["Prometheus"] -. "/metrics 抓取" .-> API
-  Prom --> Alertmanager["Alertmanager 0.28.1"]
-  Alertmanager --> Relay["Webhook / 飞书 relay"]
-  Relay --> Feishu["飞书群机器人"]
   Grafana["Grafana"] --> Prom
 ```
 
@@ -156,15 +153,10 @@ make acceptance-final
 
 # 可观测性栈（Prometheus + Alertmanager + Grafana）
 make observability-up
-# 告警 webhook 由 .env 的 ALERT_WEBHOOK_URL 指定；未设置时启动日志会
-# 打印 WARN 并回落到 host.docker.internal:9999/alerts，生产必须配置真实端。
-
-# 飞书群机器人告警：先自检单条消息，再拉起完整链路
-# .env 设置 FEISHU_WEBHOOK_URL（启用签名时再填 FEISHU_WEBHOOK_SECRET）
-# 默认发彩色卡片；设置 FEISHU_MESSAGE_FORMAT=text 可回退纯文本
-make observability-feishu-test
-make observability-feishu-up
 ```
+
+告警规则、Alertmanager 外发和飞书群机器人接入见
+[可观测性与告警](docs/observability.md)。
 
 当前基线：
 
@@ -194,6 +186,7 @@ Playwright · Docker Compose · Nginx · FFmpeg
 - [完整能力清单](docs/features.md)：平台全部功能细节
 - [上线检查清单](docs/go-live-checklist.md)：部署、备份、迁移校验与回滚
 - [模型与外部集成配置](docs/configuration.md)：千问、物流、限流和请求体上限
+- [可观测性与告警](docs/observability.md)：指标抓取、告警规则、Alertmanager 与飞书外发
 - [多租户隔离设计与回归验证](docs/tenant-isolation.md)
 - [只读并发压测](docs/load-test.md)
 
