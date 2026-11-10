@@ -97,6 +97,64 @@ async function openFailedTicket(
   await page.getByRole("button", { name: subject, exact: true }).click();
 }
 
+test("工单详情内嵌只读工作流进度", async ({ page, request }) => {
+  const ticket = await failedSyncTicket(request);
+  const id = String(ticket.item.id);
+  const now = new Date().toISOString();
+  await page.route(`**/api/v1/tickets/${id}/workflow-runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [
+          {
+            id: "e2e-workflow-run",
+            business_unit_id: "bu_demo",
+            workflow_type: "ticket_sync",
+            aggregate_type: "ticket",
+            aggregate_id: id,
+            status: "SUCCEEDED",
+            current_step: null,
+            context: {},
+            created_at: now,
+            updated_at: now,
+            steps: [
+              {
+                id: "e2e-workflow-step",
+                name: "sync_external",
+                status: "SUCCEEDED",
+                attempt_count: 1,
+                max_attempts: 5,
+                available_at: now,
+                started_at: now,
+                finished_at: now,
+                last_error: null,
+                output: null,
+              },
+            ],
+          },
+        ],
+        limit: 20,
+        offset: 0,
+      }),
+    });
+  });
+  await openFailedTicket(page, ticket.item, ticket.subject, ticket.detail);
+
+  const card = page
+    .locator(".ant-card")
+    .filter({ hasText: "工作流进度" })
+    .first();
+  await expect(card).toBeVisible();
+  // 状态枚举由后端以大写返回，必须映射为中文而不是回退成原始值。
+  await expect(card.getByText("已完成", { exact: true })).toBeVisible();
+  await expect(card.getByText("成功", { exact: true })).toBeVisible();
+  await expect(card.getByText("工单同步")).toBeVisible();
+  await expect(card.getByText("外部同步")).toBeVisible();
+  await expect(card.getByText("尝试 1/5")).toBeVisible();
+  await expect(card.getByRole("button", { name: /重放/ })).toHaveCount(0);
+});
+
 test("失败工单可以重试外部同步", async ({ page, request }) => {
   const ticket = await failedSyncTicket(request);
   await openFailedTicket(
