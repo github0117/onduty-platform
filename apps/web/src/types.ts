@@ -472,11 +472,98 @@ export interface AssignmentRunResult {
       risk_clearance: string;
       skills: string[];
       load_ratio: number;
+      schedule_enforced?: boolean;
+      on_shift?: boolean;
+      shift_start_at?: string | null;
+      shift_end_at?: string | null;
       selected: boolean;
     }>;
   }>;
   assigned_count: number;
   unassigned_count: number;
+}
+
+export interface ShiftTemplate {
+  id: string;
+  business_unit_id: string;
+  name: string;
+  start_local: string;
+  end_local: string;
+  status: string;
+  version: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  cross_day: boolean;
+}
+
+export interface ShiftTemplateList {
+  items: ShiftTemplate[];
+}
+
+export interface RosterEntry {
+  id: string;
+  roster_id: string;
+  shift_template_id: string | null;
+  agent_id: string;
+  agent_display_name: string;
+  shift_date: string;
+  start_at: string;
+  end_at: string;
+  shift_name: string;
+  shift_version: number;
+  snapshot_json: Record<string, unknown>;
+}
+
+export interface Roster {
+  id: string;
+  business_unit_id: string;
+  week_start: string;
+  timezone: string;
+  status: string;
+  version: number;
+  cloned_from_roster_id: string | null;
+  created_by: string;
+  published_by: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+  entries: RosterEntry[];
+}
+
+export interface RosterList {
+  items: Roster[];
+}
+
+export interface SchedulingPolicy {
+  business_unit_id: string;
+  enforce_published_schedule: boolean;
+  updated_by: string | null;
+  updated_at: string | null;
+  persisted: boolean;
+  schedule_ready: boolean;
+  coverage_gap: boolean;
+}
+
+export interface OnDutyAgent {
+  agent_id: string;
+  display_name: string;
+  online: boolean;
+  auto_assign_enabled: boolean;
+  schedule_enforced: boolean;
+  on_shift: boolean;
+  shift_start_at: string | null;
+  shift_end_at: string | null;
+  excluded_reasons: string[];
+}
+
+export interface OnDutyList {
+  business_unit_id: string;
+  now: string;
+  schedule_enforced: boolean;
+  schedule_ready: boolean;
+  coverage_gap: boolean;
+  items: OnDutyAgent[];
 }
 
 export interface CustomerServiceAlert {

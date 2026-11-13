@@ -81,6 +81,10 @@ const pathCapabilities: Array<{
     prefix: "/customer-service/incidents",
     anyOf: ["service.incidents.view"],
   },
+  {
+    prefix: "/customer-service/scheduling",
+    anyOf: ["service.admin"],
+  },
   { prefix: "/customer-service", anyOf: ["service.chat"] },
   { prefix: "/ecommerce", anyOf: ["ecommerce.view"] },
   { prefix: "/tickets", anyOf: ["tickets.view", "tickets.view_self"] },

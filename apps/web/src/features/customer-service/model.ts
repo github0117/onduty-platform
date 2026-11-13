@@ -64,7 +64,8 @@ export type CustomerServiceSection =
   | "workbench"
   | "admin"
   | "approvals"
-  | "incidents";
+  | "incidents"
+  | "scheduling";
 
 export function riskColor(level: string | null): string {
   return riskLevels.find((item) => item.code === level)?.color ?? "default";

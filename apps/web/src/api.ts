@@ -69,6 +69,13 @@ import type {
   ExternalConnectorBinding,
   ExternalConnectorHealth,
   ExternalConnectorMessages,
+  OnDutyList,
+  Roster,
+  RosterEntry,
+  RosterList,
+  SchedulingPolicy,
+  ShiftTemplate,
+  ShiftTemplateList,
   ExternalConnectorOutboundMessage,
   ExternalConnectorQueryResult,
   KnowledgeDocument,
@@ -225,6 +232,30 @@ const friendlyApiErrors: Record<string, string> = {
     "该连接器还没有绑定业务入口，请先完成绑定。",
   CONNECTOR_DISABLED:
     "连接已停用，请先启用后再操作。",
+  SHIFT_NAME_CONFLICT:
+    "该业务单元已有同名班次，请换一个名称。",
+  SHIFT_VERSION_CONFLICT:
+    "班次已被其他人修改，请刷新页面后重试。",
+  SHIFT_IN_USE:
+    "该班次仍被草稿班表引用，请先调整草稿后再停用。",
+  ROSTER_DRAFT_EXISTS:
+    "该周已有草稿，请直接编辑现有草稿。",
+  ROSTER_VERSION_CONFLICT:
+    "草稿已被其他人修改，请重新加载后再保存。",
+  INVALID_ROSTER_STATE:
+    "班表状态已经变化，请刷新页面后重试。",
+  EMPTY_ROSTER:
+    "班表还没有任何条目，无法发布。",
+  SCHEDULE_NOT_READY:
+    "当前周还没有已发布班表，不能开启按班表约束。",
+  AGENT_NOT_FOUND:
+    "坐席不在当前业务单元的坐席目录中，请刷新后重试。",
+  INVALID_ROSTER_ENTRY:
+    "班表条目不合法，请检查坐席、日期和班次后重试。",
+  INVALID_WEEK:
+    "班表周起始日必须是周一。",
+  INVALID_SHIFT_TIME:
+    "班次时间不合法，请检查起止时间。",
 };
 
 function friendlyProblem(
@@ -2799,4 +2830,113 @@ export function searchKnowledge(
     }),
   });
 }
+
+export interface SchedulingShiftInput {
+  name: string;
+  start_local: string;
+  end_local: string;
+}
+
+export interface SchedulingShiftUpdateInput {
+  name?: string;
+  start_local?: string;
+  end_local?: string;
+  status?: "ACTIVE" | "ARCHIVED";
+  version: number;
+}
+
+export interface SchedulingRosterEntryInput {
+  agent_id: string;
+  shift_template_id: string;
+  shift_date: string;
+}
+
+export function listSchedulingShifts(): Promise<ShiftTemplateList> {
+  return request("/api/v1/scheduling/shifts");
+}
+
+export function createSchedulingShift(
+  input: SchedulingShiftInput,
+): Promise<ShiftTemplate> {
+  return request("/api/v1/scheduling/shifts", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateSchedulingShift(
+  shiftId: string,
+  input: SchedulingShiftUpdateInput,
+): Promise<ShiftTemplate> {
+  return request(`/api/v1/scheduling/shifts/${shiftId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listSchedulingRosters(
+  weekStart?: string,
+): Promise<RosterList> {
+  const query = weekStart
+    ? `?week_start=${encodeURIComponent(weekStart)}`
+    : "";
+  return request(`/api/v1/scheduling/rosters${query}`);
+}
+
+export function getOrCreateSchedulingRoster(
+  weekStart: string,
+  timezone = "Asia/Shanghai",
+): Promise<Roster> {
+  return request("/api/v1/scheduling/rosters", {
+    method: "POST",
+    body: JSON.stringify({ week_start: weekStart, timezone }),
+  });
+}
+
+export function getSchedulingRoster(rosterId: string): Promise<Roster> {
+  return request(`/api/v1/scheduling/rosters/${rosterId}`);
+}
+
+export function saveSchedulingRosterDraft(
+  rosterId: string,
+  version: number,
+  entries: SchedulingRosterEntryInput[],
+): Promise<Roster> {
+  return request(`/api/v1/scheduling/rosters/${rosterId}/draft`, {
+    method: "PUT",
+    body: JSON.stringify({ version, entries }),
+  });
+}
+
+export function cloneSchedulingRoster(rosterId: string): Promise<Roster> {
+  return request(`/api/v1/scheduling/rosters/${rosterId}/clone`, {
+    method: "POST",
+  });
+}
+
+export function publishSchedulingRoster(rosterId: string): Promise<Roster> {
+  return request(`/api/v1/scheduling/rosters/${rosterId}/publish`, {
+    method: "POST",
+  });
+}
+
+export function getSchedulingPolicy(): Promise<SchedulingPolicy> {
+  return request("/api/v1/scheduling/policy");
+}
+
+export function updateSchedulingPolicy(
+  enforcePublishedSchedule: boolean,
+): Promise<SchedulingPolicy> {
+  return request("/api/v1/scheduling/policy", {
+    method: "PUT",
+    body: JSON.stringify({
+      enforce_published_schedule: enforcePublishedSchedule,
+    }),
+  });
+}
+
+export function getSchedulingOnDuty(): Promise<OnDutyList> {
+  return request("/api/v1/scheduling/on-duty");
+}
+
 

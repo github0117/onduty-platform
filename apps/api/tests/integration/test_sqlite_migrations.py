@@ -40,9 +40,76 @@ def test_fresh_sqlite_migrations_normalize_employee_ids(
         ).fetchone()
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert revision == ("c3e9b1d7a245",)
+    assert revision == ("d7a4c2e9f531",)
     assert default_employee == ("00000000000000000000000000000101",)
     assert violations == []
+
+
+def test_agent_scheduling_migration_upgrades_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    api_root = Path(__file__).resolve().parents[2]
+    database_path = tmp_path / "scheduling-migrations.db"
+    environment = {
+        **os.environ,
+        "APP_ENV": "test",
+        "DATABASE_URL": f"sqlite:///{database_path}",
+        "MODEL_PROVIDER": "local",
+    }
+
+    def alembic(*arguments: str) -> None:
+        completed = subprocess.run(
+            [sys.executable, "-m", "alembic", *arguments],
+            cwd=api_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    alembic("upgrade", "d7a4c2e9f531")
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+    assert {
+        "agent_shift_templates",
+        "agent_rosters",
+        "agent_roster_entries",
+        "agent_scheduling_policies",
+    } <= tables
+    assert {
+        "uq_agent_rosters_unit_week_draft",
+        "uq_agent_rosters_unit_week_published",
+    } <= indexes
+
+    alembic("downgrade", "c3e9b1d7a245")
+    with sqlite3.connect(database_path) as connection:
+        remaining = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert not {
+        "agent_shift_templates",
+        "agent_rosters",
+        "agent_roster_entries",
+        "agent_scheduling_policies",
+    } & remaining
+
+    alembic("upgrade", "head")
 
 
 def test_evaluation_dataset_migration_backfills_legacy_cases_to_holdout(
@@ -132,6 +199,6 @@ def test_evaluation_dataset_migration_backfills_legacy_cases_to_holdout(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
 
-    assert revision == ("c3e9b1d7a245",)
+    assert revision == ("d7a4c2e9f531",)
     assert legacy_case == ("HOLDOUT", "[]", "[]", "[]")
     assert legacy_run == ("TUNING", None)

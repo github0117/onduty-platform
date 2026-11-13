@@ -28,6 +28,7 @@ const ModelsPage = lazy(() => import("./ModelsPage"));
 const KnowledgePage = lazy(() => import("./KnowledgePage"));
 const OperationsPage = lazy(() => import("./OperationsPage"));
 const EfficiencyPage = lazy(() => import("./EfficiencyPage"));
+const SchedulingPage = lazy(() => import("./SchedulingPage"));
 
 const { Header, Content, Sider } = Layout;
 const { Title, Text } = Typography;
@@ -72,6 +73,11 @@ const routeMeta: Record<string, RouteMeta> = {
   "/customer-service/incidents": {
     title: "客服运营 · 执行异常",
     description: "核对失败或结果不确定的外部操作",
+    category: "Agent 演示",
+  },
+  "/customer-service/scheduling": {
+    title: "客服运营 · 智能排班",
+    description: "维护班次与周班表，发布版本并控制按班表约束自动分配",
     category: "Agent 演示",
   },
   "/ecommerce": {
@@ -236,6 +242,7 @@ const customerServiceSections: Record<string, CustomerServiceSection> = {
   "/customer-service/admin": "admin",
   "/customer-service/approvals": "approvals",
   "/customer-service/incidents": "incidents",
+  "/customer-service/scheduling": "scheduling",
 };
 
 const employeePageNavigation = [
@@ -253,6 +260,7 @@ const customerServicePageNavigation = [
   { key: "/customer-service", label: "客服对话" },
   { key: "/customer-service/workbench", label: "人工工作台" },
   { key: "/customer-service/admin", label: "主管看板" },
+  { key: "/customer-service/scheduling", label: "智能排班" },
   { key: "/customer-service/approvals", label: "写操作审批" },
   { key: "/customer-service/incidents", label: "执行异常" },
 ] as const;
@@ -595,7 +603,10 @@ export default function App() {
                 onNavigate={navigate}
               />
             )}
-            {customerServiceSection && (
+            {customerServiceSection === "scheduling" && (
+              <SchedulingPage key="customer-service-scheduling" />
+            )}
+            {customerServiceSection && customerServiceSection !== "scheduling" && (
               <CustomerServicePage
                 key={`customer-service-${customerServiceSection}-${routeRevision}`}
                 technicalMode={

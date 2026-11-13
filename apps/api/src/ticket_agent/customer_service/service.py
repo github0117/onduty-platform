@@ -94,6 +94,7 @@ from ticket_agent.digital_employees.router_service import (
 from ticket_agent.identity.models import Principal
 from ticket_agent.knowledge.models import KnowledgeGapOccurrence
 from ticket_agent.model_gateway.factory import get_model_gateway
+from ticket_agent.scheduling import service as scheduling_service
 from ticket_agent.shared.db import run_with_deadlock_retry
 from ticket_agent.shared.errors import ApiProblem
 from ticket_agent.shared.settings import get_settings
@@ -339,7 +340,8 @@ class CustomerConversationService:
         self,
         business_unit_id: str | None = None,
     ) -> AssignmentRunResult:
-        cutoff = datetime.now(UTC) - timedelta(seconds=60)
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(seconds=60)
         online = [
             item
             for item in self.presence(business_unit_id).items
@@ -356,6 +358,62 @@ class CustomerConversationService:
                 assigned_count=0,
                 unassigned_count=self.assignment_queue(business_unit_id).total,
             )
+        # Fixed-order row locks serialize concurrent runs so the load computed
+        # below cannot oversubscribe an agent that another run is filling.
+        locked = {
+            row.agent_id: row
+            for row in self.session.scalars(
+                select(AgentPresence)
+                .where(
+                    AgentPresence.agent_id.in_(
+                        sorted(agent.agent_id for agent in online)
+                    )
+                )
+                .order_by(AgentPresence.agent_id)
+                .with_for_update()
+            ).all()
+        }
+        online = [
+            agent
+            for agent in online
+            if (row := locked.get(agent.agent_id)) is not None
+            and row.status == "ONLINE"
+            and row.auto_assign_enabled
+            and _as_utc(row.last_seen_at) >= cutoff
+        ]
+        if not online:
+            return AssignmentRunResult(
+                assignments=[],
+                assigned_count=0,
+                unassigned_count=self.assignment_queue(business_unit_id).total,
+            )
+        # The published-schedule switch is per business unit; a global beat
+        # must never borrow another unit's roster.
+        enforced_agents: set[str] = set()
+        shift_windows: dict[str, scheduling_service.ScheduleWindow] = {}
+        agents_by_unit: dict[str, list[str]] = {}
+        for agent in online:
+            agents_by_unit.setdefault(agent.business_unit_id, []).append(
+                agent.agent_id
+            )
+        enforced_units = scheduling_service.enforced_business_units(
+            self.session,
+            business_unit_ids=sorted(agents_by_unit),
+        )
+        for unit in enforced_units:
+            shift_windows.update(
+                scheduling_service.shift_windows(
+                    self.session,
+                    business_unit_id=unit,
+                    agent_ids=agents_by_unit.get(unit, []),
+                    now=now,
+                )
+            )
+        enforced_agents = {
+            agent.agent_id
+            for agent in online
+            if agent.business_unit_id in enforced_units
+        }
         load_statement = (
             select(
                 CustomerConversation.assigned_agent_id,
@@ -395,7 +453,12 @@ class CustomerConversationService:
             candidate_details: list[dict[str, Any]] = []
             for candidate in online:
                 candidate_load = loads.get(candidate.agent_id, 0)
+                enforced = candidate.agent_id in enforced_agents
+                window = shift_windows.get(candidate.agent_id)
+                on_shift = window is not None
                 excluded_reasons: list[str] = []
+                if enforced and not on_shift:
+                    excluded_reasons.append("未在已发布班表当班")
                 if candidate_load >= candidate.max_conversations:
                     excluded_reasons.append(
                         f"并发已满 {candidate_load}/"
@@ -431,6 +494,10 @@ class CustomerConversationService:
                             / max(candidate.max_conversations, 1),
                             4,
                         ),
+                        "schedule_enforced": enforced,
+                        "on_shift": on_shift,
+                        "shift_start_at": window.start_at if window else None,
+                        "shift_end_at": window.end_at if window else None,
                         "selected": False,
                     }
                 )
@@ -443,6 +510,10 @@ class CustomerConversationService:
                     not agent.skills
                     or required_skill is None
                     or required_skill in agent.skills
+                )
+                and (
+                    agent.agent_id not in enforced_agents
+                    or agent.agent_id in shift_windows
                 )
             ]
             if not available:
@@ -462,7 +533,7 @@ class CustomerConversationService:
                 ),
             )
             conversation.assigned_agent_id = agent.agent_id
-            conversation.assigned_at = datetime.now(UTC)
+            conversation.assigned_at = now
             conversation.version += 1
             loads[agent.agent_id] = loads.get(agent.agent_id, 0) + 1
             for candidate_detail in candidate_details:
@@ -497,6 +568,11 @@ class CustomerConversationService:
                 and agent.actor_role in {"supervisor", "admin"}
             ):
                 reason_parts.append("高风险会话优先交给主管")
+            selected_window = shift_windows.get(agent.agent_id)
+            if agent.agent_id in enforced_agents and selected_window is not None:
+                reason_parts.append(
+                    f"当班 {scheduling_service.format_shift_window(selected_window)}"
+                )
             assignments.append(
                 AssignmentResultItem(
                     conversation_id=conversation.id,

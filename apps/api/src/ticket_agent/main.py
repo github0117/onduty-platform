@@ -55,6 +55,7 @@ from ticket_agent.observability.exporter import (
     render_labeled_prometheus_metrics,
     render_workflow_prometheus_metrics,
 )
+from ticket_agent.scheduling.router import router as scheduling_router
 from ticket_agent.shared.body_limit import enforce_request_body_limit
 from ticket_agent.shared.db import SessionLocal, engine, init_db
 from ticket_agent.shared.errors import ApiProblem, api_problem_handler
@@ -549,6 +550,11 @@ app.include_router(
 )
 app.include_router(
     efficiency_router,
+    prefix=settings.api_prefix,
+    dependencies=tenant_dependencies,
+)
+app.include_router(
+    scheduling_router,
     prefix=settings.api_prefix,
     dependencies=tenant_dependencies,
 )

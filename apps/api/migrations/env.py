@@ -18,6 +18,7 @@ from ticket_agent.efficiency import models as efficiency_models  # noqa: F401
 from ticket_agent.knowledge import models as knowledge_models  # noqa: F401
 from ticket_agent.mcp_connectors import models as mcp_models  # noqa: F401
 from ticket_agent.model_gateway import models as model_models  # noqa: F401
+from ticket_agent.scheduling import models as scheduling_models  # noqa: F401
 from ticket_agent.shared.db import Base
 from ticket_agent.shared.settings import get_settings
 from ticket_agent.tickets import models  # noqa: F401
