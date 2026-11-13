@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     memory_summary_timeout_seconds: float = 8.0
     model_input_cost_per_1k_tokens: float = 0.0
     model_output_cost_per_1k_tokens: float = 0.0
+    efficiency_currency: str = "CNY"
+    efficiency_hourly_labor_cost: float = 60.0
+    efficiency_minutes_per_ticket: float = 15.0
+    efficiency_minutes_per_conversation: float = 8.0
+    efficiency_minutes_per_listing: float = 20.0
     embedding_provider: Literal["local", "openai_compatible"] = "local"
     embedding_base_url: str = ""
     embedding_api_key: str = ""

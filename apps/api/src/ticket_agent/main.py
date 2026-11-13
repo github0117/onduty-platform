@@ -28,6 +28,7 @@ from ticket_agent.digital_employees.draft_router import (
 from ticket_agent.digital_employees.router import router as employee_router
 from ticket_agent.domains.registry import validate_domain_packs
 from ticket_agent.ecommerce.router import router as ecommerce_router
+from ticket_agent.efficiency.router import router as efficiency_router
 from ticket_agent.identity.dependencies import (
     ensure_business_unit_access,
     get_principal,
@@ -543,6 +544,11 @@ app.include_router(
 )
 app.include_router(
     workflow_router,
+    prefix=settings.api_prefix,
+    dependencies=tenant_dependencies,
+)
+app.include_router(
+    efficiency_router,
     prefix=settings.api_prefix,
     dependencies=tenant_dependencies,
 )

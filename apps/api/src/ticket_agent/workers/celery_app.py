@@ -63,6 +63,10 @@ celery_app.conf.update(
             "task": "ticket_agent.connectors.poll_email",
             "schedule": 60.0,
         },
+        "materialize-efficiency-ledger-every-300-seconds": {
+            "task": "ticket_agent.efficiency.materialize",
+            "schedule": 300.0,
+        },
     },
 )
 

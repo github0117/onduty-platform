@@ -258,6 +258,13 @@ def render_ecommerce_storyboard_video_task(
         ) from exc
 
 
+@celery_app.task(name="ticket_agent.efficiency.materialize")
+def materialize_efficiency_ledger_task() -> dict[str, int]:
+    from ticket_agent.efficiency.worker import materialize_efficiency_ledger_job
+
+    return materialize_efficiency_ledger_job()
+
+
 @celery_app.task(
     name="ticket_agent.ecommerce.listing.batch_generate",
     bind=True,

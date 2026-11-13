@@ -27,6 +27,7 @@ const EmployeesPage = lazy(() => import("./EmployeesPage"));
 const ModelsPage = lazy(() => import("./ModelsPage"));
 const KnowledgePage = lazy(() => import("./KnowledgePage"));
 const OperationsPage = lazy(() => import("./OperationsPage"));
+const EfficiencyPage = lazy(() => import("./EfficiencyPage"));
 
 const { Header, Content, Sider } = Layout;
 const { Title, Text } = Typography;
@@ -186,6 +187,11 @@ const routeMeta: Record<string, RouteMeta> = {
   "/operations": {
     title: "平台治理 · 运行与审计",
     description: "查看工具调用、模型成本、Trace 和外部同步",
+    category: "平台管理",
+  },
+  "/efficiency": {
+    title: "平台治理 · 效率账本",
+    description: "按业务单元核算人时节省、模型成本与 ROI",
     category: "平台管理",
   },
 };
@@ -409,6 +415,7 @@ export default function App() {
     { key: "/knowledge", label: "知识与评测" },
     { key: "/models", label: "模型与连接" },
     { key: "/operations", label: "运行与审计" },
+    { key: "/efficiency", label: "效率账本" },
   ].filter((item) => canAccessPath(item.key));
   const scenarioMenu = {
     key: "demo-scenarios",
@@ -622,6 +629,7 @@ export default function App() {
               />
             )}
             {activePath === "/operations" && <OperationsPage />}
+            {activePath === "/efficiency" && <EfficiencyPage />}
           </Suspense>
           )}
         </Content>

@@ -14,6 +14,7 @@ from ticket_agent.customer_service import (  # noqa: F401
 )
 from ticket_agent.digital_employees import models as employee_models  # noqa: F401
 from ticket_agent.ecommerce import models as ecommerce_models  # noqa: F401
+from ticket_agent.efficiency import models as efficiency_models  # noqa: F401
 from ticket_agent.knowledge import models as knowledge_models  # noqa: F401
 from ticket_agent.mcp_connectors import models as mcp_models  # noqa: F401
 from ticket_agent.model_gateway import models as model_models  # noqa: F401

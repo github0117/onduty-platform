@@ -94,6 +94,7 @@ const pathCapabilities: Array<{
   { prefix: "/employees", anyOf: ["employees.view"] },
   { prefix: "/models", anyOf: ["models.view"] },
   { prefix: "/operations", anyOf: ["operations.view"] },
+  { prefix: "/efficiency", anyOf: ["operations.view"] },
 ];
 
 type CapabilityCollection = ReadonlySet<string> | readonly string[];

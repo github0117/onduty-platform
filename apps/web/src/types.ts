@@ -524,6 +524,96 @@ export interface CustomerServiceMetrics {
   risk_counts: Record<string, number>;
 }
 
+export interface EfficiencyAssumption {
+  business_unit_id: string;
+  currency: string;
+  hourly_labor_cost: number;
+  minutes_per_ticket: number;
+  minutes_per_conversation: number;
+  minutes_per_listing: number;
+  version: number;
+  persisted: boolean;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export interface EfficiencySourceBreakdown {
+  source_type: string;
+  entries: number;
+  human_minutes_saved: number;
+  human_hours_saved: number;
+  labor_cost_saved: number;
+}
+
+export interface EfficiencyEmployeeBreakdown {
+  employee_id: string | null;
+  employee_name: string;
+  entries: number;
+  human_minutes_saved: number;
+  human_hours_saved: number;
+  labor_cost_saved: number;
+}
+
+export interface EfficiencyDailyPoint {
+  day: string;
+  entries: number;
+  human_minutes_saved: number;
+  human_hours_saved: number;
+  labor_cost_saved: number;
+}
+
+export interface EfficiencySummary {
+  business_unit_id: string;
+  days: number;
+  from_at: string;
+  to_at: string;
+  currency: string;
+  mixed_currency: boolean;
+  entries: number;
+  human_minutes_saved: number;
+  human_hours_saved: number;
+  labor_cost_saved: number;
+  model_cost: number;
+  model_calls: number;
+  roi: number | null;
+  net_saving: number;
+  by_source: EfficiencySourceBreakdown[];
+  by_employee: EfficiencyEmployeeBreakdown[];
+  daily: EfficiencyDailyPoint[];
+  assumptions: EfficiencyAssumption;
+  basis: string[];
+}
+
+export interface EfficiencyLedgerEntry {
+  id: string;
+  occurred_at: string;
+  source_type: string;
+  source_id: string;
+  employee_id: string | null;
+  employee_name: string;
+  human_minutes_saved: number;
+  labor_cost_saved: number;
+  currency: string;
+  assumption_version: number | null;
+  created_at: string;
+}
+
+export interface EfficiencyLedgerPage {
+  items: EfficiencyLedgerEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface EfficiencyMaterializeResult {
+  business_unit_id: string;
+  from_at: string;
+  to_at: string;
+  created: number;
+  skipped_existing: number;
+  skipped_ineligible: number;
+}
+
 export interface CustomerValueMetrics {
   business_unit_id: string;
   days: number;

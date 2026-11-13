@@ -45,6 +45,10 @@ import type {
   CustomerServiceMetrics,
   CustomerServiceHistoryMetrics,
   CustomerValueMetrics,
+  EfficiencyAssumption,
+  EfficiencyLedgerPage,
+  EfficiencyMaterializeResult,
+  EfficiencySummary,
   EmployeeKnowledgeBinding,
   EmployeeMcpBinding,
   EmployeeSkillBinding,
@@ -564,6 +568,54 @@ export function getCustomerValueMetrics(
 ): Promise<CustomerValueMetrics> {
   return request(
     `/api/v1/customer-service/value-metrics?business_unit_id=bu_demo&days=${days}`,
+  );
+}
+
+export function getEfficiencySummary(days = 30): Promise<EfficiencySummary> {
+  return request(
+    `/api/v1/efficiency/summary?business_unit_id=bu_demo&days=${days}`,
+  );
+}
+
+export function listEfficiencyLedger(
+  days = 30,
+  limit = 50,
+  offset = 0,
+): Promise<EfficiencyLedgerPage> {
+  return request(
+    `/api/v1/efficiency/ledger?business_unit_id=bu_demo&days=${days}&limit=${limit}&offset=${offset}`,
+  );
+}
+
+export function getEfficiencyAssumptions(): Promise<EfficiencyAssumption> {
+  return request("/api/v1/efficiency/assumptions?business_unit_id=bu_demo");
+}
+
+export function updateEfficiencyAssumptions(input: {
+  currency: string;
+  hourly_labor_cost: number;
+  minutes_per_ticket: number;
+  minutes_per_conversation: number;
+  minutes_per_listing: number;
+}): Promise<EfficiencyAssumption> {
+  return request(
+    "/api/v1/efficiency/assumptions?business_unit_id=bu_demo",
+    {
+      method: "PUT",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function rebuildEfficiencyLedger(
+  days = 30,
+): Promise<EfficiencyMaterializeResult> {
+  return request(
+    `/api/v1/efficiency/rebuild?business_unit_id=bu_demo`,
+    {
+      method: "POST",
+      body: JSON.stringify({ days }),
+    },
   );
 }
 
